@@ -2,7 +2,7 @@ import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents } from
 import { normalizeCity } from "@manebra/calendar";
 import { searchProducts, hasSerpApiKey } from "@manebra/catalog";
 import { makeLlm, extractOrder } from "@manebra/llm";
-import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching";
+import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
 import {
   type Session,
   getOrCreateSession,

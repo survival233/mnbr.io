@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./matching": "./src/matching/index.ts"
+    "./matching": "./src/matching/index.ts",
+    "./matching/score": "./src/matching/score.ts"
   },
   "scripts": {
     "test": "vitest run",

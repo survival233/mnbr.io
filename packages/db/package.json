@@ -6,11 +6,15 @@
   "types": "./src/index.ts",
   "scripts": {
     "generate": "prisma generate",
+    "postinstall": "prisma generate",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",
     "validate": "prisma validate"
   },
-  "dependencies": { "@prisma/client": "^6.1.0" },
-  "devDependencies": { "prisma": "^6.1.0" }
+  "dependencies": {
+    "@prisma/client": "^6.1.0",
+    "prisma": "^6.1.0"
+  },
+  "devDependencies": {}
 }
