@@ -1,0 +1,27 @@
+{
+  "name": "@manebra/linq-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.mts",
+    "dev": "tsx watch src/main.mts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@manebra/shared": "*",
+    "@manebra/agents": "*",
+    "@manebra/llm": "*",
+    "@manebra/catalog": "*",
+    "@manebra/calendar": "*",
+    "@manebra/db": "*",
+    "@manebra/settlement": "*",
+    "@manebra/api": "*",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.10.0"
+  }
+}

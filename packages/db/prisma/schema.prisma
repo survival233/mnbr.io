@@ -1,0 +1,606 @@
+// Manebra schema — PRD v4.0 §5, MERGED with the agentic settlement layer.
+// Authorization is enforced in tRPC middleware (Prisma uses the service role);
+// RLS is enabled only on chat tables read directly by mobile clients via Supabase.
+//
+// ── MERGE NOTE ──────────────────────────────────────────────────────────────
+// Additions over the original scaffold, all marked with "// [settlement]" or
+// "// [agents]":
+//   enums:  EscrowState, MatchProposalStatus, NegotiationStatus
+//   LedgerType: + escrow_open, escrow_fund, escrow_release, escrow_refund
+//   User:   + walletAddress
+//   Bid:    + escrowId, escrowState, escrowFundTxHash, escrowSettleTxHash
+//   PayoutLedger: + onchainTxHash
+//   models: MatchProposal, NegotiationSession
+// ────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────── ENUMS ───────────────────────────────
+
+enum UserRole {
+  shopper
+  traveler
+  both
+}
+
+enum KycProvider {
+  stripe_identity
+  veriff
+}
+
+enum KycStatus {
+  none
+  pending
+  processing
+  verified
+  failed
+  expired
+}
+
+enum StripeAccountStatus {
+  none
+  pending
+  charges_enabled
+  payouts_enabled
+  restricted
+}
+
+enum AccountStatus {
+  active
+  frozen
+  banned
+}
+
+enum TripDirection {
+  us_to_gh
+  gh_to_us
+}
+
+enum TripStatus {
+  upcoming
+  in_progress
+  completed
+  canceled
+}
+
+enum ItemCategory {
+  // US → GH allowlist
+  electronics
+  clothing_shoes
+  cosmetics_sealed
+  books_media
+  food_sealed_nonperishable
+  // GH → US allowlist
+  foodstuffs_cbp_permitted
+  textiles_kente
+  crafts_nonrestricted
+}
+
+enum ItemReviewStatus {
+  auto_approved
+  pending_review
+  approved
+  rejected
+}
+
+enum ItemStatus {
+  open
+  funded
+  completed
+  expired
+  canceled
+}
+
+enum BidStatus {
+  pending
+  accepted
+  funded
+  purchased
+  in_transit
+  arrived
+  delivered
+  refunded
+  disputed
+  expired
+  withdrawn
+}
+
+enum LedgerType {
+  charge
+  application_fee
+  payout_release
+  refund
+  fee_refund
+  transfer_reversal
+  // [settlement] on-chain escrow movement records
+  escrow_open
+  escrow_fund
+  escrow_release
+  escrow_refund
+}
+
+enum LedgerStatus {
+  pending
+  succeeded
+  failed
+}
+
+enum DisputeReason {
+  item_not_as_described
+  item_damaged
+  no_show
+  payment_issue
+  other
+}
+
+enum DisputeStatus {
+  open
+  under_review
+  resolved_refund
+  resolved_release
+  resolved_partial
+  closed
+}
+
+enum RatingCategory {
+  communication
+  punctuality
+  professionalism
+  overall
+}
+
+enum WebhookProvider {
+  stripe
+  kyc
+}
+
+enum WebhookStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum AdminRole {
+  support
+  ops
+  admin
+}
+
+// [settlement] Mirrors HandoverEscrow.State on-chain. Distinct from Bid.status:
+// during the 48h dispute window Bid.status = delivered while escrowState = funded.
+enum EscrowState {
+  none
+  opened
+  funded
+  released
+  refunded
+}
+
+// [agents]
+enum MatchProposalStatus {
+  proposed
+  dismissed
+  converted
+}
+
+// [agents]
+enum NegotiationStatus {
+  deal
+  no_deal
+}
+
+// [calendar] Where a TravelerTrip came from. Raw calendar content never leaves the device
+// when source=calendar — clients send only the minimized extracted fields.
+enum TripSource {
+  manual
+  calendar
+  barcode
+  share_sheet
+  forwarded_email
+}
+
+// Where flight events were read from.
+// google/outlook = cloud OAuth; apple = phone iCal/Calendar.app; ics = file/feed.
+enum CalendarProvider {
+  google
+  outlook
+  apple
+  ics
+}
+
+enum NotificationKind {
+  job_alert
+  match_proposed
+  negotiation_agreed
+  system
+}
+
+enum NotificationStatus {
+  pending
+  delivered
+  dismissed
+  failed
+}
+
+// ─────────────────────────────── MODELS ───────────────────────────────
+
+model User {
+  id                     String              @id @db.Uuid // mirrors Supabase auth.users.id
+  email                  String              @unique @db.VarChar(255)
+  fullName               String              @map("full_name") @db.VarChar(255)
+  phone                  String?             @db.VarChar(50) // E.164, OTP-verified
+  userRole               UserRole            @map("user_role")
+  isVerified             Boolean             @default(false) @map("is_verified")
+  kycProvider            KycProvider?        @map("kyc_provider")
+  kycSessionId           String?             @map("kyc_session_id") @db.VarChar(255)
+  kycStatus              KycStatus           @default(none) @map("kyc_status")
+  passportCountry        String?             @map("passport_country") @db.Char(2)
+  dateOfBirth            DateTime?           @map("date_of_birth") @db.Date
+  stripeCustomerId       String?             @map("stripe_customer_id") @db.VarChar(255)
+  stripeConnectAccountId String?             @map("stripe_connect_account_id") @db.VarChar(255)
+  stripeAccountStatus    StripeAccountStatus @default(none) @map("stripe_account_status")
+  trustScore             Int                 @default(100) @map("trust_score") // 0–200, §12
+  totalDeliveries        Int                 @default(0) @map("total_deliveries")
+  avgRating              Decimal?            @map("avg_rating") @db.Decimal(2, 1)
+  accountStatus          AccountStatus       @default(active) @map("account_status")
+  // [settlement] agent wallet address (shopper funds from / traveler receives to)
+  walletAddress          String?             @unique @map("wallet_address") @db.VarChar(42)
+  createdAt              DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt              DateTime            @updatedAt @map("updated_at") @db.Timestamptz()
+
+  trips               TravelerTrip[]
+  itemRequests        ItemRequest[]
+  bids                Bid[]
+  calendarConnections CalendarConnection[]
+  notifications       Notification[]
+
+  @@map("users")
+}
+
+model TravelerTrip {
+  id                String        @id @default(uuid()) @db.Uuid
+  travelerId        String        @map("traveler_id") @db.Uuid
+  direction         TripDirection
+  departureCity     String        @map("departure_city") @db.VarChar(100)
+  destinationCity   String        @map("destination_city") @db.VarChar(100)
+  departureDate     DateTime      @map("departure_date") @db.Date
+  returnDate        DateTime?     @map("return_date") @db.Date
+  luggageCapacityKg Int           @map("luggage_capacity_kg")
+  status            TripStatus    @default(upcoming)
+  // [calendar] provenance — never stores flight number / PNR / email body
+  source            TripSource    @default(manual)
+  externalEventId   String?       @map("external_event_id") @db.VarChar(255)
+  calendarProvider  CalendarProvider? @map("calendar_provider")
+  confidence        Float         @default(1) // 0–1; low-confidence calendar parses need confirm before job alerts
+  syncedAt          DateTime?     @map("synced_at") @db.Timestamptz()
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz()
+
+  traveler User  @relation(fields: [travelerId], references: [id])
+  bids     Bid[]
+
+  @@unique([travelerId, externalEventId])
+  @@index([travelerId])
+  @@index([direction, destinationCity, departureDate])
+  @@index([direction, departureDate])
+  @@map("traveler_trips")
+}
+
+// [calendar] Cloud calendar account link (Google / Outlook / Apple / ICS).
+// Not tied to phone OS — same connection works from any device. Tokens encrypted
+// at rest when stored; MVP often passes a fresh OAuth access token per sync.
+// Revoking deletes future sync but keeps trips that already have funded bids.
+model CalendarConnection {
+  id           String           @id @default(uuid()) @db.Uuid
+  userId       String           @map("user_id") @db.Uuid
+  provider     CalendarProvider
+  // opaque refresh/access token blob — encrypted by app layer before write
+  tokenCipher  String?          @map("token_cipher")
+  calendarId   String?          @map("calendar_id") @db.VarChar(255)
+  syncCursor   String?          @map("sync_cursor") @db.VarChar(512)
+  lastSyncedAt DateTime?        @map("last_synced_at") @db.Timestamptz()
+  revokedAt    DateTime?        @map("revoked_at") @db.Timestamptz()
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("calendar_connections")
+}
+
+// Traveler (or shopper) job alerts — in-app inbox until push is wired.
+model Notification {
+  id        String             @id @default(uuid()) @db.Uuid
+  userId    String             @map("user_id") @db.Uuid
+  kind      NotificationKind
+  title     String             @db.VarChar(255)
+  body      String
+  // structured payload: itemRequestId, tripId, score, fee hint, etc.
+  data      Json
+  status    NotificationStatus @default(pending)
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz()
+  readAt    DateTime?          @map("read_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, status, createdAt])
+  @@map("notifications")
+}
+
+model ItemRequest {
+  id              String           @id @default(uuid()) @db.Uuid
+  shopperId       String           @map("shopper_id") @db.Uuid
+  itemName        String           @map("item_name") @db.VarChar(255)
+  itemCostCents   Int              @map("item_cost_cents")
+  currency        String           @default("USD") @db.Char(3)
+  itemUrl         String?          @map("item_url")
+  itemImageUrl    String?          @map("item_image_url")
+  category        ItemCategory
+  direction       TripDirection
+  destinationCity String           @map("destination_city") @db.VarChar(100)
+  // [catalog] Official purchase source chosen by the shopper from multi-retailer search
+  retailerName    String?          @map("retailer_name") @db.VarChar(100)
+  retailerListingId String?        @map("retailer_listing_id") @db.VarChar(100)
+  shoppingCity    String?          @map("shopping_city") @db.VarChar(100) // US city where traveler buys
+  quantity        Int              @default(1)
+  notes           String?
+  availabilityLabel String?        @map("availability_label") @db.VarChar(100)
+  // Sponsor flow (PRD §2.3): a US-based shopper may name a recipient in Ghana.
+  recipientName   String?          @map("recipient_name") @db.VarChar(255)
+  recipientPhone  String?          @map("recipient_phone") @db.VarChar(50)
+  // Traveler who reserved the request (after Accept); null while Waiting for Traveler
+  reservedTravelerId String?       @map("reserved_traveler_id") @db.Uuid
+  reservedBidId   String?          @unique @map("reserved_bid_id") @db.Uuid
+  reviewStatus    ItemReviewStatus @default(pending_review) @map("review_status")
+  status          ItemStatus       @default(open)
+  expiresAt       DateTime         @map("expires_at") @db.Timestamptz() // +30 days
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz()
+
+  shopper       User           @relation(fields: [shopperId], references: [id])
+  bids          Bid[]
+  conversations Conversation[]
+
+  @@index([status, direction])
+  @@index([shopperId])
+  @@index([destinationCity, status])
+  @@map("item_requests")
+}
+
+model Bid {
+  id                    String    @id @default(uuid()) @db.Uuid
+  itemRequestId         String    @map("item_request_id") @db.Uuid
+  travelerId            String    @map("traveler_id") @db.Uuid
+  tripId                String    @map("trip_id") @db.Uuid
+  // Frozen at bid creation; item edits are blocked once any bid exists (PRD §5).
+  itemCostCentsSnapshot Int       @map("item_cost_cents_snapshot")
+  travelerFeeCents      Int       @map("traveler_fee_cents")
+  commissionCents       Int       @map("commission_cents") // server-computed
+  totalCents            Int       @map("total_cents") // server-computed
+  currency              String    @default("USD") @db.Char(3)
+  promisedDeliveryDate  DateTime  @map("promised_delivery_date") @db.Date
+  stripePaymentIntentId String?   @unique @map("stripe_payment_intent_id") @db.VarChar(255)
+  status                BidStatus @default(pending)
+  // Applies to `pending` bids only (72h). State machine forbids expiring post-funded states.
+  expiresAt             DateTime? @map("expires_at") @db.Timestamptz()
+  fundedAt              DateTime? @map("funded_at") @db.Timestamptz()
+  purchasedAt           DateTime? @map("purchased_at") @db.Timestamptz()
+  inTransitAt           DateTime? @map("in_transit_at") @db.Timestamptz()
+  arrivedAt             DateTime? @map("arrived_at") @db.Timestamptz()
+  deliveredAt           DateTime? @map("delivered_at") @db.Timestamptz()
+  refundedAt            DateTime? @map("refunded_at") @db.Timestamptz()
+  // [settlement] on-chain escrow mirror (chain is source of truth; reconciled)
+  escrowId              String?      @unique @map("escrow_id") @db.VarChar(66)
+  escrowState           EscrowState  @default(none) @map("escrow_state")
+  escrowFundTxHash      String?      @map("escrow_fund_tx_hash") @db.VarChar(66)
+  escrowSettleTxHash    String?      @map("escrow_settle_tx_hash") @db.VarChar(66)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  itemRequest   ItemRequest    @relation(fields: [itemRequestId], references: [id])
+  traveler      User           @relation(fields: [travelerId], references: [id])
+  trip          TravelerTrip   @relation(fields: [tripId], references: [id])
+  handoverCodes HandoverCode[]
+  ledgerEntries PayoutLedger[]
+  disputes      Dispute[]
+  ratings       UserRating[]
+  conversations Conversation[]
+
+  @@index([itemRequestId])
+  @@index([travelerId])
+  @@index([tripId])
+  @@index([status])
+  @@map("bids")
+}
+
+model HandoverCode {
+  id          String    @id @default(uuid()) @db.Uuid
+  bidId       String    @map("bid_id") @db.Uuid
+  // HMAC-SHA256 of the 6-digit code; plaintext is never stored (PRD §10.2).
+  codeHash    String    @map("code_hash") @db.VarChar(255)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz() // 24h, regenerable
+  attempts    Int       @default(0) // max 5 → lockout + support flow
+  active      Boolean   @default(true)
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz()
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  // One ACTIVE code per bid, enforced via partial unique index in migration SQL:
+  // CREATE UNIQUE INDEX handover_codes_bid_active ON handover_codes (bid_id) WHERE active;
+  @@index([bidId])
+  @@map("handover_codes")
+}
+
+model PayoutLedger {
+  id             String       @id @default(uuid()) @db.Uuid
+  bidId          String       @map("bid_id") @db.Uuid
+  type           LedgerType
+  amountCents    Int          @map("amount_cents")
+  currency       String       @default("USD") @db.Char(3)
+  stripeObjectId String?      @map("stripe_object_id") @db.VarChar(255)
+  // [settlement] on-chain settlement records carry the tx hash here
+  onchainTxHash  String?      @map("onchain_tx_hash") @db.VarChar(66)
+  status         LedgerStatus @default(pending)
+  metadata       Json?
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz()
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  // Audit records of money movements — never balances. Manebra holds no funds.
+  @@index([bidId])
+  @@map("payout_ledger")
+}
+
+// [agents] Advisory match proposals; conversion goes through bids.create.
+model MatchProposal {
+  id            String              @id @default(uuid()) @db.Uuid
+  itemRequestId String              @map("item_request_id") @db.Uuid
+  tripId        String              @map("trip_id") @db.Uuid
+  travelerId    String              @map("traveler_id") @db.Uuid
+  score         Float
+  status        MatchProposalStatus @default(proposed)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@unique([itemRequestId, tripId])
+  @@index([travelerId, status])
+  @@map("match_proposals")
+}
+
+// [agents] Envelope-bounded negotiation sessions (deterministic engine).
+model NegotiationSession {
+  id             String            @id @default(uuid()) @db.Uuid
+  itemRequestId  String            @map("item_request_id") @db.Uuid
+  tripId         String            @map("trip_id") @db.Uuid
+  shopperId      String            @map("shopper_id") @db.Uuid
+  travelerId     String            @map("traveler_id") @db.Uuid
+  status         NegotiationStatus
+  agreedFeeCents Int?              @map("agreed_fee_cents")
+  transcript     Json
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([itemRequestId, tripId])
+  @@map("negotiation_sessions")
+}
+
+model Dispute {
+  id              String        @id @default(uuid()) @db.Uuid
+  bidId           String        @map("bid_id") @db.Uuid
+  openedBy        String        @map("opened_by") @db.Uuid
+  reason          DisputeReason
+  status          DisputeStatus @default(open)
+  resolutionNotes String?       @map("resolution_notes")
+  resolvedBy      String?       @map("resolved_by") @db.Uuid
+  openedAt        DateTime      @default(now()) @map("opened_at") @db.Timestamptz()
+  resolvedAt      DateTime?     @map("resolved_at") @db.Timestamptz()
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@index([bidId])
+  @@index([status])
+  @@map("disputes")
+}
+
+model Conversation {
+  id            String   @id @default(uuid()) @db.Uuid
+  itemRequestId String   @map("item_request_id") @db.Uuid
+  bidId         String?  @map("bid_id") @db.Uuid
+  shopperId     String   @map("shopper_id") @db.Uuid
+  travelerId    String   @map("traveler_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  bid      Bid?      @relation(fields: [bidId], references: [id])
+  item     ItemRequest @relation(fields: [itemRequestId], references: [id])
+  messages Message[]
+
+  @@index([shopperId])
+  @@index([travelerId])
+  @@map("conversations")
+}
+
+model Message {
+  id             String    @id @default(uuid()) @db.Uuid
+  conversationId String    @map("conversation_id") @db.Uuid
+  senderId       String    @map("sender_id") @db.Uuid
+  body           String
+  readAt         DateTime? @map("read_at") @db.Timestamptz()
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+  @@map("messages")
+}
+
+model UserRating {
+  id         String         @id @default(uuid()) @db.Uuid
+  bidId      String         @map("bid_id") @db.Uuid
+  raterId    String         @map("rater_id") @db.Uuid
+  ratedId    String         @map("rated_id") @db.Uuid
+  category   RatingCategory
+  rating     Int // 1–5; CHECK constraint added in raw migration SQL
+  comment    String?
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz()
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@unique([bidId, raterId, category])
+  @@map("user_ratings")
+}
+
+model WebhookEvent {
+  id         String          @id @default(uuid()) @db.Uuid
+  provider   WebhookProvider
+  externalId String          @map("external_id") @db.VarChar(255) // insert-first idempotency
+  eventType  String          @map("event_type") @db.VarChar(100)
+  payload    Json
+  status     WebhookStatus   @default(pending)
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt  DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@unique([provider, externalId])
+  @@map("webhook_events")
+}
+
+model AdminUser {
+  id        String     @id @default(uuid()) @db.Uuid
+  email     String     @unique @db.VarChar(255)
+  role      AdminRole
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz()
+
+  auditLogs AdminAuditLog[]
+
+  @@map("admin_users")
+}
+
+model AdminAuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  adminUserId String   @map("admin_user_id") @db.Uuid
+  action      String   @db.VarChar(100) // e.g. 'dispute.resolve_refund', 'user.freeze'
+  targetType  String   @map("target_type") @db.VarChar(50)
+  targetId    String   @map("target_id") @db.Uuid
+  before      Json?
+  after       Json?
+  disputeId   String?  @map("dispute_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  adminUser AdminUser @relation(fields: [adminUserId], references: [id])
+
+  @@index([targetType, targetId])
+  @@map("admin_audit_log")
+}

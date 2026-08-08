@@ -1,0 +1,32 @@
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# secrets
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+!scripts/smoke-local.env
+!apps/api/.env.sepolia.example
+
+# builds
+dist/
+build/
+out/
+.next/
+cache/
+packages/settlement/contracts/cache/
+packages/settlement/contracts/out/
+
+# logs & os
+*.log
+.DS_Store
+coverage/
+
+# linq-agent session durability
+apps/linq-agent/.sessions.json
+apps/linq-agent/.sessions.json.tmp

@@ -1,0 +1,33 @@
+{
+  "name": "manebra",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "npm run linq-agent",
+    "demo": "tsx apps/agent-cli/src/main.mts",
+    "demo:linq": "DEMO_TRANSPORT=linq tsx apps/agent-cli/src/main.mts",
+    "linq-agent": "tsx apps/linq-agent/src/main.mts",
+    "seed:linq-travelers": "tsx scripts/seed-linq-travelers.mts",
+    "agent": "tsx apps/agent-cli/src/main.mts",
+    "mcp": "tsx apps/mcp/src/server.mts",
+    "smoke": "tsx scripts/smoke-test.mts",
+    "smoke:mcp": "tsx scripts/mcp-smoke.mts",
+    "smoke:cal": "tsx scripts/calendar-smoke.mts",
+    "smoke:shop": "tsx scripts/shopping-smoke.mts",
+    "db:generate": "npm run generate --workspace @manebra/db",
+    "db:migrate": "npm run migrate:dev --workspace @manebra/db",
+    "test": "npm run test --workspace @manebra/shared --workspace @manebra/settlement --workspace @manebra/agents --workspace @manebra/calendar --workspace @manebra/catalog",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "contracts:test": "cd packages/settlement/contracts && forge test",
+    "deploy:audit": "bash deploy-audit.sh"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.1"
+  }
+}
