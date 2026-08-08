@@ -11,7 +11,7 @@ services:
     runtime: node
     plan: starter
     region: oregon
-    buildCommand: npm install
+    buildCommand: npm install --include=dev
     startCommand: npm run linq-agent
     healthCheckPath: /health
     envVars:

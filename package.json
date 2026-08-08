@@ -27,7 +27,7 @@
     "contracts:test": "cd packages/settlement/contracts && forge test",
     "deploy:audit": "bash deploy-audit.sh"
   },
-  "devDependencies": {
+  "dependencies": {
     "tsx": "^4.23.1"
   }
 }
