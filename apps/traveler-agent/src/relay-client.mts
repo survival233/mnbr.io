@@ -1,15 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
- * Relay API for the traveler agent.
- * Uses RELAY_TRAVELER_AGENT_TOKEN if set, else RELAY_AGENT_TOKEN
- * (deploy as a separate Relay agent with its own token).
+ * Optional Relay chat pipe (same env names as shopper).
+ * Auth: Bearer RELAY_AGENT_TOKEN — leave unset until you have a Relay agent.
  */
 const BASE = process.env.RELAY_API_URL ?? "https://api.relayapp.im";
 
 function token(): string {
-  const t = process.env.RELAY_TRAVELER_AGENT_TOKEN?.trim() || process.env.RELAY_AGENT_TOKEN?.trim();
-  if (!t) throw new Error("RELAY_TRAVELER_AGENT_TOKEN (or RELAY_AGENT_TOKEN) is required");
+  const t = process.env.RELAY_AGENT_TOKEN?.trim();
+  if (!t) throw new Error("RELAY_AGENT_TOKEN is required");
   return t;
 }
 
@@ -46,15 +45,7 @@ async function api<T>(
 }
 
 export function relayConfigured(): boolean {
-  return Boolean(process.env.RELAY_TRAVELER_AGENT_TOKEN?.trim() || process.env.RELAY_AGENT_TOKEN?.trim());
-}
-
-export function webhookSecret(): string | undefined {
-  return (
-    process.env.RELAY_TRAVELER_WEBHOOK_SECRET?.trim() ||
-    process.env.RELAY_WEBHOOK_SECRET?.trim() ||
-    undefined
-  );
+  return Boolean(process.env.RELAY_AGENT_TOKEN?.trim());
 }
 
 export async function sendText(args: {

@@ -1,3 +1,4 @@
+import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import {
   getOrCreateSession,
@@ -19,36 +20,50 @@ function relayIdempotencyKey(s: Session, text: string, attempt = 0): string {
 }
 
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
+  if (s.channel === "relay") {
+    if (s.chatId) {
+      if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
+      void relay.startTyping(s.chatId);
+    }
+    const paced = opts?.thinkMs ?? Math.min(1800, Math.max(350, Math.round(text.length * 18)));
+    await sleep(paced);
+    if (!s.chatId) throw new Error("relay reply missing conversation id");
+    s.relayReplySeq = (s.relayReplySeq ?? 0) + 1;
+    const replyTo = s.relayReplySeq === 1 ? s.relayMessageId : null;
+    let lastErr: any;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await relay.sendText({
+          conversationId: s.chatId,
+          text,
+          idempotencyKey: relayIdempotencyKey(s, text, attempt),
+          replyToMessageId: replyTo,
+        });
+        lastErr = null;
+        break;
+      } catch (e: any) {
+        lastErr = e;
+        if (!/idempotency_conflict|409/.test(String(e?.message ?? e))) throw e;
+        console.warn(`[traveler-agent] relay idempotency conflict; retrying (attempt ${attempt + 1})`);
+      }
+    }
+    if (lastErr) throw lastErr;
+    void relay.stopTyping(s.chatId);
+    markSessionDirty();
+    console.log(`[traveler-agent] → relay ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
+    return;
+  }
+
   if (s.chatId) {
-    if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
-    void relay.startTyping(s.chatId);
+    void linq.markChatRead(s.chatId);
+    void linq.startTyping(s.chatId);
   }
   const paced = opts?.thinkMs ?? Math.min(1800, Math.max(350, Math.round(text.length * 18)));
   await sleep(paced);
-  if (!s.chatId) throw new Error("relay reply missing conversation id");
-  s.relayReplySeq = (s.relayReplySeq ?? 0) + 1;
-  const replyTo = s.relayReplySeq === 1 ? s.relayMessageId : null;
-  let lastErr: any;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await relay.sendText({
-        conversationId: s.chatId,
-        text,
-        idempotencyKey: relayIdempotencyKey(s, text, attempt),
-        replyToMessageId: replyTo,
-      });
-      lastErr = null;
-      break;
-    } catch (e: any) {
-      lastErr = e;
-      if (!/idempotency_conflict|409/.test(String(e?.message ?? e))) throw e;
-      console.warn(`[traveler-agent] relay idempotency conflict; retrying (attempt ${attempt + 1})`);
-    }
-  }
-  if (lastErr) throw lastErr;
-  void relay.stopTyping(s.chatId);
+  const out = await linq.sendText({ toPhone: s.phone, chatId: s.chatId, text });
+  s.chatId = out.chatId;
   markSessionDirty();
-  console.log(`[traveler-agent] → ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
+  console.log(`[traveler-agent] → linq ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
 }
 
 async function say(s: Session, ...bubbles: string[]) {
@@ -65,11 +80,13 @@ export async function handleInbound(args: {
   phone: string;
   chatId: string | null;
   text: string;
+  channel?: "linq" | "relay";
   relayEventId?: string;
   relayMessageId?: string;
 }): Promise<void> {
   const text = (args.text ?? "").trim();
   const s = getOrCreateSession(args.phone, args.chatId, {
+    channel: args.channel ?? "linq",
     relayEventId: args.relayEventId,
     relayMessageId: args.relayMessageId,
   });
@@ -78,23 +95,23 @@ export async function handleInbound(args: {
   const restart = /^(restart|start over|reset|menu)\b/i.test(text);
 
   if (restart || s.step === "idle" || s.step === "done" || greetingOnly) {
-    if (restart || greetingOnly || s.step === "idle" || s.step === "done") {
-      resetSession(s);
-      s.step = "await_travel_intent";
-      markSessionDirty();
-      await say(
-        s,
-        "Hey — I’m Manebra Travel.",
-        "Tell me where you’re flying (e.g. JFK → Accra Friday) and I’ll find options, book, then show carry jobs you can earn on.",
-      );
-      if (greetingOnly || restart) {
-        const rest = text.replace(/^(hi|hello|hey|start|restart|menu|start over|reset)\b[,!.\s]*/i, "").trim();
-        if (!rest) return;
-        await handleTravelInbound(s, rest, { reply, say });
-        return;
-      }
-      if (!text) return;
+    resetSession(s);
+    s.step = "await_travel_intent";
+    markSessionDirty();
+    await say(
+      s,
+      "Hey — I’m Manebra Travel.",
+      "Tell me where you’re flying (e.g. JFK → Accra Friday) and I’ll find options, book, then show carry jobs you can earn on.",
+    );
+    if (greetingOnly || restart) {
+      const rest = text
+        .replace(/^(hi|hello|hey|start|restart|menu|start over|reset)\b[,!.\s]*/i, "")
+        .trim();
+      if (!rest) return;
+      await handleTravelInbound(s, rest, { reply, say });
+      return;
     }
+    if (!text) return;
   }
 
   await handleTravelInbound(s, text, { reply, say });

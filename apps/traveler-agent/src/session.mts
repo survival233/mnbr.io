@@ -12,9 +12,12 @@ export type Step =
   | "await_job_pick"
   | "done";
 
+export type Channel = "linq" | "relay";
+
 export type Session = {
   phone: string;
   chatId: string | null;
+  channel: Channel;
   relayEventId?: string;
   relayReplySeq?: number;
   relayMessageId?: string;
@@ -52,7 +55,7 @@ export function sessionKey(id: string): string {
 export function getOrCreateSession(
   phone: string,
   chatId: string | null,
-  opts?: { relayEventId?: string; relayMessageId?: string },
+  opts?: { channel?: Channel; relayEventId?: string; relayMessageId?: string },
 ): Session {
   if (!loaded) initSessionStore();
   const key = sessionKey(phone);
@@ -61,17 +64,20 @@ export function getOrCreateSession(
     s = {
       phone,
       chatId,
+      channel: opts?.channel ?? "linq",
       step: "idle",
       updatedAt: Date.now(),
     };
     byPhone.set(key, s);
   }
   if (chatId) s.chatId = chatId;
+  if (opts?.channel) s.channel = opts.channel;
   if (opts?.relayEventId) {
     s.relayEventId = opts.relayEventId;
     s.relayReplySeq = 0;
   }
   if (opts?.relayMessageId) s.relayMessageId = opts.relayMessageId;
+  if (!(s as Session).channel) s.channel = "linq";
   s.updatedAt = Date.now();
   touchPersist();
   return s;

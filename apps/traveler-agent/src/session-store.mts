@@ -15,6 +15,7 @@ function revive(raw: any): Session | null {
   const s: Session = {
     phone,
     chatId: raw.chatId ?? null,
+    channel: raw.channel === "relay" ? "relay" : "linq",
     relayEventId: raw.relayEventId,
     relayReplySeq: typeof raw.relayReplySeq === "number" ? raw.relayReplySeq : 0,
     relayMessageId: raw.relayMessageId,

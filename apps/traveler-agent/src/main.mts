@@ -1,8 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 
-/** Own .env first; sibling envs only for shared secrets (never shopper Relay/PORT). */
+/** Own .env first; sibling envs for shared secrets (not shopper PORT/Relay). */
 const SHARED_FROM_SIBLINGS = new Set([
+  "LINQ_API_KEY",
+  "LINQ_API_V3_API_KEY",
+  "LINQ_FROM_PHONE",
+  "LINQ_API_BASE",
   "SERPAPI_API_KEY",
   "DATABASE_URL",
   "DIRECT_URL",
@@ -32,12 +36,12 @@ loadEnvFile("./../.env");
 loadEnvFile("./../../linq-agent/.env", SHARED_FROM_SIBLINGS);
 loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
 
-const {
-  extractRelayInbound,
-  relayConfigured,
-  verifyRelayWebhookSignature,
-  webhookSecret,
-} = await import("./relay-client.mts");
+const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
+  "./linq-client.mts"
+);
+const { extractRelayInbound, relayConfigured, verifyRelayWebhookSignature } = await import(
+  "./relay-client.mts"
+);
 const { handleInbound } = await import("./traveler-flow.mts");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
@@ -45,12 +49,12 @@ const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await
 
 initSessionStore();
 
-// Prefer TRAVELER_AGENT_PORT locally so sibling shopper PORT=8790 is not reused.
 const PORT = Number(process.env.TRAVELER_AGENT_PORT ?? process.env.PORT ?? "8791");
 const seen = new Set<string>();
 const startedAt = Date.now();
 let lastInboundAt: number | null = null;
 let inboundCount = 0;
+let lastChannel: string | null = null;
 
 const identityQueues = new Map<string, Promise<void>>();
 
@@ -110,8 +114,10 @@ const server = createServer(async (req, res) => {
       uptimeSec: Math.round((Date.now() - startedAt) / 1000),
       lastInboundAt: lastInboundAt ? new Date(lastInboundAt).toISOString() : null,
       lastActivityAt: stats.lastActivityAt ? new Date(stats.lastActivityAt).toISOString() : null,
+      lastChannel,
       sessions: stats.count,
       inboundCount,
+      linq: process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "configured" : "off",
       relay: relayConfigured() ? "configured" : "off",
       flights: process.env.SERPAPI_API_KEY
         ? "serpapi"
@@ -123,9 +129,48 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && url.startsWith("/webhooks/linq")) {
+    const raw = await readBody(req);
+    const secret = process.env.LINQ_WEBHOOK_SECRET;
+    if (secret) {
+      const headers: Record<string, string | string[] | undefined> = {};
+      for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
+      if (!verifyWebhookSignature(secret, raw, headers)) {
+        fail(res, 401, "invalid signature");
+        return;
+      }
+    }
+
+    ok(res, { received: true });
+
+    try {
+      const event = JSON.parse(raw);
+      const type = event.event_type ?? event.type;
+      if (type !== "message.received") return;
+      if (!rememberEvent(event.event_id ?? event.id)) return;
+
+      const data = event.data ?? event;
+      if (data.direction && data.direction !== "inbound") return;
+
+      const phone = extractSender(data);
+      const text = extractInboundText(data);
+      const chatId = extractChatId(data);
+      if (!phone || !text) return;
+
+      lastInboundAt = Date.now();
+      inboundCount += 1;
+      lastChannel = "linq";
+      console.log(`[traveler-agent] ← linq ${phone}: ${text.slice(0, 120)}`);
+      enqueueForIdentity(phone, () => handleInbound({ phone, chatId, text, channel: "linq" }));
+    } catch (e: any) {
+      console.error(`[traveler-agent] linq handler error: ${e.message}`);
+    }
+    return;
+  }
+
   if (req.method === "POST" && url.startsWith("/webhooks/relay")) {
     const raw = await readBody(req);
-    const secret = webhookSecret();
+    const secret = process.env.RELAY_WEBHOOK_SECRET?.trim();
     if (secret) {
       const headers: Record<string, string | string[] | undefined> = {};
       for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
@@ -133,8 +178,8 @@ const server = createServer(async (req, res) => {
         fail(res, 401, "invalid signature");
         return;
       }
-    } else if (process.env.NODE_ENV === "production") {
-      fail(res, 500, "RELAY_TRAVELER_WEBHOOK_SECRET (or RELAY_WEBHOOK_SECRET) not set");
+    } else if (process.env.NODE_ENV === "production" && relayConfigured()) {
+      fail(res, 500, "RELAY_WEBHOOK_SECRET not set");
       return;
     }
 
@@ -150,12 +195,14 @@ const server = createServer(async (req, res) => {
 
       lastInboundAt = Date.now();
       inboundCount += 1;
+      lastChannel = "relay";
       console.log(`[traveler-agent] ← relay ${inbound.userId}: ${inbound.text.slice(0, 120)}`);
       enqueueForIdentity(inbound.userId, () =>
         handleInbound({
           phone: inbound.userId,
           chatId: inbound.conversationId,
           text: inbound.text,
+          channel: "relay",
           relayEventId: inbound.eventId,
           relayMessageId: inbound.messageId,
         }),
@@ -180,8 +227,13 @@ function gracefulExit(code = 0) {
 
 server.listen(PORT, () => {
   console.log(`[traveler-agent] listening on :${PORT}`);
-  console.log(`[traveler-agent] webhook POST /webhooks/relay`);
-  console.log(`[traveler-agent] relay=${relayConfigured() ? "set" : "MISSING"}`);
+  console.log(`[traveler-agent] webhook POST /webhooks/linq?version=2026-02-03`);
+  console.log(`[traveler-agent] webhook POST /webhooks/relay (optional)`);
+  console.log(
+    `[traveler-agent] linq=${
+      process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"
+    } relay=${relayConfigured() ? "set" : "off"}`,
+  );
 });
 
 process.on("SIGINT", () => {

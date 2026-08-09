@@ -1,8 +1,8 @@
 # Manebra — Render blueprint
 #
-# Shopper (linq-agent): Linq + shopper Relay agent
-# Traveler (traveler-agent): separate Relay agent — register its own webhook
-#   → https://<traveler-service>.onrender.com/webhooks/relay
+# Shopper (linq-agent): Linq + optional Relay chat pipe
+# Traveler (traveler-agent): separate service — Linq first; optional Relay later
+#   → https://<traveler-service>.onrender.com/webhooks/linq?version=2026-02-03
 services:
   - type: web
     name: manebra-linq-agent
@@ -49,9 +49,11 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: RELAY_TRAVELER_AGENT_TOKEN
+      - key: LINQ_FROM_PHONE
         sync: false
-      - key: RELAY_TRAVELER_WEBHOOK_SECRET
+      - key: LINQ_API_KEY
+        sync: false
+      - key: LINQ_WEBHOOK_SECRET
         sync: false
       - key: SERPAPI_API_KEY
         sync: false
@@ -59,3 +61,8 @@ services:
         sync: false
       - key: FLIGHTS_ALLOW_DEMO
         value: "1"
+      # Optional later — Relay chat pipe
+      - key: RELAY_AGENT_TOKEN
+        sync: false
+      - key: RELAY_WEBHOOK_SECRET
+        sync: false
