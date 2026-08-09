@@ -1,10 +1,8 @@
-# Manebra — Render blueprint (Linq always-on agent)
+# Manebra — Render blueprint
 #
-# After first deploy, create the permanent webhook:
-#   linq webhooks create \
-#     --url "https://<service>.onrender.com/webhooks/linq?version=2026-02-03" \
-#     --events message.received --json
-# Then set LINQ_WEBHOOK_SECRET from the response.
+# Shopper (linq-agent): Linq + shopper Relay agent
+# Traveler (traveler-agent): separate Relay agent — register its own webhook
+#   → https://<traveler-service>.onrender.com/webhooks/relay
 services:
   - type: web
     name: manebra-linq-agent
@@ -23,6 +21,10 @@ services:
         sync: false
       - key: LINQ_WEBHOOK_SECRET
         sync: false
+      - key: RELAY_AGENT_TOKEN
+        sync: false
+      - key: RELAY_WEBHOOK_SECRET
+        sync: false
       - key: SERPAPI_API_KEY
         sync: false
       - key: HF_TOKEN
@@ -30,8 +32,30 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: LLM_PROVIDER
-        value: hf
+        value: openai
       - key: SETTLEMENT_ENABLED
         value: "0"
       - key: DATABASE_URL
         sync: false
+
+  - type: web
+    name: manebra-traveler-agent
+    runtime: node
+    plan: starter
+    region: oregon
+    buildCommand: npm install --include=dev && npm run db:generate
+    startCommand: npm run traveler-agent
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: RELAY_TRAVELER_AGENT_TOKEN
+        sync: false
+      - key: RELAY_TRAVELER_WEBHOOK_SECRET
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: FLIGHTS_ALLOW_DEMO
+        value: "1"

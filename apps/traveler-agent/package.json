@@ -1,0 +1,23 @@
+{
+  "name": "@manebra/traveler-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.mts",
+    "dev": "tsx watch src/main.mts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@manebra/shared": "*",
+    "@manebra/agents": "*",
+    "@manebra/flights": "*",
+    "@manebra/calendar": "*",
+    "@manebra/db": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.10.0"
+  }
+}

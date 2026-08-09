@@ -108,11 +108,6 @@ const server = createServer(async (req, res) => {
             ? "hf-fallback"
             : "off",
       llmProvider: process.env.LLM_PROVIDER ?? "auto",
-      flights: process.env.SERPAPI_API_KEY
-        ? "serpapi"
-        : process.env.FLIGHTS_ALLOW_DEMO !== "0"
-          ? "demo"
-          : "off",
     });
     return;
   }

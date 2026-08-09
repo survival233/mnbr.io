@@ -1,5 +1,5 @@
 /**
- * Travel mode for the Manebra messaging agent:
+ * Travel-only flow for the Manebra traveler Relay agent:
  * NL → flight search → pick → book → trip → proactive earn.
  */
 import {
@@ -22,18 +22,11 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export function enterTravelMode(s: Session) {
-  s.mode = "travel";
-  s.step = "await_travel_intent";
-  markSessionDirty();
-}
-
 export async function handleTravelInbound(
   s: Session,
   text: string,
   deps: { reply: ReplyFn; say: SayFn },
 ): Promise<boolean> {
-  const { reply, say } = deps;
   const t = text.trim();
 
   if (s.step === "await_earn_opt_in" || s.step === "await_job_pick") {
@@ -44,7 +37,11 @@ export async function handleTravelInbound(
     return handlePickOrBook(s, t, deps);
   }
 
-  // await_travel_intent or travel mode with free text
+  if (s.step === "trip_confirmed" || s.step === "done") {
+    s.step = "await_travel_intent";
+    markSessionDirty();
+  }
+
   return handleSearch(s, t, deps);
 }
 
@@ -65,7 +62,7 @@ async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; sa
   if (!s.travelDestination) {
     s.step = "await_travel_intent";
     markSessionDirty();
-    await reply(s, `Where do you need to fly? (e.g. New York, Accra, or JFK→ACC)`);
+    await reply(s, `Where do you need to fly? (e.g. New York → Accra, or JFK→ACC)`);
     return true;
   }
   if (!s.travelOrigin) {
@@ -111,7 +108,7 @@ async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; sa
       `${lines}\n\nReply with 1–${options.length}, or say something like “book the 8:30 PM”.`,
     );
   } catch (e: any) {
-    console.warn(`[travel] search failed: ${e?.message ?? e}`);
+    console.warn(`[traveler-agent] search failed: ${e?.message ?? e}`);
     await reply(s, `Flight search hiccupped — try again in a moment, or tweak the airports/date.`);
   }
   return true;
@@ -187,15 +184,14 @@ async function handlePickOrBook(
       );
     } else {
       s.step = "done";
-      s.mode = "shop";
       markSessionDirty();
       await reply(
         s,
-        `No open carry jobs on that route yet — I’ll ping you if one shows up. Say hi anytime to shop or search another flight.`,
+        `No open carry jobs on that route yet — I’ll ping you if one shows up. Say hi anytime to search another flight.`,
       );
     }
   } catch (e: any) {
-    console.warn(`[travel] book failed: ${e?.message ?? e}`);
+    console.warn(`[traveler-agent] book failed: ${e?.message ?? e}`);
     await reply(s, `Couldn’t complete booking — ${e?.message ?? "try again"}.`);
   }
   return true;
@@ -211,7 +207,6 @@ async function handleEarn(
   const no = /^(n|no|nope|nah|skip|not now)\b/i.test(text);
   if (no) {
     s.step = "done";
-    s.mode = "shop";
     markSessionDirty();
     await reply(s, `All good — trip stays on file. Ping me if you want jobs later.`);
     return true;
@@ -231,7 +226,6 @@ async function handleEarn(
 
   const res = await acceptEarnOffer({ identity: s.phone, proposalId: offer.proposalId });
   s.step = "done";
-  s.mode = "shop";
   markSessionDirty();
   await say(s, res.message);
   return true;
@@ -243,7 +237,6 @@ function pickIndex(text: string, options: FlightOption[]): number | null {
     const i = parseInt(bare[1]!, 10) - 1;
     if (i >= 0 && i < options.length) return i;
   }
-  // “book the 8:30” / “8:30 pm”
   const time = text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
   if (time) {
     let h = parseInt(time[1]!, 10);
@@ -255,7 +248,6 @@ function pickIndex(text: string, options: FlightOption[]): number | null {
       const d = options[i]!.departAt;
       if (d.getHours() === h && d.getMinutes() === m) return i;
     }
-    // nearest hour match
     for (let i = 0; i < options.length; i++) {
       if (options[i]!.departAt.getHours() === h) return i;
     }
@@ -263,7 +255,6 @@ function pickIndex(text: string, options: FlightOption[]): number | null {
   if (/\b(first|1st)\b/i.test(text)) return 0;
   if (/\b(second|2nd)\b/i.test(text) && options.length > 1) return 1;
   if (/\b(third|3rd)\b/i.test(text) && options.length > 2) return 2;
-  // “book the delta” / airline name
   for (let i = 0; i < options.length; i++) {
     const a = options[i]!.airline.toLowerCase();
     if (text.toLowerCase().includes(a)) return i;

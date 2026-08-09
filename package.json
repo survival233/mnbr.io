@@ -13,6 +13,7 @@
     "demo": "tsx apps/agent-cli/src/main.mts",
     "demo:linq": "DEMO_TRANSPORT=linq tsx apps/agent-cli/src/main.mts",
     "linq-agent": "tsx apps/linq-agent/src/main.mts",
+    "traveler-agent": "tsx apps/traveler-agent/src/main.mts",
     "seed:linq-travelers": "tsx scripts/seed-linq-travelers.mts",
     "agent": "tsx apps/agent-cli/src/main.mts",
     "mcp": "tsx apps/mcp/src/server.mts",

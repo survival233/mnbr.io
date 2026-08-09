@@ -5,6 +5,22 @@ import type { Session, Step } from "./session.mts";
 
 const DEFAULT_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".sessions.json");
 
+const SHOP_STEPS = new Set<string>([
+  "idle",
+  "await_product",
+  "await_product_confirm",
+  "await_shopping_city",
+  "await_listing",
+  "await_delivery_city",
+  "await_deadline",
+  "await_max_fee",
+  "await_extend",
+  "await_traveler",
+  "await_pay_confirm",
+  "await_handover_done",
+  "done",
+]);
+
 function storePath(): string {
   return process.env.LINQ_SESSIONS_PATH?.trim() || DEFAULT_PATH;
 }
@@ -17,6 +33,16 @@ type Persisted = {
 type SerializedSession = Omit<Session, "deadline" | "updatedAt"> & {
   deadline?: string;
   updatedAt: number;
+  /** Legacy dual-mode fields (ignored). */
+  mode?: string;
+  travelOrigin?: unknown;
+  travelDestination?: unknown;
+  travelDepartDate?: unknown;
+  travelArriveBy?: unknown;
+  flightOptions?: unknown;
+  selectedFlight?: unknown;
+  flightBookingRef?: unknown;
+  earnOffers?: unknown;
 };
 
 function serialize(s: Session): SerializedSession {
@@ -28,26 +54,23 @@ function serialize(s: Session): SerializedSession {
 }
 
 function deserialize(raw: SerializedSession): Session {
-  const flightOptions = raw.flightOptions?.map((o) => ({
-    ...o,
-    departAt: new Date(o.departAt as unknown as string),
-    arriveAt: new Date(o.arriveAt as unknown as string),
-  }));
-  const selectedFlight = raw.selectedFlight
-    ? {
-        ...raw.selectedFlight,
-        departAt: new Date(raw.selectedFlight.departAt as unknown as string),
-        arriveAt: new Date(raw.selectedFlight.arriveAt as unknown as string),
-      }
-    : undefined;
+  const step = SHOP_STEPS.has(String(raw.step)) ? (raw.step as Step) : "idle";
+  const {
+    mode: _mode,
+    travelOrigin: _o,
+    travelDestination: _d,
+    travelDepartDate: _dd,
+    travelArriveBy: _ta,
+    flightOptions: _fo,
+    selectedFlight: _sf,
+    flightBookingRef: _fb,
+    earnOffers: _eo,
+    ...rest
+  } = raw;
   return {
-    ...raw,
-    mode: raw.mode ?? "shop",
+    ...rest,
     deadline: raw.deadline ? new Date(raw.deadline) : undefined,
-    travelArriveBy: raw.travelArriveBy ? new Date(raw.travelArriveBy as unknown as string) : undefined,
-    flightOptions,
-    selectedFlight,
-    step: raw.step as Step,
+    step,
   };
 }
 

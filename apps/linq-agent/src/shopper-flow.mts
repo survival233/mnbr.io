@@ -24,9 +24,6 @@ import {
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
 import { parseUsShoppingCity, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
-import { isTravelIntent } from "@manebra/flights";
-import { enterTravelMode, handleTravelInbound } from "./travel-flow.mts";
-
 type TravelerSeed = {
   id: string;
   name: string;
@@ -567,29 +564,6 @@ async function handleInboundInner(
     !hasImages &&
     /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
 
-  // Travel mode continuation (flight pick / book / earn)
-  if (
-    s.mode === "travel" ||
-    [
-      "await_travel_intent",
-      "await_flight_pick",
-      "await_book_confirm",
-      "trip_confirmed",
-      "await_earn_opt_in",
-      "await_job_pick",
-    ].includes(s.step)
-  ) {
-    await handleTravelInbound(s, text, { reply, say });
-    return;
-  }
-
-  // Switch into travel from shop when NL looks like a flight request
-  if (text && isTravelIntent(text) && !hasImages) {
-    enterTravelMode(s);
-    await handleTravelInbound(s, text, { reply, say });
-    return;
-  }
-
   if (intent.kind === "restart" || s.step === "idle" || s.step === "done") {
     resetSession(s);
     s.step = "await_product";
@@ -598,7 +572,7 @@ async function handleInboundInner(
       await replyPair(
         s,
         "Hey — I’m Manebra.",
-        "I can shop US→Ghana hand-delivery, or find you a flight.\n\nWhat do you need — a product (text/photo) or a flight?",
+        "Send a product (text or photo) and I’ll find US stock and a traveler to Accra.",
       );
       return;
     }
@@ -606,7 +580,7 @@ async function handleInboundInner(
       await replyPair(
         s,
         "Hey — I’m Manebra.",
-        "I can shop US→Ghana hand-delivery, or find you a flight.\n\nWhat do you need — a product (text/photo) or a flight?",
+        "Send a product (text or photo) and I’ll find US stock and a traveler to Accra.",
       );
       const rest = text.replace(/^(hi|hello|hey|start|restart|menu)\b[,!.\s]*/i, "").trim();
       if (!rest) return;
