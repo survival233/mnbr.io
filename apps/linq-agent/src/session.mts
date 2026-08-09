@@ -23,9 +23,17 @@ export type RankedTraveler = {
   departs: string;
 };
 
+export type Channel = "linq" | "relay";
+
 export type Session = {
   phone: string;
   chatId: string | null;
+  channel: Channel;
+  /** Last Relay event id — used to build Idempotency-Key for multi-bubble replies. */
+  relayEventId?: string;
+  relayReplySeq?: number;
+  /** Inbound Relay message id (for reply_to / read). */
+  relayMessageId?: string;
   step: Step;
   searchQuery?: string;
   shoppingCity: string;
@@ -64,14 +72,27 @@ export function digits(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
-export function getOrCreateSession(phone: string, chatId: string | null): Session {
+/** Stable map key: E.164 digits for Linq phones; raw usr_/relay ids for Relay. */
+export function sessionKey(id: string): string {
+  const t = id.trim();
+  if (t.startsWith("usr_") || t.startsWith("relay:") || t.startsWith("cnv_")) return t;
+  const d = digits(t);
+  return d || t;
+}
+
+export function getOrCreateSession(
+  phone: string,
+  chatId: string | null,
+  opts?: { channel?: Channel; relayEventId?: string; relayMessageId?: string },
+): Session {
   if (!loaded) initSessionStore();
-  const key = digits(phone);
+  const key = sessionKey(phone);
   let s = byPhone.get(key);
   if (!s) {
     s = {
       phone,
       chatId,
+      channel: opts?.channel ?? "linq",
       step: "idle",
       shoppingCity: "New York",
       updatedAt: Date.now(),
@@ -79,6 +100,14 @@ export function getOrCreateSession(phone: string, chatId: string | null): Sessio
     byPhone.set(key, s);
   }
   if (chatId) s.chatId = chatId;
+  if (opts?.channel) s.channel = opts.channel;
+  if (opts?.relayEventId) {
+    s.relayEventId = opts.relayEventId;
+    s.relayReplySeq = 0;
+  }
+  if (opts?.relayMessageId) s.relayMessageId = opts.relayMessageId;
+  // Backfill for sessions restored from disk before channel existed
+  if (!(s as Session).channel) s.channel = "linq";
   s.updatedAt = Date.now();
   touchPersist();
   return s;

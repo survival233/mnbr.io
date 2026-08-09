@@ -13,7 +13,8 @@ import {
   markSessionDirty,
 } from "./session.mts";
 import { classifyIntent, normalizeSearchQuery } from "./intent.mts";
-import { sendText, startTyping, markChatRead } from "./linq-client.mts";
+import * as linq from "./linq-client.mts";
+import * as relay from "./relay-client.mts";
 import { LINQ_TRAVELERS } from "./traveler-seeds.mts";
 import {
   settlementEnabled,
@@ -109,15 +110,52 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
+function presenceTyping(s: Session) {
+  if (!s.chatId) return;
+  if (s.channel === "relay") void relay.startTyping(s.chatId);
+  else void linq.startTyping(s.chatId);
+}
+
+function presenceRead(s: Session) {
+  if (!s.chatId) return;
+  if (s.channel === "relay") {
+    if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
+  } else {
+    void linq.markChatRead(s.chatId);
+  }
+}
+
 /** Typing bubble + paced send so it feels like a person, not a USSD menu. */
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
+  if (s.channel === "relay") {
+    if (s.chatId) {
+      if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
+      void relay.startTyping(s.chatId);
+    }
+    const paced = opts?.thinkMs ?? Math.min(1800, Math.max(350, Math.round(text.length * 18)));
+    await sleep(paced);
+    if (!s.chatId) throw new Error("relay reply missing conversation id");
+    s.relayReplySeq = (s.relayReplySeq ?? 0) + 1;
+    const idem = `reply-${s.relayEventId ?? "na"}-${s.relayReplySeq}`;
+    await relay.sendText({
+      conversationId: s.chatId,
+      text,
+      idempotencyKey: idem,
+      replyToMessageId: s.relayReplySeq === 1 ? s.relayMessageId : null,
+    });
+    void relay.stopTyping(s.chatId);
+    markSessionDirty();
+    console.log(`[linq-agent] → relay ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
+    return;
+  }
+
   if (s.chatId) {
-    void markChatRead(s.chatId);
-    void startTyping(s.chatId);
+    void linq.markChatRead(s.chatId);
+    void linq.startTyping(s.chatId);
   }
   const paced = opts?.thinkMs ?? Math.min(1800, Math.max(350, Math.round(text.length * 18)));
   await sleep(paced);
-  const out = await sendText({ toPhone: s.phone, chatId: s.chatId, text });
+  const out = await linq.sendText({ toPhone: s.phone, chatId: s.chatId, text });
   s.chatId = out.chatId;
   markSessionDirty();
   console.log(`[linq-agent] → ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
@@ -254,7 +292,7 @@ async function continueAfterListing(s: Session): Promise<void> {
     await reply(s, `What’s the most you’d pay the traveler in USD? Just a number is fine.`);
     return;
   }
-  if (s.chatId) void startTyping(s.chatId);
+  if (s.chatId) presenceTyping(s);
   await reply(s, await runMatching(s), { thinkMs: 1400 });
 }
 
@@ -303,7 +341,7 @@ async function runSearchFlow(s: Session, progress?: string): Promise<void> {
   else {
     await reply(s, `One sec — checking verified stores near ${s.shoppingCity}…`, { thinkMs: 700 });
   }
-  if (s.chatId) void startTyping(s.chatId);
+  if (s.chatId) presenceTyping(s);
   await reply(s, await searchAndPromptListings(s), { thinkMs: 1200 });
 }
 
@@ -329,20 +367,27 @@ async function selectListing(s: Session, idx: number): Promise<void> {
   await continueAfterListing(s);
 }
 
-/** Handle one inbound user message; replies are sent via Linq. */
+/** Handle one inbound user message; replies go via Linq or Relay. */
 export async function handleInbound(args: {
   phone: string;
   chatId: string | null;
   text: string;
+  channel?: "linq" | "relay";
+  relayEventId?: string;
+  relayMessageId?: string;
 }): Promise<void> {
   const text = args.text.trim();
   if (!text) return;
 
-  const s = getOrCreateSession(args.phone, args.chatId);
+  const s = getOrCreateSession(args.phone, args.chatId, {
+    channel: args.channel ?? "linq",
+    relayEventId: args.relayEventId,
+    relayMessageId: args.relayMessageId,
+  });
 
   if (s.chatId) {
-    void markChatRead(s.chatId);
-    void startTyping(s.chatId);
+    presenceRead(s);
+    presenceTyping(s);
   }
 
   try {
@@ -363,7 +408,14 @@ export async function handleInbound(args: {
 
 async function handleInboundInner(
   s: Session,
-  args: { phone: string; chatId: string | null; text: string },
+  args: {
+    phone: string;
+    chatId: string | null;
+    text: string;
+    channel?: "linq" | "relay";
+    relayEventId?: string;
+    relayMessageId?: string;
+  },
   text: string,
 ): Promise<void> {
   const intent = classifyIntent(text, {
@@ -488,7 +540,7 @@ async function handleInboundInner(
       }
       s.maxFeeCents = cents;
       markSessionDirty();
-      if (s.chatId) void startTyping(s.chatId);
+      if (s.chatId) presenceTyping(s);
       await reply(s, await runMatching(s), { thinkMs: 1400 });
       return;
     }
@@ -513,7 +565,7 @@ async function handleInboundInner(
       await reply(s, `Cool — deadline moved to ${s.deadline!.toDateString()}. Matching now…`, {
         thinkMs: 900,
       });
-      if (s.chatId) void startTyping(s.chatId);
+      if (s.chatId) presenceTyping(s);
       await reply(s, await runMatching(s), { thinkMs: 1200 });
       return;
     }
@@ -571,7 +623,7 @@ async function handleInboundInner(
       }
       await reply(s, `Opening escrow… one moment.`, { thinkMs: 600 });
       try {
-        if (s.chatId) void startTyping(s.chatId);
+        if (s.chatId) presenceTyping(s);
         const out = await withTimeout(
           fundEscrowOrder({
             phone: s.phone,
@@ -616,7 +668,7 @@ async function handleInboundInner(
         return;
       }
       try {
-        if (s.chatId) void startTyping(s.chatId);
+        if (s.chatId) presenceTyping(s);
         await reply(s, `Releasing escrow…`, { thinkMs: 500 });
         const out = await withTimeout(
           completeHandoverAndRelease({
