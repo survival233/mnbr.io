@@ -4,9 +4,11 @@ import {
   getOrCreateSession,
   resetSession,
   markSessionDirty,
+  hasTripProgress,
   type Session,
 } from "./session.mts";
 import { handleTravelInbound } from "./travel-flow.mts";
+import { blankTrip } from "./trip-state.mts";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -93,16 +95,21 @@ export async function handleInbound(args: {
 
   const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
   const restart = /^(restart|start over|reset|menu)\b/i.test(text);
-  const midTrip = Boolean(s.travelOrigin || s.travelDestination || s.travelDepartDate);
+  const midTrip = hasTripProgress(s);
 
-  // Only greet/reset on explicit restart, greeting, or a brand-new idle session.
-  // Never wipe mid-trip slot state on a follow-up like "New York".
-  if (restart || greetingOnly || (s.step === "idle" && !midTrip) || s.step === "done") {
-    if (restart || greetingOnly || s.step === "done" || s.step === "idle") {
+  // Never wipe persistent trip slots on a follow-up. Only reset on greeting/restart/done.
+  if (restart || greetingOnly || s.step === "done" || (s.step === "idle" && !midTrip)) {
+    if (restart || greetingOnly || s.step === "done") {
       resetSession(s);
+      s.trip = blankTrip();
+      s.step = "await_travel_intent";
+      markSessionDirty();
+    } else if (s.step === "idle" && !midTrip) {
+      s.trip = s.trip ?? blankTrip();
       s.step = "await_travel_intent";
       markSessionDirty();
     }
+
     if (greetingOnly || restart || !text) {
       await say(
         s,
@@ -118,7 +125,6 @@ export async function handleInbound(args: {
       }
       return;
     }
-    // Fresh idle with a real trip request — short intro, then fill slots (keep state).
     await reply(s, "Hey — I’m Manebra Travel. On it…", { thinkMs: 300 });
   }
 

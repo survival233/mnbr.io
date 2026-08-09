@@ -1,21 +1,26 @@
 /**
- * Travel-only flow for the Manebra traveler Relay agent:
- * NL → flight search → pick → book → trip → proactive earn.
+ * Travel-only flow for the Manebra traveler agent:
+ * extract → merge trip state → missing_fields → ask or search → pick → book → earn.
  */
 import {
   searchFlights,
   bookFlight,
   formatFlightOption,
-  parseTravelIntent,
-  parseDepartDate,
-  toAirportCode,
-  resolvePlace,
-  isoDate,
   type FlightOption,
 } from "@manebra/flights";
 import type { Session } from "./session.mts";
-import { markSessionDirty } from "./session.mts";
+import { markSessionDirty, persistSessionsNow } from "./session.mts";
 import { persistBookedTrip, acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
+import {
+  ensureTrip,
+  mergeTripState,
+  missingFields,
+  nextQuestion,
+  isTripComplete,
+  tripSnapshot,
+  mirrorTripToLegacy,
+  blankTrip,
+} from "./trip-state.mts";
 
 type ReplyFn = (s: Session, text: string, opts?: { thinkMs?: number }) => Promise<void>;
 type SayFn = (s: Session, ...bubbles: string[]) => Promise<void>;
@@ -24,66 +29,11 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function asAirport(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  return toAirportCode(raw) ?? (/^[A-Za-z]{3}$/.test(raw.trim()) ? raw.trim().toUpperCase() : undefined);
-}
-
-/** Merge NL parse into session; fill missing slots from short replies. */
-function mergeTravelSlots(s: Session, text: string): void {
-  const before = {
-    origin: s.travelOrigin,
-    destination: s.travelDestination,
-    departDate: s.travelDepartDate,
-  };
-  const parsed = parseTravelIntent(text);
-
-  if (parsed.origin) s.travelOrigin = asAirport(parsed.origin) ?? s.travelOrigin;
-  if (parsed.destination) {
-    s.travelDestination = asAirport(parsed.destination) ?? s.travelDestination;
-  }
-  if (parsed.departDate) {
-    s.travelDepartDate =
-      typeof parsed.departDate === "string" ? parsed.departDate : isoDate(parsed.departDate);
-  }
-  if (parsed.arriveBy) s.travelArriveBy = parsed.arriveBy;
-
-  // Progressive slot fill: short replies update only what's still missing.
-  const place = resolvePlace(text);
-  if (!s.travelOrigin && place && place !== s.travelDestination) {
-    s.travelOrigin = place;
-  } else if (!s.travelDestination && place && place !== s.travelOrigin) {
-    s.travelDestination = place;
-  } else if (
-    s.travelDestination &&
-    !s.travelOrigin &&
-    place &&
-    place !== s.travelDestination
-  ) {
-    s.travelOrigin = place;
-  }
-
-  if (!s.travelDepartDate) {
-    const d = parseDepartDate(text);
-    if (d) s.travelDepartDate = d;
-  }
-
-  // Don't let a bare follow-up overwrite a locked destination with the same place token noise.
-  if (
-    before.destination &&
-    parsed.destination &&
-    !parsed.origin &&
-    before.origin == null &&
-    asAirport(String(parsed.destination)) === before.destination
-  ) {
-    /* keep */
-  }
-
+function persistTrip(s: Session) {
+  mirrorTripToLegacy(s);
   markSessionDirty();
-  console.log(
-    `[traveler-agent] slots ${before.origin ?? "?"}→${before.destination ?? "?"} ${before.departDate ?? "?"} ` +
-      `+ "${text.slice(0, 60)}" → ${s.travelOrigin ?? "?"}→${s.travelDestination ?? "?"} ${s.travelDepartDate ?? "?"}`,
-  );
+  // Flush immediately so Render restarts don’t drop mid-turn slot fills.
+  persistSessionsNow();
 }
 
 export async function handleTravelInbound(
@@ -102,49 +52,55 @@ export async function handleTravelInbound(
   }
 
   if (s.step === "trip_confirmed" || s.step === "done") {
+    // New trip request after completion — keep history cleared via caller reset, or soft-reset trip.
+    if (!s.trip || isTripComplete(s.trip)) {
+      s.trip = blankTrip();
+    }
     s.step = "await_travel_intent";
-    markSessionDirty();
+    persistTrip(s);
   }
 
-  return handleSearch(s, t, deps);
+  return handleCollectAndSearch(s, t, deps);
 }
 
-async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
+async function handleCollectAndSearch(
+  s: Session,
+  text: string,
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<boolean> {
   const { reply, say } = deps;
-  mergeTravelSlots(s, text);
+  const trip = ensureTrip(s);
+  const before = tripSnapshot(trip);
 
-  if (!s.travelDestination) {
-    s.step = "await_travel_intent";
-    markSessionDirty();
-    await reply(s, `Where do you need to fly? (e.g. New York → Accra, or JFK→ACC)`);
-    return true;
-  }
-  if (!s.travelOrigin) {
-    s.step = "await_travel_intent";
-    markSessionDirty();
-    await reply(
-      s,
-      `Got ${s.travelDestination} — where are you flying from? (city or airport code)`,
-    );
-    return true;
-  }
-  if (!s.travelDepartDate) {
-    s.step = "await_travel_intent";
-    markSessionDirty();
-    await reply(s, `What day do you want to depart? (e.g. Friday, or 15th August)`);
+  mergeTripState(trip, text);
+  mirrorTripToLegacy(s);
+  s.step = "await_travel_intent";
+  persistTrip(s);
+
+  const after = tripSnapshot(trip);
+  const missing = missingFields(trip);
+  console.log(
+    `[traveler-agent] trip ${JSON.stringify(before)} + ${JSON.stringify(text.slice(0, 80))} → ${JSON.stringify(after)} missing=${JSON.stringify(missing)}`,
+  );
+
+  const ask = nextQuestion(trip);
+  if (ask) {
+    // Only ask for the first missing field — never re-ask confirmed ones.
+    await reply(s, ask.text);
     return true;
   }
 
-  await reply(s, `Searching ${s.travelOrigin} → ${s.travelDestination} on ${s.travelDepartDate}…`, {
+  // All required slots present → search.
+  await reply(s, `Searching ${trip.origin} → ${trip.destination} on ${trip.departure_date}…`, {
     thinkMs: 500,
   });
 
   try {
     const options = await searchFlights({
-      origin: s.travelOrigin,
-      destination: s.travelDestination,
-      departDate: s.travelDepartDate,
-      arriveBy: s.travelArriveBy,
+      origin: trip.origin!,
+      destination: trip.destination!,
+      departDate: trip.departure_date!,
+      arriveBy: trip.arrive_by ? new Date(trip.arrive_by) : undefined,
       limit: 3,
     });
     if (!options.length) {
@@ -153,7 +109,7 @@ async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; sa
     }
     s.flightOptions = options;
     s.step = "await_flight_pick";
-    markSessionDirty();
+    persistTrip(s);
     const lines = options.map((o, i) => formatFlightOption(o, i)).join("\n\n");
     await say(
       s,
@@ -176,7 +132,7 @@ async function handlePickOrBook(
   const options = s.flightOptions ?? [];
   if (!options.length) {
     s.step = "await_travel_intent";
-    markSessionDirty();
+    persistTrip(s);
     await reply(s, `Let’s start over — where and when do you want to fly?`);
     return true;
   }
@@ -193,7 +149,7 @@ async function handlePickOrBook(
   const offer = options[idx]!;
   s.selectedFlight = offer;
   s.step = "await_book_confirm";
-  markSessionDirty();
+  persistTrip(s);
 
   await reply(s, `Booking ${offer.airline} ${offer.flightNumber ?? ""}…`, { thinkMs: 600 });
 
@@ -220,14 +176,14 @@ async function handlePickOrBook(
 
     s.flightBookingRef = booking.bookingRef;
     s.step = "trip_confirmed";
-    markSessionDirty();
+    persistTrip(s);
     await say(s, booking.message, `I’ll watch for the confirmation and keep this trip on file.`);
 
     const { earnOffers } = await persistBookedTrip({ identity: s.phone, booking });
     s.earnOffers = earnOffers;
     if (earnOffers.length) {
       s.step = "await_earn_opt_in";
-      markSessionDirty();
+      persistTrip(s);
       await sleep(400);
       const top = earnOffers[0]!;
       await say(
@@ -237,7 +193,7 @@ async function handlePickOrBook(
       );
     } else {
       s.step = "done";
-      markSessionDirty();
+      persistTrip(s);
       await reply(
         s,
         `No open carry jobs on that route yet — I’ll ping you if one shows up. Say hi anytime to search another flight.`,
@@ -260,7 +216,7 @@ async function handleEarn(
   const no = /^(n|no|nope|nah|skip|not now)\b/i.test(text);
   if (no) {
     s.step = "done";
-    markSessionDirty();
+    persistTrip(s);
     await reply(s, `All good — trip stays on file. Ping me if you want jobs later.`);
     return true;
   }
@@ -279,7 +235,7 @@ async function handleEarn(
 
   const res = await acceptEarnOffer({ identity: s.phone, proposalId: offer.proposalId });
   s.step = "done";
-  markSessionDirty();
+  persistTrip(s);
   await say(s, res.message);
   return true;
 }

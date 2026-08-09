@@ -1,6 +1,7 @@
 import type { FlightOption } from "@manebra/flights";
 import type { EarnOffer } from "./traveler-bridge.mts";
 import { loadSessionsInto, schedulePersist, persistNow } from "./session-store.mts";
+import { blankTrip, ensureTrip, type TripState } from "./trip-state.mts";
 
 export type Step =
   | "idle"
@@ -22,6 +23,9 @@ export type Session = {
   relayReplySeq?: number;
   relayMessageId?: string;
   step: Step;
+  /** Canonical persistent trip slots (origin / destination / departure_date). */
+  trip?: TripState;
+  /** Legacy mirrors — kept in sync with trip. */
   travelOrigin?: string;
   travelDestination?: string;
   travelDepartDate?: string;
@@ -34,12 +38,18 @@ export type Session = {
 };
 
 const byPhone = new Map<string, Session>();
+/** Secondary index: Relay conversation / Linq chat id → same session. */
+const byChat = new Map<string, Session>();
 let loaded = false;
 
 export function initSessionStore(): void {
   if (loaded) return;
   loaded = true;
   loadSessionsInto(byPhone);
+  for (const s of byPhone.values()) {
+    ensureTrip(s);
+    if (s.chatId) byChat.set(s.chatId, s);
+  }
 }
 
 function touchPersist() {
@@ -48,7 +58,8 @@ function touchPersist() {
 
 export function sessionKey(id: string): string {
   const t = id.trim();
-  if (t.startsWith("usr_") || t.startsWith("relay:") || t.startsWith("cnv_")) return t;
+  if (t.startsWith("usr_") || t.startsWith("relay:") || t.startsWith("cnv_") || t.startsWith("chat_"))
+    return t;
   return t.replace(/\D/g, "") || t;
 }
 
@@ -59,18 +70,30 @@ export function getOrCreateSession(
 ): Session {
   if (!loaded) initSessionStore();
   const key = sessionKey(phone);
-  let s = byPhone.get(key);
+
+  // Prefer conversation continuity: same Relay chat keeps the same trip state.
+  let s = (chatId ? byChat.get(chatId) : undefined) ?? byPhone.get(key);
+
   if (!s) {
     s = {
       phone,
       chatId,
       channel: opts?.channel ?? "linq",
       step: "idle",
+      trip: blankTrip(),
       updatedAt: Date.now(),
     };
     byPhone.set(key, s);
+  } else {
+    // Keep both indexes pointing at the same object.
+    byPhone.set(key, s);
+    if (s.phone !== phone) s.phone = phone;
   }
-  if (chatId) s.chatId = chatId;
+
+  if (chatId) {
+    s.chatId = chatId;
+    byChat.set(chatId, s);
+  }
   if (opts?.channel) s.channel = opts.channel;
   if (opts?.relayEventId) {
     s.relayEventId = opts.relayEventId;
@@ -78,6 +101,7 @@ export function getOrCreateSession(
   }
   if (opts?.relayMessageId) s.relayMessageId = opts.relayMessageId;
   if (!(s as Session).channel) s.channel = "linq";
+  ensureTrip(s);
   s.updatedAt = Date.now();
   touchPersist();
   return s;
@@ -85,6 +109,7 @@ export function getOrCreateSession(
 
 export function resetSession(s: Session) {
   s.step = "idle";
+  s.trip = blankTrip();
   s.travelOrigin = undefined;
   s.travelDestination = undefined;
   s.travelDepartDate = undefined;
@@ -111,4 +136,9 @@ export function sessionStats(): { count: number; lastActivityAt: number | null }
     if (last == null || s.updatedAt > last) last = s.updatedAt;
   }
   return { count: byPhone.size, lastActivityAt: last };
+}
+
+export function hasTripProgress(s: Session): boolean {
+  const t = ensureTrip(s);
+  return Boolean(t.origin || t.destination || t.departure_date);
 }
