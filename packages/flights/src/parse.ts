@@ -1,34 +1,62 @@
 import { normalizeCity } from "@manebra/calendar";
 import type { FlightSearchQuery } from "./types.js";
 
+const CITY_AIRPORTS: Record<string, string> = {
+  "New York": "JFK",
+  Newark: "EWR",
+  Washington: "IAD",
+  Atlanta: "ATL",
+  Chicago: "ORD",
+  Houston: "IAH",
+  "Los Angeles": "LAX",
+  Dallas: "DFW",
+  Boston: "BOS",
+  Accra: "ACC",
+  Kumasi: "KMS",
+  Tamale: "TML",
+  London: "LHR",
+};
+
+const ALIASES: Record<string, string> = {
+  nyc: "JFK",
+  "new york city": "JFK",
+  manhattan: "JFK",
+  ghana: "ACC",
+  accra: "ACC",
+  jfk: "JFK",
+  lga: "LGA",
+  ewr: "EWR",
+  acc: "ACC",
+};
+
 export function toAirportCode(raw: string): string | null {
   const t = raw.trim().toLowerCase();
+  if (!t) return null;
   if (/^[a-z]{3}$/i.test(t)) return t.toUpperCase();
+  if (ALIASES[t]) return ALIASES[t]!;
   const city = normalizeCity(raw);
-  const map: Record<string, string> = {
-    "New York": "JFK",
-    Newark: "EWR",
-    Washington: "IAD",
-    Atlanta: "ATL",
-    Chicago: "ORD",
-    Houston: "IAH",
-    "Los Angeles": "LAX",
-    Dallas: "DFW",
-    Boston: "BOS",
-    Accra: "ACC",
-    Kumasi: "KMS",
-    Tamale: "TML",
-    London: "LHR",
-  };
-  if (city && map[city]) return map[city]!;
-  const aliases: Record<string, string> = {
-    nyc: "JFK",
-    "new york city": "JFK",
-    manhattan: "JFK",
-    ghana: "ACC",
-    accra: "ACC",
-  };
-  return aliases[t] ?? null;
+  if (city && CITY_AIRPORTS[city]) return CITY_AIRPORTS[city]!;
+  // "New York JFK" / "JFK New York"
+  const KNOWN = new Set([
+    "JFK", "LGA", "EWR", "ACC", "ATL", "ORD", "IAH", "LAX", "DFW", "BOS", "IAD", "DCA", "KMS", "TML", "LHR",
+  ]);
+  const codeTok = t.match(/\b([a-z]{3})\b/i);
+  if (codeTok) {
+    const c = codeTok[1]!.toUpperCase();
+    if (KNOWN.has(c)) return c;
+  }
+  const withoutCode = t.replace(/\b[a-z]{3}\b/g, " ").replace(/\s+/g, " ").trim();
+  if (withoutCode) {
+    const city2 = normalizeCity(withoutCode);
+    if (city2 && CITY_AIRPORTS[city2]) return CITY_AIRPORTS[city2]!;
+    if (ALIASES[withoutCode]) return ALIASES[withoutCode]!;
+  }
+  return null;
+}
+
+/** Resolve a free-text place reply into an airport code (for slot fills). */
+export function resolvePlace(raw: string): string | null {
+  return toAirportCode(raw);
 }
 
 export function formatFlightOption(
@@ -65,22 +93,104 @@ function fmtTime(d: Date): string {
   });
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11,
+};
+
+/** Parse "15th August", "August 15", "aug 15 2026", ISO, slash dates. */
+export function parseDepartDate(text: string): string | null {
+  const t = text.trim();
+  const iso = t.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+  if (iso) return iso[1]!;
+
+  const slash = t.match(/\b(\d{1,2})[\/.](\d{1,2})(?:[\/.](\d{2,4}))?\b/);
+  if (slash) {
+    const now = new Date();
+    const mon = Number(slash[1]) - 1;
+    const day = Number(slash[2]);
+    let year = slash[3] ? Number(slash[3]) : now.getFullYear();
+    if (year < 100) year += 2000;
+    let d = new Date(year, mon, day);
+    if (d < now) d = new Date(year + 1, mon, day);
+    return isoDate(d);
+  }
+
+  const dayMonth =
+    t.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?\b/i) ||
+    t.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?\b/i);
+  if (dayMonth) {
+    const now = new Date();
+    let day: number;
+    let monName: string;
+    let yearStr: string | undefined;
+    if (/^\d/.test(dayMonth[1]!)) {
+      day = Number(dayMonth[1]);
+      monName = dayMonth[2]!.toLowerCase();
+      yearStr = dayMonth[3];
+    } else {
+      monName = dayMonth[1]!.toLowerCase();
+      day = Number(dayMonth[2]);
+      yearStr = dayMonth[3];
+    }
+    const mon = MONTHS[monName.slice(0, 3)] ?? MONTHS[monName];
+    if (mon == null || !Number.isFinite(day)) return null;
+    let year = yearStr ? Number(yearStr) : now.getFullYear();
+    let d = new Date(year, mon, day);
+    if (!yearStr && d < now) d = new Date(year + 1, mon, day);
+    return isoDate(d);
+  }
+
+  return null;
+}
+
 export function parseTravelIntent(text: string): Partial<FlightSearchQuery> & { note?: string } {
   const t = text.trim();
   const out: Partial<FlightSearchQuery> & { note?: string } = {};
 
+  // "from A to B …"
   const fromTo = t.match(
     /\bfrom\s+([a-zA-Z\s.]+?)\s+to\s+([a-zA-Z\s.]+?)(?:\s|$|,|\.|on|by|friday|monday|tuesday|wednesday|thursday|saturday|sunday)/i,
   );
   if (fromTo) {
     out.origin = toAirportCode(fromTo[1]!) ?? fromTo[1]!.trim();
     out.destination = toAirportCode(fromTo[2]!) ?? fromTo[2]!.trim();
-  } else {
+  }
+
+  // "New York to Accra" / "JFK → ACC" — only if both sides resolve to airports
+  // (avoids eating "need to be in …")
+  if (!out.origin || !out.destination) {
+    const route = t.match(
+      /\b([A-Za-z][A-Za-z\s.]{0,40}?)\s*(?:→|->|—|–|to)\s*([A-Za-z][A-Za-z\s.]{0,40}?)(?:\s|$|,|\.|on|by|friday|monday|tuesday|wednesday|thursday|saturday|sunday)/i,
+    );
+    if (route) {
+      const o = toAirportCode(route[1]!);
+      const d = toAirportCode(route[2]!);
+      if (o && d) {
+        out.origin = o;
+        out.destination = d;
+      }
+    }
+  }
+
+  if (!out.destination) {
     const toM =
       t.match(
         /\b(?:to|in|into)\s+([A-Za-z][A-Za-z\s.]{1,30}?)(?:\s+(?:on|by|friday|monday|tuesday|wednesday|thursday|saturday|sunday|this|next|,|\.|$))/i,
       ) || t.match(/\bbe in\s+([A-Za-z][A-Za-z\s.]{1,30}?)(?:\s|$)/i);
     if (toM) out.destination = toAirportCode(toM[1]!) ?? toM[1]!.trim();
+  }
+  if (!out.origin) {
     const fromM = t.match(/\bfrom\s+([A-Za-z][A-Za-z\s.]{1,30}?)(?:\s|$|,|\.|to)/i);
     if (fromM) out.origin = toAirportCode(fromM[1]!) ?? fromM[1]!.trim();
   }
@@ -106,20 +216,8 @@ export function parseTravelIntent(text: string): Partial<FlightSearchQuery> & { 
     }
   }
 
-  const iso = t.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-  if (iso) out.departDate = iso[1];
-
-  const slash = t.match(/\b(\d{1,2})[\/.](\d{1,2})(?:[\/.](\d{2,4}))?\b/);
-  if (slash && !out.departDate) {
-    const now = new Date();
-    const mon = Number(slash[1]) - 1;
-    const day = Number(slash[2]);
-    let year = slash[3] ? Number(slash[3]) : now.getFullYear();
-    if (year < 100) year += 2000;
-    let d = new Date(year, mon, day);
-    if (d < now) d = new Date(year + 1, mon, day);
-    out.departDate = isoDate(d);
-  }
+  const named = parseDepartDate(t);
+  if (named) out.departDate = named;
 
   return out;
 }
@@ -144,6 +242,7 @@ export function isTravelIntent(text: string): boolean {
   if (!t) return false;
   if (/\b(flight|flights|fly|flying|airfare|airline|book\s+me\s+a\s+flight)\b/i.test(t)) return true;
   if (/\b(i need to be in|get me to|traveling to|travel to|trip to)\b/i.test(t)) return true;
+  if (/\b[A-Za-z]{3,}\s*(?:→|->|to)\s*[A-Za-z]{3,}\b/i.test(t)) return true;
   if (
     /\b(depart|departure|arrive|arrival)\b/i.test(t) &&
     /\b(jfk|acc|accra|new york|atlanta)\b/i.test(t)

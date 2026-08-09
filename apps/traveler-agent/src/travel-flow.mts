@@ -7,7 +7,9 @@ import {
   bookFlight,
   formatFlightOption,
   parseTravelIntent,
+  parseDepartDate,
   toAirportCode,
+  resolvePlace,
   isoDate,
   type FlightOption,
 } from "@manebra/flights";
@@ -20,6 +22,68 @@ type SayFn = (s: Session, ...bubbles: string[]) => Promise<void>;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function asAirport(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  return toAirportCode(raw) ?? (/^[A-Za-z]{3}$/.test(raw.trim()) ? raw.trim().toUpperCase() : undefined);
+}
+
+/** Merge NL parse into session; fill missing slots from short replies. */
+function mergeTravelSlots(s: Session, text: string): void {
+  const before = {
+    origin: s.travelOrigin,
+    destination: s.travelDestination,
+    departDate: s.travelDepartDate,
+  };
+  const parsed = parseTravelIntent(text);
+
+  if (parsed.origin) s.travelOrigin = asAirport(parsed.origin) ?? s.travelOrigin;
+  if (parsed.destination) {
+    s.travelDestination = asAirport(parsed.destination) ?? s.travelDestination;
+  }
+  if (parsed.departDate) {
+    s.travelDepartDate =
+      typeof parsed.departDate === "string" ? parsed.departDate : isoDate(parsed.departDate);
+  }
+  if (parsed.arriveBy) s.travelArriveBy = parsed.arriveBy;
+
+  // Progressive slot fill: short replies update only what's still missing.
+  const place = resolvePlace(text);
+  if (!s.travelOrigin && place && place !== s.travelDestination) {
+    s.travelOrigin = place;
+  } else if (!s.travelDestination && place && place !== s.travelOrigin) {
+    s.travelDestination = place;
+  } else if (
+    s.travelDestination &&
+    !s.travelOrigin &&
+    place &&
+    place !== s.travelDestination
+  ) {
+    s.travelOrigin = place;
+  }
+
+  if (!s.travelDepartDate) {
+    const d = parseDepartDate(text);
+    if (d) s.travelDepartDate = d;
+  }
+
+  // Don't let a bare follow-up overwrite a locked destination with the same place token noise.
+  if (
+    before.destination &&
+    parsed.destination &&
+    !parsed.origin &&
+    before.origin == null &&
+    asAirport(String(parsed.destination)) === before.destination
+  ) {
+    /* keep */
+  }
+
+  markSessionDirty();
+  console.log(
+    `[traveler-agent] slots ${before.origin ?? "?"}→${before.destination ?? "?"} ${before.departDate ?? "?"} ` +
+      `+ "${text.slice(0, 60)}" → ${s.travelOrigin ?? "?"}→${s.travelDestination ?? "?"} ${s.travelDepartDate ?? "?"}`,
+  );
 }
 
 export async function handleTravelInbound(
@@ -47,17 +111,7 @@ export async function handleTravelInbound(
 
 async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
   const { reply, say } = deps;
-  const parsed = parseTravelIntent(text);
-  if (parsed.origin) s.travelOrigin = toAirportCode(parsed.origin) ?? parsed.origin.toUpperCase();
-  if (parsed.destination) {
-    s.travelDestination = toAirportCode(parsed.destination) ?? parsed.destination.toUpperCase();
-  }
-  if (parsed.departDate) {
-    s.travelDepartDate =
-      typeof parsed.departDate === "string" ? parsed.departDate : isoDate(parsed.departDate);
-  }
-  if (parsed.arriveBy) s.travelArriveBy = parsed.arriveBy;
-  markSessionDirty();
+  mergeTravelSlots(s, text);
 
   if (!s.travelDestination) {
     s.step = "await_travel_intent";
@@ -77,7 +131,7 @@ async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; sa
   if (!s.travelDepartDate) {
     s.step = "await_travel_intent";
     markSessionDirty();
-    await reply(s, `What day do you want to depart? (e.g. Friday, or 2026-08-15)`);
+    await reply(s, `What day do you want to depart? (e.g. Friday, or 15th August)`);
     return true;
   }
 
@@ -101,10 +155,9 @@ async function handleSearch(s: Session, text: string, deps: { reply: ReplyFn; sa
     s.step = "await_flight_pick";
     markSessionDirty();
     const lines = options.map((o, i) => formatFlightOption(o, i)).join("\n\n");
-    const note = parsed.note ? `${parsed.note}.\n\n` : "";
     await say(
       s,
-      `${note}Here are solid options:`,
+      `Here are solid options:`,
       `${lines}\n\nReply with 1–${options.length}, or say something like “book the 8:30 PM”.`,
     );
   } catch (e: any) {

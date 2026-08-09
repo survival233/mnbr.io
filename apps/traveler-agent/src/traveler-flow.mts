@@ -93,25 +93,33 @@ export async function handleInbound(args: {
 
   const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
   const restart = /^(restart|start over|reset|menu)\b/i.test(text);
+  const midTrip = Boolean(s.travelOrigin || s.travelDestination || s.travelDepartDate);
 
-  if (restart || s.step === "idle" || s.step === "done" || greetingOnly) {
-    resetSession(s);
-    s.step = "await_travel_intent";
-    markSessionDirty();
-    await say(
-      s,
-      "Hey — I’m Manebra Travel.",
-      "Tell me where you’re flying (e.g. JFK → Accra Friday) and I’ll find options, book, then show carry jobs you can earn on.",
-    );
-    if (greetingOnly || restart) {
-      const rest = text
-        .replace(/^(hi|hello|hey|start|restart|menu|start over|reset)\b[,!.\s]*/i, "")
-        .trim();
-      if (!rest) return;
-      await handleTravelInbound(s, rest, { reply, say });
+  // Only greet/reset on explicit restart, greeting, or a brand-new idle session.
+  // Never wipe mid-trip slot state on a follow-up like "New York".
+  if (restart || greetingOnly || (s.step === "idle" && !midTrip) || s.step === "done") {
+    if (restart || greetingOnly || s.step === "done" || s.step === "idle") {
+      resetSession(s);
+      s.step = "await_travel_intent";
+      markSessionDirty();
+    }
+    if (greetingOnly || restart || !text) {
+      await say(
+        s,
+        "Hey — I’m Manebra Travel.",
+        "Tell me where you’re flying (e.g. JFK → Accra Friday) and I’ll find options, book, then show carry jobs you can earn on.",
+      );
+      if (greetingOnly || restart) {
+        const rest = text
+          .replace(/^(hi|hello|hey|start|restart|menu|start over|reset)\b[,!.\s]*/i, "")
+          .trim();
+        if (!rest) return;
+        await handleTravelInbound(s, rest, { reply, say });
+      }
       return;
     }
-    if (!text) return;
+    // Fresh idle with a real trip request — short intro, then fill slots (keep state).
+    await reply(s, "Hey — I’m Manebra Travel. On it…", { thinkMs: 300 });
   }
 
   await handleTravelInbound(s, text, { reply, say });
