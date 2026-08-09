@@ -138,12 +138,105 @@ export function verifyRelayWebhookSignature(
   });
 }
 
+function isImagePart(p: any): boolean {
+  if (!p || typeof p !== "object") return false;
+  if (p.type !== "media" && p.type !== "image") return false;
+  const kind = String(p.media_kind ?? "").toLowerCase();
+  const ct = String(p.content_type ?? "").toLowerCase();
+  if (kind === "video" || kind === "audio" || kind === "file") return false;
+  if (ct.startsWith("video/") || ct.startsWith("audio/")) return false;
+  if (kind === "image" || ct.startsWith("image/")) return true;
+  // Default media without kind: treat as image if url/attachment looks usable
+  return Boolean(p.url || p.attachment_id);
+}
+
+/** Collect HTTPS / capability URLs from inbound media parts (images only). */
+export function extractRelayImageUrls(event: any): string[] {
+  const msg = event?.data?.message ?? event?.message;
+  const parts = Array.isArray(msg?.parts) ? msg.parts : [];
+  const urls: string[] = [];
+  for (const p of parts) {
+    if (!isImagePart(p)) continue;
+    const u = typeof p.url === "string" ? p.url.trim() : "";
+    if (u.startsWith("http")) urls.push(u);
+    else if (typeof p.attachment_id === "string" && p.attachment_id) {
+      // Resolve later via fetchAttachmentUrl
+      urls.push(`relay-att:${p.attachment_id}`);
+    }
+  }
+  return [...new Set(urls)].slice(0, 3);
+}
+
+export async function fetchAttachmentUrl(attachmentId: string): Promise<string | null> {
+  try {
+    const out = await api<any>(`/v1/attachments/${attachmentId}`, { method: "GET", timeoutMs: 8_000 });
+    const u = out?.attachment?.url ?? out?.url;
+    return typeof u === "string" && u.startsWith("http") ? u : null;
+  } catch (e: any) {
+    console.warn(`[relay] attachment meta failed: ${e?.message ?? e}`);
+    return null;
+  }
+}
+
+/**
+ * Turn Relay capability / attachment refs into OpenAI-safe image URLs.
+ * Downloads with the agent token and returns data: URLs when needed
+ * (OpenAI cannot use Bearer-auth Relay URLs).
+ */
+export async function resolveImagesForVision(refs: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const ref of refs.slice(0, 3)) {
+    try {
+      let url = ref;
+      if (ref.startsWith("relay-att:")) {
+        const id = ref.slice("relay-att:".length);
+        const resolved = await fetchAttachmentUrl(id);
+        if (!resolved) continue;
+        url = resolved;
+      }
+      const dataUrl = await downloadAsDataUrl(url);
+      if (dataUrl) out.push(dataUrl);
+    } catch (e: any) {
+      console.warn(`[relay] vision image resolve failed: ${e?.message ?? e}`);
+    }
+  }
+  return out;
+}
+
+async function downloadAsDataUrl(url: string): Promise<string | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${token()}` },
+    });
+    if (!res.ok) {
+      // Some capability URLs are public; retry without auth
+      const res2 = await fetch(url, { signal: ctrl.signal });
+      if (!res2.ok) throw new Error(`download ${res.status}/${res2.status}`);
+      return bufferToDataUrl(await res2.arrayBuffer(), res2.headers.get("content-type"));
+    }
+    return bufferToDataUrl(await res.arrayBuffer(), res.headers.get("content-type"));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function bufferToDataUrl(buf: ArrayBuffer, contentType: string | null): string | null {
+  if (buf.byteLength === 0 || buf.byteLength > 6_000_000) return null;
+  const ct = (contentType ?? "image/jpeg").split(";")[0]!.trim() || "image/jpeg";
+  if (!ct.startsWith("image/")) return null;
+  return `data:${ct};base64,${Buffer.from(buf).toString("base64")}`;
+}
+
 export function extractRelayInbound(event: any): {
   eventId: string;
   userId: string;
   conversationId: string;
   messageId: string;
   text: string;
+  imageRefs: string[];
 } | null {
   const eventId = String(event?.event_id ?? "");
   const msg = event?.data?.message ?? event?.message;
@@ -154,12 +247,14 @@ export function extractRelayInbound(event: any): {
   const parts = Array.isArray(msg.parts) ? msg.parts : [];
   const text =
     parts
-      .filter((p: any) => p?.type === "text" || p?.text != null)
+      .filter((p: any) => p?.type === "text" || (p?.text != null && p?.type !== "media"))
       .map((p: any) => String(p.text ?? "").trim())
       .filter(Boolean)
       .join("\n") || String(msg.fallback_text ?? "").trim();
-  if (!eventId || !conversationId || !userId || !text) return null;
-  return { eventId, userId, conversationId, messageId, text };
+  const imageRefs = extractRelayImageUrls(event);
+  if (!eventId || !conversationId || !userId) return null;
+  if (!text && imageRefs.length === 0) return null;
+  return { eventId, userId, conversationId, messageId, text, imageRefs };
 }
 
 export async function registerWebhook(url: string): Promise<{ id?: string; signingSecret?: string }> {

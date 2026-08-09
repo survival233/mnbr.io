@@ -21,6 +21,8 @@ import {
   fundEscrowOrder,
   completeHandoverAndRelease,
 } from "./settlement-bridge.mts";
+import { runPolicyTurn } from "./cognition/policy.mts";
+import { appendEpisode, ensureCognition } from "./cognition/state.mts";
 
 type TravelerSeed = {
   id: string;
@@ -372,12 +374,16 @@ export async function handleInbound(args: {
   phone: string;
   chatId: string | null;
   text: string;
+  imageUrls?: string[];
+  /** True when user sent media we could not download. */
+  mediaFailed?: boolean;
   channel?: "linq" | "relay";
   relayEventId?: string;
   relayMessageId?: string;
 }): Promise<void> {
   const text = args.text.trim();
-  if (!text) return;
+  const imageUrls = (args.imageUrls ?? []).filter(Boolean);
+  if (!text && imageUrls.length === 0 && !args.mediaFailed) return;
 
   const s = getOrCreateSession(args.phone, args.chatId, {
     channel: args.channel ?? "linq",
@@ -391,7 +397,17 @@ export async function handleInbound(args: {
   }
 
   try {
-    await handleInboundInner(s, args, text);
+    if (args.mediaFailed && imageUrls.length === 0) {
+      await reply(
+        s,
+        text
+          ? `I couldn’t open that photo — what product should I shop for? (got your note: “${text.slice(0, 80)}”)`
+          : `I can tell you sent a photo, but I couldn’t open it. What product should I shop for?`,
+        { thinkMs: 400 },
+      );
+      if (!text) return;
+    }
+    await handleInboundInner(s, args, text, imageUrls);
   } catch (e: any) {
     console.error(`[linq-agent] handleInbound boom: ${e?.message ?? e}`);
     try {
@@ -406,18 +422,66 @@ export async function handleInbound(args: {
   }
 }
 
+function applyCognitiveSlots(
+  s: Session,
+  slots: {
+    product?: string | null;
+    usCity?: string | null;
+    ghCity?: string | null;
+    deadline?: string | null;
+    maxFeeUsd?: number | null;
+    category?: string | null;
+  },
+) {
+  if (slots.usCity) s.shoppingCity = normalizeCity(slots.usCity) ?? slots.usCity;
+  if (slots.ghCity) s.deliveryCity = normalizeCity(slots.ghCity) ?? slots.ghCity;
+  if (slots.deadline) s.deadline = parseDate(slots.deadline) ?? undefined;
+  if (typeof slots.maxFeeUsd === "number" && slots.maxFeeUsd > 0) {
+    s.maxFeeCents = Math.round(slots.maxFeeUsd * 100);
+  }
+  if (slots.category) s.category = slots.category;
+}
+
+async function commitConfirmedProduct(
+  s: Session,
+  product: string,
+  slots?: Parameters<typeof applyCognitiveSlots>[1],
+): Promise<void> {
+  const q = normalizeSearchQuery(product);
+  s.searchQuery = q;
+  const cog = ensureCognition(s);
+  cog.pending = null;
+  cog.topic = "shopping";
+  appendEpisode(cog.memory, "slot", `Product locked: ${q}`, { product: q });
+  if (slots) applyCognitiveSlots(s, slots);
+  markSessionDirty();
+
+  // If US city was filled (and not just the default placeholder path), search;
+  // otherwise ask for shopping city — New York stays the suggested default.
+  const cityFromSlots = Boolean(slots?.usCity?.trim());
+  if (cityFromSlots) {
+    await runSearchFlow(s, `Searching “${q}” near ${s.shoppingCity}…`);
+    return;
+  }
+  s.step = "await_shopping_city";
+  markSessionDirty();
+}
+
 async function handleInboundInner(
   s: Session,
   args: {
     phone: string;
     chatId: string | null;
     text: string;
+    imageUrls?: string[];
     channel?: "linq" | "relay";
     relayEventId?: string;
     relayMessageId?: string;
   },
   text: string,
+  imageUrls: string[],
 ): Promise<void> {
+  const hasImages = imageUrls.length > 0;
   const intent = classifyIntent(text, {
     step: s.step,
     listingCount: s.listings?.length,
@@ -426,28 +490,89 @@ async function handleInboundInner(
     travelerLabels: travelerLabels(s),
   });
 
+  const greetingOnly =
+    !hasImages &&
+    /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
+
   if (intent.kind === "restart" || s.step === "idle" || s.step === "done") {
     resetSession(s);
     s.step = "await_product";
     markSessionDirty();
-    await replyPair(
-      s,
-      "Hey — I’m Manebra.",
-      "I help you buy from US stores and get it hand-carried to Ghana.\n\nWhat are you looking for?",
-    );
-    const rest = text.replace(/^(hi|hello|hey|start|restart|menu)\b[,!.\s]*/i, "").trim();
-    if (!rest) return;
-    return handleInbound({ ...args, text: rest });
+    if (greetingOnly || (!text && !hasImages)) {
+      await replyPair(
+        s,
+        "Hey — I’m Manebra.",
+        "I help you buy from US stores and get it hand-carried to Ghana.\n\nWhat are you looking for? Text or a photo works.",
+      );
+      return;
+    }
+    if (!hasImages && intent.kind === "restart") {
+      await replyPair(
+        s,
+        "Hey — I’m Manebra.",
+        "I help you buy from US stores and get it hand-carried to Ghana.\n\nWhat are you looking for? Text or a photo works.",
+      );
+      const rest = text.replace(/^(hi|hello|hey|start|restart|menu)\b[,!.\s]*/i, "").trim();
+      if (!rest) return;
+      return handleInbound({ ...args, text: rest, imageUrls });
+    }
+    // Image (or substantive text) on fresh session — skip long menu; cognition / product step handles it
+    if (hasImages) {
+      await reply(s, "Hey — got your photo. One sec…", { thinkMs: 350 });
+    }
   }
 
-  if (intent.kind === "new_query" && intent.query && s.step !== "await_product") {
+  // Cognitive turn: vision confirm, persona, conflicts, proactive asks
+  const shouldCognize =
+    hasImages ||
+    s.step === "await_product_confirm" ||
+    s.step === "await_product" ||
+    Boolean(s.cognition?.pending) ||
+    process.env.LINQ_COGNITION === "1";
+
+  if (shouldCognize) {
+    if (hasImages && s.chatId) presenceTyping(s);
+    const decision = await runPolicyTurn({ session: s, text, imageUrls });
+    if (decision.applySlots) applyCognitiveSlots(s, decision.applySlots);
+    if (decision.bubbles.length) await say(s, ...decision.bubbles);
+    if (decision.confirmedProduct) {
+      await commitConfirmedProduct(s, decision.confirmedProduct, decision.applySlots);
+      // commit may have already searched; if still awaiting city, bubbles already asked
+      if (s.step === "await_shopping_city" && !decision.bubbles.some((b) => /city/i.test(b))) {
+        await reply(s, `Which US city should I shop in for ${s.searchQuery}? New York is usually solid.`);
+      }
+      markSessionDirty();
+      return;
+    }
+    if (!decision.fallthrough) {
+      markSessionDirty();
+      return;
+    }
+  }
+
+  if (intent.kind === "new_query" && intent.query && s.step !== "await_product" && s.step !== "await_product_confirm") {
     await applyNewQuery(s, intent.query);
     return;
   }
 
   switch (s.step) {
+    case "await_product_confirm": {
+      // Policy should have handled yes/no; if we fell through, ask again
+      const hyp = s.cognition?.pending?.hypothesis;
+      await reply(
+        s,
+        hyp
+          ? `Just to confirm — shop for ${hyp}? (yes / no)`
+          : `What product should I shop for? Text or a photo works.`,
+      );
+      return;
+    }
     case "await_product": {
       let query = normalizeSearchQuery(text);
+      if (!query) {
+        await reply(s, `What are you looking for? Text or a photo of the item works.`);
+        return;
+      }
       const llm = makeLlm();
       if (llm && process.env.LINQ_LLM_EXTRACT !== "0") {
         try {
@@ -466,6 +591,8 @@ async function handleInboundInner(
       }
       s.searchQuery = query;
       s.step = "await_shopping_city";
+      ensureCognition(s).topic = "shopping";
+      appendEpisode(ensureCognition(s).memory, "slot", `Product from text: ${query}`, { product: query });
       markSessionDirty();
       await say(s, `Okay, “${query}” — on it.`, `Which US city should I shop in? New York is usually solid.`);
       return;

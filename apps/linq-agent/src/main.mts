@@ -20,6 +20,7 @@ const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature
 const {
   extractRelayInbound,
   relayConfigured,
+  resolveImagesForVision,
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
 const { handleInbound } = await import("./shopper-flow.mts");
@@ -99,6 +100,7 @@ const server = createServer(async (req, res) => {
       sessions: stats.count,
       inboundCount,
       relay: relayConfigured() ? "configured" : "off",
+      vision: process.env.OPENAI_API_KEY ? "openai" : process.env.HF_TOKEN ? "hf-text-only" : "off",
     });
     return;
   }
@@ -132,17 +134,23 @@ const server = createServer(async (req, res) => {
       lastInboundAt = Date.now();
       inboundCount += 1;
       lastChannel = "relay";
-      console.log(`[linq-agent] ← relay ${inbound.userId}: ${inbound.text.slice(0, 120)}`);
-      enqueueForIdentity(inbound.userId, () =>
-        handleInbound({
+      const preview = inbound.text || (inbound.imageRefs.length ? `[${inbound.imageRefs.length} image(s)]` : "");
+      console.log(`[linq-agent] ← relay ${inbound.userId}: ${preview.slice(0, 120)}`);
+      enqueueForIdentity(inbound.userId, async () => {
+        const imageUrls = inbound.imageRefs.length
+          ? await resolveImagesForVision(inbound.imageRefs)
+          : [];
+        await handleInbound({
           phone: inbound.userId,
           chatId: inbound.conversationId,
           text: inbound.text,
+          imageUrls,
+          mediaFailed: Boolean(inbound.imageRefs.length && !imageUrls.length),
           channel: "relay",
           relayEventId: inbound.eventId,
           relayMessageId: inbound.messageId,
-        }),
-      );
+        });
+      });
     } catch (e: any) {
       console.error(`[linq-agent] relay handler error: ${e.message}`);
     }

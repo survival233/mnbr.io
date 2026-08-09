@@ -1,10 +1,12 @@
 import { endOfLocalDay } from "@manebra/shared";
 import type { ProductListing } from "@manebra/catalog";
 import { loadSessionsInto, schedulePersist, persistNow } from "./session-store.mts";
+import { blankCognition, type CognitionState } from "./cognition/state.mts";
 
 export type Step =
   | "idle"
   | "await_product"
+  | "await_product_confirm"
   | "await_shopping_city"
   | "await_listing"
   | "await_delivery_city"
@@ -51,6 +53,8 @@ export type Session = {
   handoverCode?: string;
   fundTxHash?: string;
   totalCents?: number;
+  /** Multimodal cognition: persona, episodic memory, pending product confirm. */
+  cognition?: CognitionState;
   updatedAt: number;
 };
 
@@ -131,6 +135,13 @@ export function resetSession(s: Session) {
   s.handoverCode = undefined;
   s.fundTxHash = undefined;
   s.totalCents = undefined;
+  // Keep long-horizon persona/memory; clear only in-flight confirm.
+  if (s.cognition) {
+    s.cognition.pending = null;
+    s.cognition.topic = "intake";
+  } else {
+    s.cognition = blankCognition();
+  }
   s.updatedAt = Date.now();
   touchPersist();
 }

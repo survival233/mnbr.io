@@ -1,12 +1,6 @@
 /**
- * Provider-agnostic LLM client for the demo intake.
- * OpenAI and Hugging Face both expose the OpenAI chat-completions protocol,
- * so one client covers both — pick via env:
- *
- *   OPENAI_API_KEY=sk-…        (provider auto-selects openai)
- *   HF_TOKEN=hf_…              (provider auto-selects hf)
- *   LLM_PROVIDER=openai|hf     (explicit choice when both keys are set)
- *   OPENAI_MODEL / HF_MODEL    (optional model overrides)
+ * Multimodal + cognitive turn helpers for Manebra shopper.
+ * OpenAI chat-completions protocol (vision + JSON).
  */
 
 export interface LlmConfig {
@@ -21,9 +15,11 @@ export function makeLlm(): LlmConfig | null {
   const provider =
     explicit === "openai" || explicit === "hf"
       ? explicit
-      : process.env.OPENAI_API_KEY ? "openai"
-      : process.env.HF_TOKEN ? "hf"
-      : null;
+      : process.env.OPENAI_API_KEY
+        ? "openai"
+        : process.env.HF_TOKEN
+          ? "hf"
+          : null;
   if (provider === "openai" && process.env.OPENAI_API_KEY) {
     return {
       provider,
@@ -43,52 +39,112 @@ export function makeLlm(): LlmConfig | null {
   return null;
 }
 
-/** One chat call that must return JSON. Retries once without response_format
- *  (some HF router models reject it) and tolerates ```json fences. */
-export async function chatJson(cfg: LlmConfig, system: string, user: string): Promise<any> {
-  const call = async (withFormat: boolean) => {
-    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({
-        model: cfg.model,
-        temperature: 0,
-        ...(withFormat ? { response_format: { type: "json_object" } } : {}),
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(`${cfg.provider} API ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    return res.json();
+/** Prefer a vision-capable OpenAI model when images are present. */
+export function makeVisionLlm(): LlmConfig | null {
+  const base = makeLlm();
+  if (!base || base.provider !== "openai") return base;
+  return {
+    ...base,
+    model: process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   };
+}
 
-  let data;
-  try {
-    data = await call(true);
-  } catch (e: any) {
-    if (/API 4\d\d/.test(e.message) && !/401|403|429/.test(e.message)) data = await call(false);
-    else throw e;
-  }
-  const txt: string = data.choices?.[0]?.message?.content ?? "";
+async function chatCompletions(cfg: LlmConfig, body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${cfg.provider} API ${res.status}: ${(await res.text()).slice(0, 400)}`);
+  return res.json();
+}
+
+function parseJsonContent(txt: string): any {
   const m = txt.match(/\{[\s\S]*\}/);
   if (!m) throw new Error(`model returned no JSON: ${txt.slice(0, 200)}`);
   return JSON.parse(m[0]);
 }
 
+/** One chat call that must return JSON. */
+export async function chatJson(cfg: LlmConfig, system: string, user: string): Promise<any> {
+  const call = async (withFormat: boolean) => {
+    const data = await chatCompletions(cfg, {
+      model: cfg.model,
+      temperature: 0,
+      ...(withFormat ? { response_format: { type: "json_object" } } : {}),
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    });
+    return parseJsonContent(data.choices?.[0]?.message?.content ?? "");
+  };
+  try {
+    return await call(true);
+  } catch (e: any) {
+    if (/API 4\d\d/.test(e.message) && !/401|403|429/.test(e.message)) return call(false);
+    throw e;
+  }
+}
+
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+
+/** Multimodal JSON call (OpenAI-style image_url parts). */
+export async function chatJsonMultimodal(
+  cfg: LlmConfig,
+  system: string,
+  parts: ContentPart[],
+): Promise<any> {
+  const call = async (withFormat: boolean) => {
+    const data = await chatCompletions(cfg, {
+      model: cfg.model,
+      temperature: 0,
+      ...(withFormat ? { response_format: { type: "json_object" } } : {}),
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: parts },
+      ],
+    });
+    return parseJsonContent(data.choices?.[0]?.message?.content ?? "");
+  };
+  try {
+    return await call(true);
+  } catch (e: any) {
+    if (/API 4\d\d/.test(e.message) && !/401|403|429/.test(e.message)) return call(false);
+    throw e;
+  }
+}
+
 export const CATEGORIES = [
-  "electronics", "clothing_shoes", "cosmetics_sealed", "books_media", "food_sealed_nonperishable",
+  "electronics",
+  "clothing_shoes",
+  "cosmetics_sealed",
+  "books_media",
+  "food_sealed_nonperishable",
 ] as const;
 
 export interface ExtractedOrder {
   itemName: string | null;
   shop: string | null;
   city: string | null;
-  deadline: string | null; // YYYY-MM-DD
+  deadline: string | null;
   itemCostUsd: number | null;
   maxFeeUsd: number | null;
   category: (typeof CATEGORIES)[number] | null;
+}
+
+function normalizeExtracted(o: any): ExtractedOrder {
+  return {
+    itemName: typeof o.itemName === "string" && o.itemName ? o.itemName : null,
+    shop: typeof o.shop === "string" && o.shop ? o.shop : null,
+    city: typeof o.city === "string" && o.city ? o.city : null,
+    deadline: typeof o.deadline === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.deadline) ? o.deadline : null,
+    itemCostUsd: typeof o.itemCostUsd === "number" && o.itemCostUsd > 0 ? o.itemCostUsd : null,
+    maxFeeUsd: typeof o.maxFeeUsd === "number" && o.maxFeeUsd > 0 ? o.maxFeeUsd : null,
+    category: (CATEGORIES as readonly string[]).includes(o.category) ? o.category : null,
+  };
 }
 
 /** Extract a structured order from free text. Never invents values. */
@@ -105,14 +161,154 @@ export async function extractOrder(cfg: LlmConfig, text: string): Promise<Extrac
     `itemCostUsd is the item's purchase price; maxFeeUsd is the maximum delivery/traveler fee they will pay — never confuse the two. ` +
     `category must be one of ${JSON.stringify(CATEGORIES)} judged from the item, or null if unclear. ` +
     `Use null for anything not stated. Reply with the JSON only.`;
-  const o = await chatJson(cfg, system, text);
+  return normalizeExtracted(await chatJson(cfg, system, text));
+}
+
+export type CognitiveAction =
+  | "propose_product"
+  | "ask_user"
+  | "set_slots"
+  | "search_ok"
+  | "ack";
+
+export interface CognitiveTurnResult {
+  monologue: {
+    observation: string;
+    hypothesis: string;
+    uncertainty: string;
+    next_move: string;
+  };
+  action: CognitiveAction;
+  productHypothesis: string | null;
+  confidence: number;
+  confirmQuestion: string | null;
+  askUser: string | null;
+  slots: {
+    product?: string | null;
+    usCity?: string | null;
+    ghCity?: string | null;
+    deadline?: string | null;
+    maxFeeUsd?: number | null;
+    category?: string | null;
+  };
+  personaUpdates: {
+    goals?: string[];
+    constraints?: string[];
+    beliefs?: string[];
+    openQuestions?: string[];
+    communication?: "terse" | "warm" | "formal";
+  };
+  conflict: { kind: string; message: string } | null;
+  proactiveAsk: string | null;
+  episodeSummaryLine: string;
+}
+
+const COGNITIVE_SYSTEM = `You are the cognitive core for Manebra, a US→Ghana hand-delivery shopping agent.
+You MUST reply with ONE JSON object only (no markdown) matching this shape:
+{
+  "monologue": {"observation": string, "hypothesis": string, "uncertainty": string, "next_move": string},
+  "action": "propose_product"|"ask_user"|"set_slots"|"search_ok"|"ack",
+  "productHypothesis": string|null,
+  "confidence": number,
+  "confirmQuestion": string|null,
+  "askUser": string|null,
+  "slots": {"product": string|null, "usCity": string|null, "ghCity": string|null, "deadline": string|null, "maxFeeUsd": number|null, "category": string|null},
+  "personaUpdates": {"goals": string[]|null, "constraints": string[]|null, "beliefs": string[]|null, "openQuestions": string[]|null, "communication": "terse"|"warm"|"formal"|null},
+  "conflict": {"kind": string, "message": string}|null,
+  "proactiveAsk": string|null,
+  "episodeSummaryLine": string
+}
+
+Rules:
+- If the user sent an image of a product, identify it (e.g. PlayStation 5) and usually action=propose_product with confirmQuestion like "Looks like a PlayStation 5 — want me to shop that for Ghana hand-delivery?"
+- Never invent a product if the image/text is unclear — action=ask_user.
+- ghCity = Ghana delivery city; usCity = US shopping city.
+- If user affirms a pending product confirm, action=set_slots with product filled.
+- If user changes product mid-flow, set conflict and propose/ask accordingly.
+- proactiveAsk = one natural next question for a missing slot (never payment).
+- confidence 0..1. category one of ${JSON.stringify(CATEGORIES)} or null.
+- Keep confirmQuestion and askUser short, conversational, human.`;
+
+export async function runCognitiveTurn(
+  cfg: LlmConfig,
+  args: {
+    text: string;
+    imageUrls: string[];
+    step: string;
+    pendingProduct?: string | null;
+    entitiesSummary: string;
+    personaSummary: string;
+    memorySummary: string;
+  },
+): Promise<CognitiveTurnResult> {
+  const userParts: ContentPart[] = [];
+  const preamble =
+    `Journey step: ${args.step}\n` +
+    `Pending product confirm: ${args.pendingProduct ?? "none"}\n` +
+    `Known entities: ${args.entitiesSummary}\n` +
+    `Persona: ${args.personaSummary}\n` +
+    `Episodic memory: ${args.memorySummary}\n` +
+    `User text: ${args.text || "(none — image only)"}\n`;
+  userParts.push({ type: "text", text: preamble });
+  for (const url of args.imageUrls.slice(0, 3)) {
+    userParts.push({ type: "image_url", image_url: { url, detail: "low" } });
+  }
+
+  const o = args.imageUrls.length
+    ? await chatJsonMultimodal(cfg, COGNITIVE_SYSTEM, userParts)
+    : await chatJson(cfg, COGNITIVE_SYSTEM, preamble);
+
+  const action = (
+    ["propose_product", "ask_user", "set_slots", "search_ok", "ack"] as const
+  ).includes(o.action)
+    ? (o.action as CognitiveAction)
+    : "ask_user";
+
   return {
-    itemName: typeof o.itemName === "string" && o.itemName ? o.itemName : null,
-    shop: typeof o.shop === "string" && o.shop ? o.shop : null,
-    city: typeof o.city === "string" && o.city ? o.city : null,
-    deadline: typeof o.deadline === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.deadline) ? o.deadline : null,
-    itemCostUsd: typeof o.itemCostUsd === "number" && o.itemCostUsd > 0 ? o.itemCostUsd : null,
-    maxFeeUsd: typeof o.maxFeeUsd === "number" && o.maxFeeUsd > 0 ? o.maxFeeUsd : null,
-    category: (CATEGORIES as readonly string[]).includes(o.category) ? o.category : null,
+    monologue: {
+      observation: String(o.monologue?.observation ?? ""),
+      hypothesis: String(o.monologue?.hypothesis ?? ""),
+      uncertainty: String(o.monologue?.uncertainty ?? ""),
+      next_move: String(o.monologue?.next_move ?? ""),
+    },
+    action,
+    productHypothesis:
+      typeof o.productHypothesis === "string" && o.productHypothesis ? o.productHypothesis : null,
+    confidence: typeof o.confidence === "number" ? Math.max(0, Math.min(1, o.confidence)) : 0.5,
+    confirmQuestion:
+      typeof o.confirmQuestion === "string" && o.confirmQuestion ? o.confirmQuestion : null,
+    askUser: typeof o.askUser === "string" && o.askUser ? o.askUser : null,
+    slots: {
+      product: o.slots?.product ?? null,
+      usCity: o.slots?.usCity ?? null,
+      ghCity: o.slots?.ghCity ?? null,
+      deadline: o.slots?.deadline ?? null,
+      maxFeeUsd: typeof o.slots?.maxFeeUsd === "number" ? o.slots.maxFeeUsd : null,
+      category: o.slots?.category ?? null,
+    },
+    personaUpdates: {
+      goals: Array.isArray(o.personaUpdates?.goals) ? o.personaUpdates.goals.map(String) : undefined,
+      constraints: Array.isArray(o.personaUpdates?.constraints)
+        ? o.personaUpdates.constraints.map(String)
+        : undefined,
+      beliefs: Array.isArray(o.personaUpdates?.beliefs)
+        ? o.personaUpdates.beliefs.map(String)
+        : undefined,
+      openQuestions: Array.isArray(o.personaUpdates?.openQuestions)
+        ? o.personaUpdates.openQuestions.map(String)
+        : undefined,
+      communication: ["terse", "warm", "formal"].includes(o.personaUpdates?.communication)
+        ? o.personaUpdates.communication
+        : undefined,
+    },
+    conflict:
+      o.conflict && typeof o.conflict.message === "string"
+        ? { kind: String(o.conflict.kind ?? "conflict"), message: o.conflict.message }
+        : null,
+    proactiveAsk: typeof o.proactiveAsk === "string" && o.proactiveAsk ? o.proactiveAsk : null,
+    episodeSummaryLine:
+      typeof o.episodeSummaryLine === "string" && o.episodeSummaryLine
+        ? o.episodeSummaryLine.slice(0, 120)
+        : args.text.slice(0, 120) || "image upload",
   };
 }
