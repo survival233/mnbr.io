@@ -135,11 +135,20 @@ const server = createServer(async (req, res) => {
       inboundCount += 1;
       lastChannel = "relay";
       const preview = inbound.text || (inbound.imageRefs.length ? `[${inbound.imageRefs.length} image(s)]` : "");
-      console.log(`[linq-agent] ← relay ${inbound.userId}: ${preview.slice(0, 120)}`);
+      console.log(
+        `[linq-agent] ← relay ${inbound.userId}: ${preview.slice(0, 120)}` +
+          (inbound.imageRefs.length ? ` images=${inbound.imageRefs.length}` : ""),
+      );
       enqueueForIdentity(inbound.userId, async () => {
+        // Resolve images inside the handler path after session ack/typing — not before enqueue metadata.
         const imageUrls = inbound.imageRefs.length
           ? await resolveImagesForVision(inbound.imageRefs)
           : [];
+        if (inbound.imageRefs.length) {
+          console.log(
+            `[linq-agent] vision resolved ${imageUrls.length}/${inbound.imageRefs.length} image(s) for ${inbound.userId}`,
+          );
+        }
         await handleInbound({
           phone: inbound.userId,
           chatId: inbound.conversationId,

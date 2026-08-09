@@ -138,7 +138,41 @@ export function verifyRelayWebhookSignature(
   });
 }
 
-function isImagePart(p: any): boolean {
+function pushImageRef(urls: string[], url?: string | null, attachmentId?: string | null) {
+  const u = typeof url === "string" ? url.trim() : "";
+  if (u.startsWith("http")) {
+    urls.push(u);
+    return;
+  }
+  const id = typeof attachmentId === "string" ? attachmentId.trim() : "";
+  if (id) urls.push(`relay-att:${id}`);
+}
+
+/** Relay phone uploads arrive as `data` artifacts, not `media` parts. */
+function imageRefFromDataPart(p: any): { url?: string; attachmentId?: string } | null {
+  if (!p || p.type !== "data") return null;
+  const payload = p.data ?? p;
+  const artifact = payload?.artifact ?? (payload?.type === "artifact" ? payload : null);
+  if (!artifact || typeof artifact !== "object") return null;
+  const kind = String(artifact.kind ?? artifact.media_kind ?? "").toLowerCase();
+  const mime = String(artifact.mimeType ?? artifact.content_type ?? artifact.mime_type ?? "").toLowerCase();
+  const isImage =
+    kind === "image" ||
+    mime.startsWith("image/") ||
+    /\.(jpe?g|png|gif|webp|heic)$/i.test(String(artifact.title ?? artifact.name ?? ""));
+  if (!isImage) return null;
+  return {
+    url: typeof artifact.url === "string" ? artifact.url : undefined,
+    attachmentId:
+      typeof artifact.id === "string"
+        ? artifact.id
+        : typeof payload?.id === "string"
+          ? payload.id
+          : undefined,
+  };
+}
+
+function isMediaImagePart(p: any): boolean {
   if (!p || typeof p !== "object") return false;
   if (p.type !== "media" && p.type !== "image") return false;
   const kind = String(p.media_kind ?? "").toLowerCase();
@@ -146,23 +180,22 @@ function isImagePart(p: any): boolean {
   if (kind === "video" || kind === "audio" || kind === "file") return false;
   if (ct.startsWith("video/") || ct.startsWith("audio/")) return false;
   if (kind === "image" || ct.startsWith("image/")) return true;
-  // Default media without kind: treat as image if url/attachment looks usable
   return Boolean(p.url || p.attachment_id);
 }
 
-/** Collect HTTPS / capability URLs from inbound media parts (images only). */
+/** Collect HTTPS / capability URLs from inbound media + image artifact parts. */
 export function extractRelayImageUrls(event: any): string[] {
   const msg = event?.data?.message ?? event?.message;
   const parts = Array.isArray(msg?.parts) ? msg.parts : [];
   const urls: string[] = [];
   for (const p of parts) {
-    if (!isImagePart(p)) continue;
-    const u = typeof p.url === "string" ? p.url.trim() : "";
-    if (u.startsWith("http")) urls.push(u);
-    else if (typeof p.attachment_id === "string" && p.attachment_id) {
-      // Resolve later via fetchAttachmentUrl
-      urls.push(`relay-att:${p.attachment_id}`);
+    const fromData = imageRefFromDataPart(p);
+    if (fromData) {
+      pushImageRef(urls, fromData.url, fromData.attachmentId);
+      continue;
     }
+    if (!isMediaImagePart(p)) continue;
+    pushImageRef(urls, p.url, p.attachment_id);
   }
   return [...new Set(urls)].slice(0, 3);
 }
@@ -225,8 +258,12 @@ async function downloadAsDataUrl(url: string): Promise<string | null> {
 
 function bufferToDataUrl(buf: ArrayBuffer, contentType: string | null): string | null {
   if (buf.byteLength === 0 || buf.byteLength > 6_000_000) return null;
-  const ct = (contentType ?? "image/jpeg").split(";")[0]!.trim() || "image/jpeg";
-  if (!ct.startsWith("image/")) return null;
+  let ct = (contentType ?? "image/jpeg").split(";")[0]!.trim() || "image/jpeg";
+  // Relay capability URLs sometimes return octet-stream for JPEGs.
+  if (!ct.startsWith("image/")) {
+    if (ct === "application/octet-stream" || ct === "binary/octet-stream" || !ct) ct = "image/jpeg";
+    else return null;
+  }
   return `data:${ct};base64,${Buffer.from(buf).toString("base64")}`;
 }
 
@@ -245,13 +282,19 @@ export function extractRelayInbound(event: any): {
   const messageId = String(msg.id ?? "");
   const userId = String(msg.sender?.id ?? "");
   const parts = Array.isArray(msg.parts) ? msg.parts : [];
-  const text =
-    parts
-      .filter((p: any) => p?.type === "text" || (p?.text != null && p?.type !== "media"))
-      .map((p: any) => String(p.text ?? "").trim())
-      .filter(Boolean)
-      .join("\n") || String(msg.fallback_text ?? "").trim();
+  const textParts = parts
+    .filter((p: any) => p?.type === "text")
+    .map((p: any) => String(p.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n");
   const imageRefs = extractRelayImageUrls(event);
+  // Phone photo uploads often only have fallback_text "Photo" + a data artifact.
+  let text = textParts;
+  if (!text && imageRefs.length === 0) {
+    text = String(msg.fallback_text ?? "").trim();
+  } else if (!text && imageRefs.length > 0) {
+    text = ""; // ignore Photo/[attachment] fallback when we have the image
+  }
   if (!eventId || !conversationId || !userId) return null;
   if (!text && imageRefs.length === 0) return null;
   return { eventId, userId, conversationId, messageId, text, imageRefs };

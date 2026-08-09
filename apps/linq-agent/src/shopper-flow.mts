@@ -127,6 +127,14 @@ function presenceRead(s: Session) {
   }
 }
 
+function relayIdempotencyKey(s: Session, text: string, attempt = 0): string {
+  // Include a short content tag so a changed body never reuses a prior key (409).
+  let tag = 0;
+  for (let i = 0; i < text.length; i++) tag = (Math.imul(tag, 33) + text.charCodeAt(i)) >>> 0;
+  const base = `reply-${s.relayEventId ?? "na"}-${s.relayReplySeq}-${tag.toString(16)}`;
+  return attempt > 0 ? `${base}-r${attempt}` : base;
+}
+
 /** Typing bubble + paced send so it feels like a person, not a USSD menu. */
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
   if (s.channel === "relay") {
@@ -138,13 +146,25 @@ async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
     await sleep(paced);
     if (!s.chatId) throw new Error("relay reply missing conversation id");
     s.relayReplySeq = (s.relayReplySeq ?? 0) + 1;
-    const idem = `reply-${s.relayEventId ?? "na"}-${s.relayReplySeq}`;
-    await relay.sendText({
-      conversationId: s.chatId,
-      text,
-      idempotencyKey: idem,
-      replyToMessageId: s.relayReplySeq === 1 ? s.relayMessageId : null,
-    });
+    const replyTo = s.relayReplySeq === 1 ? s.relayMessageId : null;
+    let lastErr: any;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await relay.sendText({
+          conversationId: s.chatId,
+          text,
+          idempotencyKey: relayIdempotencyKey(s, text, attempt),
+          replyToMessageId: replyTo,
+        });
+        lastErr = null;
+        break;
+      } catch (e: any) {
+        lastErr = e;
+        if (!/idempotency_conflict|409/.test(String(e?.message ?? e))) throw e;
+        console.warn(`[linq-agent] relay idempotency conflict; retrying (attempt ${attempt + 1})`);
+      }
+    }
+    if (lastErr) throw lastErr;
     void relay.stopTyping(s.chatId);
     markSessionDirty();
     console.log(`[linq-agent] → relay ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
@@ -569,7 +589,7 @@ async function handleInboundInner(
     }
     case "await_product": {
       let query = normalizeSearchQuery(text);
-      if (!query) {
+      if (!query || /^(photo|image|\[attachment\])$/i.test(query)) {
         await reply(s, `What are you looking for? Text or a photo of the item works.`);
         return;
       }
