@@ -1,4 +1,9 @@
-import { makeVisionLlm, makeLlm, runCognitiveTurn, type CognitiveTurnResult } from "@manebra/llm";
+import {
+  makeVisionLlm,
+  makeCognitiveLlm,
+  runCognitiveTurn,
+  type CognitiveTurnResult,
+} from "@manebra/llm";
 import type { Session } from "../session.mts";
 import {
   appendEpisode,
@@ -9,11 +14,18 @@ import {
   personaSummary,
   predictiveAsk,
 } from "./state.mts";
+import {
+  isCityAdviceQuestion,
+  parseUsShoppingCity,
+  recommendUsCityBubble,
+} from "./cities.mts";
 
 export type PolicyDecision = {
   bubbles: string[];
   /** If set, host should set searchQuery and continue journey (ask city / search). */
   confirmedProduct?: string;
+  /** Validated US shopping city — host should search. */
+  confirmedUsCity?: string;
   /** If set, apply slot fills without confirming. */
   applySlots?: CognitiveTurnResult["slots"];
   /** Skip cognitive search; continue normal step machine with text. */
@@ -40,13 +52,26 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 function entitiesSummary(s: Session): string {
   return JSON.stringify({
     product: s.searchQuery ?? s.cognition?.pending?.hypothesis ?? null,
-    usCity: s.shoppingCity,
+    usCity: s.shoppingCity === "New York" ? null : s.shoppingCity,
     ghCity: s.deliveryCity,
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
     step: s.step,
   });
 }
+
+const JOURNEY_STEPS = new Set([
+  "idle",
+  "await_product",
+  "await_product_confirm",
+  "await_shopping_city",
+  "await_listing",
+  "await_delivery_city",
+  "await_deadline",
+  "await_max_fee",
+  "await_extend",
+  "await_traveler",
+]);
 
 /**
  * Run multimodal cognition + host policy.
@@ -58,6 +83,7 @@ export async function runPolicyTurn(args: {
   imageUrls: string[];
 }): Promise<PolicyDecision> {
   const s = args.session;
+  const step = s.step;
   const cog = ensureCognition(s);
   const text = args.text.trim();
   const images = args.imageUrls.filter(Boolean);
@@ -73,12 +99,12 @@ export async function runPolicyTurn(args: {
     const ask =
       predictiveAsk({
         product,
-        shoppingCity: s.shoppingCity === "New York" ? undefined : s.shoppingCity,
+        shoppingCity: undefined,
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
         tone: cog.persona.communication,
-      }) ?? `Which US city should I shop in for ${product}?`;
+      }) ?? `Which US city should I shop in for ${product}? New York is usually strongest.`;
     return {
       bubbles: [`Locked in — ${product}.`, ask],
       confirmedProduct: product,
@@ -96,25 +122,51 @@ export async function runPolicyTurn(args: {
     };
   }
 
-  const llm = hasMedia ? makeVisionLlm() : makeLlm();
+  // Host-side city advice — never treat "which is best?" as a location
+  if (step === "await_shopping_city" && text && isCityAdviceQuestion(text) && !hasMedia) {
+    appendEpisode(cog.memory, "clarify", "Asked which US city is best");
+    return {
+      bubbles: recommendUsCityBubble(s.searchQuery),
+      fallthrough: false,
+    };
+  }
+
+  // Host-side concrete city parse before LLM (fast + reliable)
+  if (step === "await_shopping_city" && text && !hasMedia) {
+    const city = parseUsShoppingCity(text);
+    if (city) {
+      appendEpisode(cog.memory, "slot", `US city ${city}`, { usCity: city });
+      return {
+        bubbles: [],
+        confirmedUsCity: city,
+        applySlots: { usCity: city },
+        fallthrough: false,
+      };
+    }
+  }
+
+  const llm = hasMedia ? makeVisionLlm() : makeCognitiveLlm();
   if (!llm) {
     if (hasMedia) {
       return {
-        bubbles: ["I can see you sent a photo, but vision isn’t configured on my side yet. What product is that?"],
+        bubbles: [
+          "I can see you sent a photo, but vision isn’t configured (need OPENAI_API_KEY). What product is that?",
+        ],
+        fallthrough: false,
+      };
+    }
+    if (step === "await_shopping_city" && text) {
+      return {
+        bubbles: [
+          `I need a real US city to search near — New York, Atlanta, Houston… Which one works?`,
+        ],
         fallthrough: false,
       };
     }
     return { bubbles: [], fallthrough: true };
   }
 
-  // Always run cognition when images present, or at intake / pending confirm / early steps
-  const shouldCognize =
-    hasMedia ||
-    Boolean(cog.pending) ||
-    ["idle", "await_product", "await_product_confirm", "await_shopping_city"].includes(s.step) ||
-    process.env.LINQ_COGNITION === "1";
-
-  if (!shouldCognize && !hasMedia) {
+  if (!hasMedia && !JOURNEY_STEPS.has(step) && process.env.LINQ_COGNITION !== "1") {
     return { bubbles: [], fallthrough: true };
   }
 
@@ -124,13 +176,13 @@ export async function runPolicyTurn(args: {
       runCognitiveTurn(llm, {
         text,
         imageUrls: images,
-        step: s.step,
+        step,
         pendingProduct: cog.pending?.hypothesis ?? null,
         entitiesSummary: entitiesSummary(s),
         personaSummary: personaSummary(cog.persona),
         memorySummary: memorySummary(cog.memory),
       }),
-      hasMedia ? 8_000 : 5_000,
+      hasMedia ? 12_000 : 8_000,
       "cognitive turn",
     );
   } catch (e: any) {
@@ -138,6 +190,28 @@ export async function runPolicyTurn(args: {
     if (hasMedia) {
       return {
         bubbles: ["I’m having trouble reading that photo — what product should I shop for?"],
+        fallthrough: false,
+      };
+    }
+    if (step === "await_shopping_city") {
+      return {
+        bubbles: recommendUsCityBubble(s.searchQuery),
+        fallthrough: false,
+      };
+    }
+    // Do not blindly fall through on mid-conversation clarifies
+    if (text.includes("?") || /^(which|what|why|how|should)\b/i.test(text)) {
+      return {
+        bubbles: [
+          predictiveAsk({
+            product: s.searchQuery,
+            shoppingCity: s.shoppingCity === "New York" ? undefined : s.shoppingCity,
+            deliveryCity: s.deliveryCity,
+            deadline: s.deadline,
+            maxFeeCents: s.maxFeeCents,
+            tone: cog.persona.communication,
+          }) ?? "Happy to help — what should we lock next?",
+        ],
         fallthrough: false,
       };
     }
@@ -156,7 +230,7 @@ export async function runPolicyTurn(args: {
     newProduct: turn.productHypothesis,
     text,
     hasImages: hasMedia,
-    step: s.step,
+    step,
   });
   const conflict = hostConflict ?? turn.conflict;
 
@@ -184,8 +258,7 @@ export async function runPolicyTurn(args: {
     if (turn.confidence < 0.45) {
       return {
         bubbles: [
-          turn.askUser ??
-            "I’m not sure what that is — what product should I shop for?",
+          turn.askUser ?? "I’m not sure what that is — what product should I shop for?",
         ],
         fallthrough: false,
         monologueLog: cog.lastMonologue,
@@ -204,11 +277,16 @@ export async function runPolicyTurn(args: {
   }
 
   if (turn.action === "ask_user") {
+    // If model tried to stuff a non-city into usCity, ignore it
+    const slotCity = turn.slots.usCity ? parseUsShoppingCity(turn.slots.usCity) : null;
     const ask =
       turn.askUser ??
+      (step === "await_shopping_city"
+        ? recommendUsCityBubble(s.searchQuery).join(" ")
+        : null) ??
       predictiveAsk({
         product: s.searchQuery,
-        shoppingCity: s.shoppingCity === "New York" ? undefined : s.shoppingCity,
+        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity,
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
@@ -216,7 +294,12 @@ export async function runPolicyTurn(args: {
         tone: cog.persona.communication,
       }) ??
       "What should I help you shop for?";
-    return { bubbles: [ask], fallthrough: false, monologueLog: cog.lastMonologue };
+    return {
+      bubbles: [ask],
+      applySlots: slotCity ? { ...turn.slots, usCity: slotCity } : { ...turn.slots, usCity: null },
+      fallthrough: false,
+      monologueLog: cog.lastMonologue,
+    };
   }
 
   if (turn.action === "set_slots") {
@@ -224,38 +307,65 @@ export async function runPolicyTurn(args: {
       turn.slots.product ||
       turn.productHypothesis ||
       (cog.pending?.kind === "confirm_product" ? cog.pending.hypothesis : null);
+
+    const usCity = turn.slots.usCity ? parseUsShoppingCity(turn.slots.usCity) : null;
+    const safeSlots = { ...turn.slots, usCity };
+
+    if (step === "await_shopping_city" && usCity) {
+      return {
+        bubbles: turn.askUser ? [turn.askUser] : [],
+        confirmedUsCity: usCity,
+        applySlots: safeSlots,
+        fallthrough: false,
+        monologueLog: cog.lastMonologue,
+      };
+    }
+
     if (product && (hasMedia || cog.pending || !s.searchQuery)) {
-      // Treat as confirmed if model sets slots with product after image/confirm context
       if (cog.pending || hasMedia || turn.confidence >= 0.7) {
         cog.pending = null;
         const ask =
           turn.proactiveAsk ??
           predictiveAsk({
             product,
-            shoppingCity: turn.slots.usCity ?? (s.shoppingCity === "New York" ? undefined : s.shoppingCity),
+            shoppingCity: usCity ?? undefined,
             deliveryCity: turn.slots.ghCity ?? s.deliveryCity,
             tone: cog.persona.communication,
           });
         return {
           bubbles: ask ? [`Got it — ${product}.`, ask] : [`Got it — ${product}.`],
           confirmedProduct: product,
-          applySlots: turn.slots,
+          applySlots: safeSlots,
+          confirmedUsCity: usCity ?? undefined,
           fallthrough: false,
           monologueLog: cog.lastMonologue,
         };
       }
     }
     return {
-      bubbles: [],
-      applySlots: turn.slots,
-      fallthrough: true,
+      bubbles: turn.askUser ? [turn.askUser] : [],
+      applySlots: safeSlots,
+      fallthrough: !turn.askUser,
       monologueLog: cog.lastMonologue,
     };
   }
 
-  // search_ok / ack — may fall through to step machine, but still proactive ask if needed
-  if (turn.proactiveAsk && ["await_product", "idle"].includes(s.step) && !text) {
+  // search_ok / ack
+  if (turn.proactiveAsk && ["await_product", "idle", "await_shopping_city"].includes(step)) {
     return { bubbles: [turn.proactiveAsk], fallthrough: false };
+  }
+
+  if (step === "await_shopping_city") {
+    // Never fall through to treat free text as a city
+    return {
+      bubbles: turn.askUser
+        ? [turn.askUser]
+        : [
+            `I need a US shopping city — New York or Atlanta are usually best. Which should I use?`,
+          ],
+      fallthrough: false,
+      monologueLog: cog.lastMonologue,
+    };
   }
 
   return {

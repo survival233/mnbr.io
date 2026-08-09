@@ -39,14 +39,25 @@ export function makeLlm(): LlmConfig | null {
   return null;
 }
 
-/** Prefer a vision-capable OpenAI model when images are present. */
-export function makeVisionLlm(): LlmConfig | null {
-  const base = makeLlm();
-  if (!base || base.provider !== "openai") return base;
+/** Always OpenAI when a key exists — HF cannot do vision / reliable cognition. */
+export function makeOpenAiLlm(model?: string): LlmConfig | null {
+  if (!process.env.OPENAI_API_KEY) return null;
   return {
-    ...base,
-    model: process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    provider: "openai",
+    baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+    apiKey: process.env.OPENAI_API_KEY,
+    model: model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   };
+}
+
+/** Vision path: require OpenAI. Never fall back to HF for images. */
+export function makeVisionLlm(): LlmConfig | null {
+  return makeOpenAiLlm(process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini");
+}
+
+/** Conversational cognition: prefer OpenAI even if LLM_PROVIDER=hf. */
+export function makeCognitiveLlm(): LlmConfig | null {
+  return makeOpenAiLlm() ?? makeLlm();
 }
 
 async function chatCompletions(cfg: LlmConfig, body: Record<string, unknown>): Promise<any> {
@@ -222,7 +233,8 @@ You MUST reply with ONE JSON object only (no markdown) matching this shape:
 Rules:
 - If the user sent an image of a product, identify it (e.g. PlayStation 5) and usually action=propose_product with confirmQuestion like "Looks like a PlayStation 5 — want me to shop that for Ghana hand-delivery?"
 - Never invent a product if the image/text is unclear — action=ask_user.
-- ghCity = Ghana delivery city; usCity = US shopping city.
+- ghCity = Ghana delivery city; usCity = US shopping city (must be a real US city name like New York, Atlanta — never put questions into slots).
+- If the user asks which city is best / for advice, action=ask_user and put a short recommendation in askUser (suggest New York or Atlanta), do NOT set usCity to their question text.
 - If user affirms a pending product confirm, action=set_slots with product filled.
 - If user changes product mid-flow, set conflict and propose/ask accordingly.
 - proactiveAsk = one natural next question for a missing slot (never payment).

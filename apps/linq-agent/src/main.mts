@@ -100,7 +100,14 @@ const server = createServer(async (req, res) => {
       sessions: stats.count,
       inboundCount,
       relay: relayConfigured() ? "configured" : "off",
-      vision: process.env.OPENAI_API_KEY ? "openai" : process.env.HF_TOKEN ? "hf-text-only" : "off",
+      vision: process.env.OPENAI_API_KEY ? "openai" : "off",
+      cognition:
+        process.env.OPENAI_API_KEY
+          ? "openai"
+          : process.env.HF_TOKEN
+            ? "hf-fallback"
+            : "off",
+      llmProvider: process.env.LLM_PROVIDER ?? "auto",
     });
     return;
   }

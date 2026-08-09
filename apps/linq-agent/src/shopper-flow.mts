@@ -23,6 +23,7 @@ import {
 } from "./settlement-bridge.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
+import { parseUsShoppingCity, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
 
 type TravelerSeed = {
   id: string;
@@ -453,7 +454,10 @@ function applyCognitiveSlots(
     category?: string | null;
   },
 ) {
-  if (slots.usCity) s.shoppingCity = normalizeCity(slots.usCity) ?? slots.usCity;
+  if (slots.usCity) {
+    const us = parseUsShoppingCity(slots.usCity);
+    if (us) s.shoppingCity = us;
+  }
   if (slots.ghCity) s.deliveryCity = normalizeCity(slots.ghCity) ?? slots.ghCity;
   if (slots.deadline) s.deadline = parseDate(slots.deadline) ?? undefined;
   if (typeof slots.maxFeeUsd === "number" && slots.maxFeeUsd > 0) {
@@ -542,26 +546,44 @@ async function handleInboundInner(
     }
   }
 
-  // Cognitive turn: vision confirm, persona, conflicts, proactive asks
+  // Cognitive turn on every journey step (vision, clarifies, city advice, slots)
   const shouldCognize =
     hasImages ||
-    s.step === "await_product_confirm" ||
-    s.step === "await_product" ||
     Boolean(s.cognition?.pending) ||
+    [
+      "await_product",
+      "await_product_confirm",
+      "await_shopping_city",
+      "await_listing",
+      "await_delivery_city",
+      "await_deadline",
+      "await_max_fee",
+    ].includes(s.step) ||
     process.env.LINQ_COGNITION === "1";
 
   if (shouldCognize) {
-    if (hasImages && s.chatId) presenceTyping(s);
+    if ((hasImages || s.step === "await_shopping_city") && s.chatId) presenceTyping(s);
     const decision = await runPolicyTurn({ session: s, text, imageUrls });
     if (decision.applySlots) applyCognitiveSlots(s, decision.applySlots);
     if (decision.bubbles.length) await say(s, ...decision.bubbles);
     if (decision.confirmedProduct) {
       await commitConfirmedProduct(s, decision.confirmedProduct, decision.applySlots);
-      // commit may have already searched; if still awaiting city, bubbles already asked
-      if (s.step === "await_shopping_city" && !decision.bubbles.some((b) => /city/i.test(b))) {
-        await reply(s, `Which US city should I shop in for ${s.searchQuery}? New York is usually solid.`);
+      if (decision.confirmedUsCity) {
+        s.shoppingCity = decision.confirmedUsCity;
+        markSessionDirty();
+        await runSearchFlow(s);
+        return;
+      }
+      if (s.step === "await_shopping_city" && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
+        await reply(s, `Which US city should I shop in for ${s.searchQuery}? New York is usually strongest.`);
       }
       markSessionDirty();
+      return;
+    }
+    if (decision.confirmedUsCity) {
+      s.shoppingCity = decision.confirmedUsCity;
+      markSessionDirty();
+      await runSearchFlow(s);
       return;
     }
     if (!decision.fallthrough) {
@@ -625,10 +647,22 @@ async function handleInboundInner(
         return;
       }
       if (/^(ok|okay|sure|thanks|thank you|cool|great)\.?$/i.test(text)) {
-        await reply(s, `Still on it — which US city should I search near?`);
+        await reply(s, `Still on it — which US city should I search near? New York is usually strongest.`);
         return;
       }
-      s.shoppingCity = normalizeCity(text) ?? text;
+      if (isCityAdviceQuestion(text)) {
+        await say(s, ...recommendUsCityBubble(s.searchQuery));
+        return;
+      }
+      const city = parseUsShoppingCity(text);
+      if (!city) {
+        await reply(
+          s,
+          `I need a real US shopping city — try New York, Atlanta, Houston, or LA.`,
+        );
+        return;
+      }
+      s.shoppingCity = city;
       markSessionDirty();
       await runSearchFlow(s);
       return;
