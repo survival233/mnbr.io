@@ -28,9 +28,25 @@ function serialize(s: Session): SerializedSession {
 }
 
 function deserialize(raw: SerializedSession): Session {
+  const flightOptions = raw.flightOptions?.map((o) => ({
+    ...o,
+    departAt: new Date(o.departAt as unknown as string),
+    arriveAt: new Date(o.arriveAt as unknown as string),
+  }));
+  const selectedFlight = raw.selectedFlight
+    ? {
+        ...raw.selectedFlight,
+        departAt: new Date(raw.selectedFlight.departAt as unknown as string),
+        arriveAt: new Date(raw.selectedFlight.arriveAt as unknown as string),
+      }
+    : undefined;
   return {
     ...raw,
+    mode: raw.mode ?? "shop",
     deadline: raw.deadline ? new Date(raw.deadline) : undefined,
+    travelArriveBy: raw.travelArriveBy ? new Date(raw.travelArriveBy as unknown as string) : undefined,
+    flightOptions,
+    selectedFlight,
     step: raw.step as Step,
   };
 }

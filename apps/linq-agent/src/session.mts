@@ -1,7 +1,11 @@
 import { endOfLocalDay } from "@manebra/shared";
 import type { ProductListing } from "@manebra/catalog";
+import type { FlightOption } from "@manebra/flights";
 import { loadSessionsInto, schedulePersist, persistNow } from "./session-store.mts";
 import { blankCognition, type CognitionState } from "./cognition/state.mts";
+import type { EarnOffer } from "./traveler-bridge.mts";
+
+export type AgentMode = "shop" | "travel";
 
 export type Step =
   | "idle"
@@ -16,6 +20,12 @@ export type Step =
   | "await_traveler"
   | "await_pay_confirm"
   | "await_handover_done"
+  | "await_travel_intent"
+  | "await_flight_pick"
+  | "await_book_confirm"
+  | "trip_confirmed"
+  | "await_earn_opt_in"
+  | "await_job_pick"
   | "done";
 
 export type RankedTraveler = {
@@ -36,6 +46,7 @@ export type Session = {
   relayReplySeq?: number;
   /** Inbound Relay message id (for reply_to / read). */
   relayMessageId?: string;
+  mode: AgentMode;
   step: Step;
   searchQuery?: string;
   shoppingCity: string;
@@ -53,6 +64,15 @@ export type Session = {
   handoverCode?: string;
   fundTxHash?: string;
   totalCents?: number;
+  /** Travel mode */
+  travelOrigin?: string;
+  travelDestination?: string;
+  travelDepartDate?: string;
+  travelArriveBy?: Date;
+  flightOptions?: FlightOption[];
+  selectedFlight?: FlightOption;
+  flightBookingRef?: string;
+  earnOffers?: EarnOffer[];
   /** Multimodal cognition: persona, episodic memory, pending product confirm. */
   cognition?: CognitionState;
   updatedAt: number;
@@ -97,6 +117,7 @@ export function getOrCreateSession(
       phone,
       chatId,
       channel: opts?.channel ?? "linq",
+      mode: "shop",
       step: "idle",
       shoppingCity: "New York",
       updatedAt: Date.now(),
@@ -110,14 +131,16 @@ export function getOrCreateSession(
     s.relayReplySeq = 0;
   }
   if (opts?.relayMessageId) s.relayMessageId = opts.relayMessageId;
-  // Backfill for sessions restored from disk before channel existed
+  // Backfill for sessions restored from disk before channel/mode existed
   if (!(s as Session).channel) s.channel = "linq";
+  if (!(s as Session).mode) s.mode = "shop";
   s.updatedAt = Date.now();
   touchPersist();
   return s;
 }
 
 export function resetSession(s: Session) {
+  s.mode = "shop";
   s.step = "idle";
   s.searchQuery = undefined;
   s.shoppingCity = "New York";
@@ -135,6 +158,14 @@ export function resetSession(s: Session) {
   s.handoverCode = undefined;
   s.fundTxHash = undefined;
   s.totalCents = undefined;
+  s.travelOrigin = undefined;
+  s.travelDestination = undefined;
+  s.travelDepartDate = undefined;
+  s.travelArriveBy = undefined;
+  s.flightOptions = undefined;
+  s.selectedFlight = undefined;
+  s.flightBookingRef = undefined;
+  s.earnOffers = undefined;
   // Keep long-horizon persona/memory; clear only in-flight confirm.
   if (s.cognition) {
     s.cognition.pending = null;

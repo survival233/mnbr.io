@@ -24,6 +24,8 @@ import {
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
 import { parseUsShoppingCity, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
+import { isTravelIntent } from "@manebra/flights";
+import { enterTravelMode, handleTravelInbound } from "./travel-flow.mts";
 
 type TravelerSeed = {
   id: string;
@@ -217,12 +219,59 @@ function travelerLabels(s: Session) {
   }));
 }
 
+async function loadLiveTravelers(city: string, deadline: Date): Promise<TravelerSeed[] | null> {
+  if (!process.env.DATABASE_URL?.trim()) return null;
+  try {
+    const { prisma } = await import("@manebra/db");
+    const trips = await prisma.travelerTrip.findMany({
+      where: {
+        status: "upcoming",
+        direction: "us_to_gh",
+        destinationCity: city,
+        departureDate: { lte: deadline },
+      },
+      include: { traveler: true },
+      take: 20,
+      orderBy: { departureDate: "asc" },
+    });
+    if (!trips.length) return null;
+    return trips.map((t) => ({
+      id: t.travelerId,
+      name: t.traveler.fullName,
+      trustScore: t.traveler.trustScore,
+      avgRating: t.traveler.avgRating == null ? null : Number(t.traveler.avgRating),
+      totalDeliveries: t.traveler.totalDeliveries,
+      minFeeCents: 2000,
+      trip: {
+        id: t.id,
+        travelerId: t.travelerId,
+        direction: "us_to_gh" as const,
+        destinationCity: t.destinationCity,
+        departureDate: t.departureDate,
+        status: "upcoming" as const,
+      },
+      profile: {
+        id: t.travelerId,
+        isVerified: t.traveler.isVerified,
+        accountStatus: "active" as const,
+        trustScore: t.traveler.trustScore,
+        avgRating: t.traveler.avgRating == null ? null : Number(t.traveler.avgRating),
+        totalDeliveries: t.traveler.totalDeliveries,
+      },
+    }));
+  } catch (e: any) {
+    console.warn(`[linq-agent] live travelers unavailable: ${e?.message ?? e}`);
+    return null;
+  }
+}
+
 async function runMatching(s: Session): Promise<string> {
-  const travelers = seedTravelers();
   const selected = s.selected!;
   const city = s.deliveryCity!;
   const deadline = endOfLocalDay(s.deadline!);
   const category = s.category ?? categoryOf(selected.productTitle) ?? "electronics";
+  const live = await loadLiveTravelers(city, deadline);
+  const travelers = live ?? seedTravelers();
   const itemRequest = {
     id: "item-linq",
     direction: "us_to_gh" as const,
@@ -518,6 +567,29 @@ async function handleInboundInner(
     !hasImages &&
     /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
 
+  // Travel mode continuation (flight pick / book / earn)
+  if (
+    s.mode === "travel" ||
+    [
+      "await_travel_intent",
+      "await_flight_pick",
+      "await_book_confirm",
+      "trip_confirmed",
+      "await_earn_opt_in",
+      "await_job_pick",
+    ].includes(s.step)
+  ) {
+    await handleTravelInbound(s, text, { reply, say });
+    return;
+  }
+
+  // Switch into travel from shop when NL looks like a flight request
+  if (text && isTravelIntent(text) && !hasImages) {
+    enterTravelMode(s);
+    await handleTravelInbound(s, text, { reply, say });
+    return;
+  }
+
   if (intent.kind === "restart" || s.step === "idle" || s.step === "done") {
     resetSession(s);
     s.step = "await_product";
@@ -526,7 +598,7 @@ async function handleInboundInner(
       await replyPair(
         s,
         "Hey — I’m Manebra.",
-        "I help you buy from US stores and get it hand-carried to Ghana.\n\nWhat are you looking for? Text or a photo works.",
+        "I can shop US→Ghana hand-delivery, or find you a flight.\n\nWhat do you need — a product (text/photo) or a flight?",
       );
       return;
     }
@@ -534,7 +606,7 @@ async function handleInboundInner(
       await replyPair(
         s,
         "Hey — I’m Manebra.",
-        "I help you buy from US stores and get it hand-carried to Ghana.\n\nWhat are you looking for? Text or a photo works.",
+        "I can shop US→Ghana hand-delivery, or find you a flight.\n\nWhat do you need — a product (text/photo) or a flight?",
       );
       const rest = text.replace(/^(hi|hello|hey|start|restart|menu)\b[,!.\s]*/i, "").trim();
       if (!rest) return;
