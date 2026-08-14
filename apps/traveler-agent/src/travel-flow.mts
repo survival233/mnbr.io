@@ -6,6 +6,7 @@ import {
   searchFlights,
   bookFlight,
   formatFlightOption,
+  parseDepartDate,
   type FlightOption,
 } from "@manebra/flights";
 import type { Session } from "./session.mts";
@@ -63,6 +64,13 @@ export async function handleTravelInbound(
   return handleCollectAndSearch(s, t, deps);
 }
 
+const ACCEPT_OFFER_RE =
+  /^(y|yes|ok|okay|sure|yeah|yep|yup|idk|whatever|you pick|up to you|sounds good|that works|that one|the first|first one)\b/i;
+
+function acceptsOffer(text: string): boolean {
+  return ACCEPT_OFFER_RE.test(text.trim());
+}
+
 async function handleCollectAndSearch(
   s: Session,
   text: string,
@@ -72,7 +80,16 @@ async function handleCollectAndSearch(
   const trip = ensureTrip(s);
   const before = tripSnapshot(trip);
 
-  mergeTripState(trip, text);
+  if (acceptsOffer(text) && s.offer && s.offer.field !== "flight") {
+    if (s.offer.field === "origin") trip.origin = s.offer.value;
+    else if (s.offer.field === "destination") trip.destination = s.offer.value;
+    else if (s.offer.field === "departure_date") trip.departure_date = s.offer.value;
+    if (!trip.confirmed.includes(s.offer.field)) trip.confirmed.push(s.offer.field);
+    s.offer = undefined;
+  } else {
+    const rest = text.replace(/^(n|no|nope|nah)[,.\s]+/i, "").trim();
+    mergeTripState(trip, rest || text);
+  }
   mirrorTripToLegacy(s);
   s.step = "await_travel_intent";
   persistTrip(s);
@@ -85,6 +102,10 @@ async function handleCollectAndSearch(
 
   const ask = nextQuestion(trip);
   if (ask) {
+    if (ask.field === "departure_date") {
+      s.offer = { field: "departure_date", value: parseDepartDate("15th August") ?? "15th August" };
+    }
+    persistTrip(s);
     // Only ask for the first missing field — never re-ask confirmed ones.
     await reply(s, ask.text);
     return true;
@@ -109,6 +130,7 @@ async function handleCollectAndSearch(
     }
     s.flightOptions = options;
     s.step = "await_flight_pick";
+    s.offer = { field: "flight", value: "0" };
     persistTrip(s);
     const lines = options.map((o, i) => formatFlightOption(o, i)).join("\n\n");
     await say(
@@ -137,7 +159,11 @@ async function handlePickOrBook(
     return true;
   }
 
-  const idx = pickIndex(text, options);
+  let idx = pickIndex(text, options);
+  if (idx == null && acceptsOffer(text)) {
+    idx = s.offer?.field === "flight" ? parseInt(s.offer.value, 10) : 0;
+    if (!Number.isFinite(idx) || idx < 0 || idx >= options.length) idx = 0;
+  }
   if (idx == null) {
     await reply(
       s,

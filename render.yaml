@@ -1,8 +1,11 @@
 # Manebra — Render blueprint
 #
-# Shopper (linq-agent): Linq + optional Relay chat pipe
-# Traveler (traveler-agent): separate service — Linq first; optional Relay later
-#   → https://<traveler-service>.onrender.com/webhooks/linq?version=2026-02-03
+# Shopper (shopper-agent): Relay chat pipe
+# Traveler (traveler-agent): separate service
+#
+# Shopper folder is apps/shopper-agent. Keep the live Render service name
+# `manebra-linq-agent` so https://manebra-linq-agent.onrender.com stays stable
+# for existing Relay agents. Do not rename the cloud hostname in this pass.
 services:
   - type: web
     name: manebra-linq-agent
@@ -10,7 +13,7 @@ services:
     plan: starter
     region: oregon
     buildCommand: npm install --include=dev && npm run db:generate
-    startCommand: npm run linq-agent
+    startCommand: npm run shopper-agent
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION

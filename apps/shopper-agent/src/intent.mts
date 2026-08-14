@@ -21,7 +21,8 @@ export type ClassifiedIntent = {
 const REJECT_RE =
   /^(wrong|nope|nah|none|not\s+(these|those|it|right)|try\s+again|search\s+again|something\s+else|different|not\s+what\s+i|these\s+aren'?t|that'?s\s+wrong|restart\s+search)\b/i;
 
-const YES_RE = /^(y|yes|ok|okay|sure|yeah|yep|yup|affirmative)\b/i;
+const YES_RE =
+  /^(y|yes|ok|okay|sure|yeah|yep|yup|affirmative|that'?s\s+fine|that'?s\s+ok(?:ay)?|that\s+works|sounds\s+good)\b/i;
 const NO_RE = /^(n|no|nope|nah|cancel|never\s?mind)\b/i;
 const RESTART_RE = /^(hi|hello|hey|start|restart|menu)\b/i;
 

@@ -5,10 +5,13 @@ import {
   resetSession,
   markSessionDirty,
   hasTripProgress,
+  allSessions,
   type Session,
 } from "./session.mts";
 import { handleTravelInbound } from "./travel-flow.mts";
 import { blankTrip } from "./trip-state.mts";
+import { latestActiveCarry, updateCarry } from "../../agent-cli/src/demo-marketplace.mts";
+import { demoLocalChain } from "../../agent-cli/src/local-escrow.mts";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -78,6 +81,104 @@ async function say(s: Session, ...bubbles: string[]) {
   }
 }
 
+function carryUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(0)}`;
+}
+
+function latestTravelerSession(): Session | null {
+  const withChat = allSessions().filter((s) => s.chatId);
+  if (!withChat.length) return null;
+  return withChat.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+}
+
+/** Ping Traveler when a shopper request appears or funds land (shared marketplace file). */
+export async function syncTravelerMarketplace(): Promise<void> {
+  if (!demoLocalChain()) return;
+  const carry = latestActiveCarry();
+  if (!carry) return;
+  const s = latestTravelerSession();
+  if (!s?.chatId) return;
+
+  if (carry.status === "offered" && !carry.notifiedTraveler) {
+    updateCarry(carry.id, { notifiedTraveler: true });
+    await say(
+      s,
+      `New carry request: ${carry.item} — about ${carryUsd(carry.totalCents)}.`,
+      `Accept or decline?`,
+    );
+    return;
+  }
+  if (carry.status === "funded" && !carry.notifiedTravelerFunded) {
+    updateCarry(carry.id, { notifiedTravelerFunded: true });
+    await say(
+      s,
+      `Shopper funded — ${carry.item} is locked in escrow.`,
+      `When you meet, enter their 6-digit handover code.`,
+    );
+  }
+}
+
+async function tryHandleDemoCarry(
+  s: Session,
+  text: string,
+  io: { reply: typeof reply; say: typeof say },
+): Promise<boolean> {
+  if (!demoLocalChain()) return false;
+  const carry = latestActiveCarry();
+  if (!carry) return false;
+
+  const yes = /^(y|yes|ok|okay|sure|yeah|yep|accept)\b/i.test(text);
+  const no = /^(n|no|nope|nah|decline|can'?t)\b/i.test(text);
+  const flights = /^(skip|flights?)\b/i.test(text);
+  const confirm = /^(confirm|done|delivered|complete)\b/i.test(text);
+  const code = text.match(/\b(\d{6})\b/)?.[1];
+
+  if (carry.status === "offered") {
+    if (yes) {
+      updateCarry(carry.id, { status: "accepted", notifiedShopper: false });
+      await io.say(s, `Accepted. Waiting for the shopper to fund — no carry until then.`);
+      return true;
+    }
+    if (no) {
+      updateCarry(carry.id, { status: "declined", notifiedShopper: false });
+      await io.say(s, `Declined. I’ll let the shopper know.`);
+      return true;
+    }
+    if (flights) return false;
+    await io.say(
+      s,
+      `Carry request: ${carry.item} — about ${carryUsd(carry.totalCents)}.`,
+      `Accept or decline?`,
+    );
+    return true;
+  }
+
+  if (carry.status === "accepted") {
+    await io.reply(s, `Waiting for the shopper to fund.`);
+    return true;
+  }
+
+  if (carry.status === "funded") {
+    const entered = code ?? (confirm ? carry.handoverCode : null);
+    if (entered && entered === carry.handoverCode) {
+      try {
+        const { settleLocalEscrow } = await import("../../agent-cli/src/local-escrow.mts");
+        await settleLocalEscrow({ escrowId: carry.escrowId as `0x${string}`, action: "release" });
+        updateCarry(carry.id, { status: "released" });
+        await io.reply(s, `Handover confirmed — escrow released. You’re paid (test USDC).`);
+      } catch (e: any) {
+        console.error(`[traveler-agent] local release: ${e?.message ?? e}`);
+        await io.reply(s, `Couldn’t release escrow — ${e?.message ?? e}`);
+      }
+      return true;
+    }
+    await io.reply(s, `Enter the 6-digit handover code from the shopper (or say confirm).`);
+    return true;
+  }
+
+  return false;
+}
+
 export async function handleInbound(args: {
   phone: string;
   chatId: string | null;
@@ -92,6 +193,8 @@ export async function handleInbound(args: {
     relayEventId: args.relayEventId,
     relayMessageId: args.relayMessageId,
   });
+
+  if (await tryHandleDemoCarry(s, text, { reply, say })) return;
 
   const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
   const restart = /^(restart|start over|reset|menu)\b/i.test(text);

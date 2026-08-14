@@ -34,6 +34,8 @@ export type Session = {
   selectedFlight?: FlightOption;
   flightBookingRef?: string;
   earnOffers?: EarnOffer[];
+  /** Last slot the agent offered (e.g. suggested date or first flight). */
+  offer?: { field: "origin" | "destination" | "departure_date" | "flight"; value: string };
   updatedAt: number;
 };
 
@@ -118,6 +120,7 @@ export function resetSession(s: Session) {
   s.selectedFlight = undefined;
   s.flightBookingRef = undefined;
   s.earnOffers = undefined;
+  s.offer = undefined;
   s.updatedAt = Date.now();
   touchPersist();
 }
@@ -128,6 +131,10 @@ export function markSessionDirty() {
 
 export function persistSessionsNow() {
   persistNow(byPhone);
+}
+
+export function allSessions(): Session[] {
+  return [...byPhone.values()];
 }
 
 export function sessionStats(): { count: number; lastActivityAt: number | null } {

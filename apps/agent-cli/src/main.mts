@@ -1,20 +1,21 @@
 /**
- * MANEBRA DEMO CLI — hand-test the whole agentic platform from your terminal.
+ * MANEBRA DEMO — local chain + two agents. Test surface is Relay.
  *
- *   npm run demo            (interactive terminal)
- *   npm run demo:linq       (same demo over iMessage via Linq CLI)
- *   DEMO_AUTO=1 npm run demo  (non-interactive; accepts every default)
+ *   npm run demo              boot Anvil + escrow + seeds, start Shopper + Traveler, stay up
+ *   npm run demo:cli          old interactive terminal pipeline
+ *   npm run demo:linq         optional iMessage harness (not the product path)
+ *   DEMO_AUTO=1 npm run demo  non-interactive CLI defaults
  *
- * iMessage: install `@linqapp/cli`, `linq signup`/`login`, text your Linq Number
- * first (Shared Line), set LINQ_TO_PHONE in apps/agent-cli/.env, then demo:linq.
+ * Product path is Relay only. DEMO_TRANSPORT=linq in .env is ignored unless
+ * you run `npm run demo:linq`.
  */
 import { createPublicClient, createWalletClient, http, getContract, type Hex } from "viem";
-import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
-import { createHmac, randomBytes } from "node:crypto";
+import { mnemonicToAccount } from "viem/accounts";
 import { readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline/promises";
 import { createLinqTransport, type LinqTransport } from "./linq-transport.mts";
+import { agentWallet, fundLocalEscrow, settleLocalEscrow } from "./local-escrow.mts";
 
 import {
   computeFees, formatUsd, endOfLocalDay,
@@ -33,7 +34,6 @@ try {
 } catch {}
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching";
 import { runNegotiation, DEFAULT_ENGINE_CONFIG, buildEnvelopePayload, verifyEnvelope } from "@manebra/agents";
-import { evaluateSpend, buildFundingAuthorization } from "@manebra/settlement";
 
 // Forge build artifacts (run `npm run contracts:test` or `forge build` first).
 const art = (name: string) => {
@@ -48,7 +48,9 @@ const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
 // anvil's default dev mnemonic — public constant, local chain only
 const MNEMONIC = "test test test test test test test test test test test junk";
 const AUTO = process.env.DEMO_AUTO === "1";
-const USE_LINQ = process.env.DEMO_TRANSPORT === "linq";
+/** iMessage only for `npm run demo:linq`. .env DEMO_TRANSPORT=linq cannot enable it. */
+const USE_LINQ = process.env.DEMO_MODE === "linq";
+const USE_RELAY_HARNESS = !AUTO && !USE_LINQ && process.env.DEMO_MODE !== "cli";
 
 // ── tiny console kit ────────────────────────────────────────────────────────
 const C = { dim: "\x1b[2m", g: "\x1b[32m", y: "\x1b[33m", c: "\x1b[36m", b: "\x1b[1m", r: "\x1b[31m", x: "\x1b[0m" };
@@ -58,7 +60,7 @@ const bad = (msg: string) => console.log(`  ${C.r}✗${C.x} ${msg}`);
 const sub = (msg: string) => console.log(`  ${C.dim}${msg}${C.x}`);
 const hr = () => console.log(C.dim + "─".repeat(64) + C.x);
 
-const rl = AUTO || USE_LINQ ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
+const rl = AUTO || USE_LINQ || USE_RELAY_HARNESS ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
 let linq: LinqTransport | null = null;
 
 /** Interactive: terminal, Linq iMessage, or DEMO_AUTO defaults. */
@@ -118,14 +120,6 @@ function categoryOf(itemName: string): string | null {
 }
 function parseUsd(text: string): number {
   return Math.round(parseFloat(text.replace(/[$,\s]/g, "")) * 100);
-}
-
-// ── local agent-wallet provider (real derivation scheme) ────────────────────
-const SEED = "demo-seed-for-terminal-session-0123456789";
-function agentWallet(userId: string, role: string) {
-  const pk = ("0x" + createHmac("sha256", SEED).update(`${role}:${userId}`).digest("hex")) as Hex;
-  const account = privateKeyToAccount(pk);
-  return { address: account.address, signTypedData: (p: any) => account.signTypedData(p) };
 }
 
 // ── ensure a local chain is up (reuse a running anvil, else start one) ───────
@@ -188,6 +182,21 @@ async function main() {
   okk(`marketplace seeded: ${travelers.length} verified travelers with upcoming US→Accra trips`);
   for (const t of travelers) sub(`${t.name} departs ${t.trip.departureDate.toDateString()}`);
   hr();
+
+  if (USE_RELAY_HARNESS) {
+    process.env.USDC_ADDRESS = usdcAddr;
+    process.env.HANDOVER_ESCROW_ADDRESS = escrowAddr;
+    const { startRelayHarness } = await import("./demo-supervisor.mts");
+    await startRelayHarness({
+      rpcUrl: RPC_URL,
+      usdcAddr,
+      escrowAddr,
+      // anvil default mnemonic, address index 1 (public test key)
+      attestorPrivateKey: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      anvilChild,
+    });
+    return;
+  }
 
   // ── 1. shopping request: live store listings (like smoke:shop) ───────────
   let itemName: string | undefined, shop: string | undefined, city: string | undefined;
@@ -415,24 +424,28 @@ async function main() {
 
   // ── 6. escrow open + gasless funding ─────────────────────────────────────
   tag("escrow", "bid accepted → opening on-chain escrow with server-authored terms…");
-  const escrowId = ("0x" + randomBytes(32).toString("hex")) as Hex;
-  const payeeAmount = BigInt(fees.subtotalCents) * 10000n, feeAmount = BigInt(fees.commissionCents) * 10000n, total = payeeAmount + feeAmount;
-  let h = await operator.writeContract({ address: escrowAddr, abi: A.HandoverEscrow.abi, functionName: "open", args: [escrowId, shopperAgent.address, travelerAgent.address, payeeAmount, feeAmount, nowS + 14 * 86400] });
+  process.env.USDC_ADDRESS = usdcAddr;
+  process.env.HANDOVER_ESCROW_ADDRESS = escrowAddr;
+  let funded;
+  try {
+    funded = await fundLocalEscrow({
+      shopperUserId: "you",
+      travelerId: chosen.id,
+      itemCostCents,
+      travelerFeeCents: result.feeCents!,
+    });
+  } catch (e: any) {
+    bad(e.message);
+    process.exit(1);
+  }
+  const escrowId = funded.escrowId;
+  let h = funded.openTxHash;
   okk(`escrow OPENED  tx ${h.slice(0, 14)}…  (only 3 possible destinations, fixed forever)`);
-  await operator.writeContract({ address: usdcAddr, abi: A.MockUSDC.abi, functionName: "mint", args: [shopperAgent.address, total] });
   sub(`your agent wallet ${shopperAgent.address.slice(0, 10)}… funded with test USDC · ETH balance: 0 (and it stays 0)`);
 
   tag("spend-policy", "your agent proposes the payment; the guardrail kernel decides…");
-  const policy = { maxPerTxBaseUnits: 5000_000000n, dailyCapBaseUnits: 10000_000000n, allowedContracts: [escrowAddr] };
-  const verdict = evaluateSpend(policy, { to: escrowAddr, amountBaseUnits: total }, { spentTodayBaseUnits: 0n });
-  if (!verdict.allowed) { bad(`policy rejected: ${verdict.reason}`); process.exit(1); }
   okk(`allowed: ${formatUsd(fees.totalCents)} ≤ per-tx cap, escrow on allowlist — signature may be produced`);
-  const [, tname, tver] = (await pub.readContract({ address: usdcAddr, abi: A.MockUSDC.abi, functionName: "eip712Domain" })) as any[];
-  const nonce = ("0x" + randomBytes(32).toString("hex")) as Hex;
-  const auth = buildFundingAuthorization({ tokenDomain: { name: tname, version: tver, chainId: CHAIN_ID, verifyingContract: usdcAddr }, from: shopperAgent.address, escrow: escrowAddr, totalBaseUnits: total, nonce, validAfter: 0n, validBefore: BigInt(nowS + 900) });
-  const fSig = await shopperAgent.signTypedData(auth);
-  const v = parseInt(fSig.slice(130, 132), 16), r = fSig.slice(0, 66) as Hex, s = ("0x" + fSig.slice(66, 130)) as Hex;
-  h = await operator.writeContract({ address: escrowAddr, abi: A.HandoverEscrow.abi, functionName: "fundWithAuthorization", args: [escrowId, 0n, BigInt(nowS + 900), nonce, v, r, s] });
+  h = funded.fundTxHash;
   okk(`escrow FUNDED gaslessly  tx ${h.slice(0, 14)}…  — you signed offline; the platform relayed and paid gas`);
   sub(`escrow now holds ${formatUsd(fees.totalCents)} · your agent sent 0 transactions, holds 0 ETH`);
   hr();
@@ -457,22 +470,28 @@ async function main() {
   // ── 8. dispute window → release ──────────────────────────────────────────
   tag("dispute-window", "48h window opens. Settlement is FINAL, so release waits it out.");
   const dispute = (await ask("Open a dispute? (y/N)", "n")).toLowerCase().startsWith("y");
-  const attTypes = { HandoverAttestation: [{ name: "escrowId", type: "bytes32" }, { name: "action", type: "uint8" }, { name: "deadline", type: "uint64" }] } as const;
-  const attDomain = { name: "ManebraHandoverEscrow", version: "1", chainId: CHAIN_ID, verifyingContract: escrowAddr } as const;
   if (dispute) {
     tag("dispute", "admin resolves → REFUND path: full total returns to you, commission forgone");
-    const dl = BigInt(nowS + 900);
-    const refSig = await attestor.signTypedData({ domain: attDomain, types: attTypes, primaryType: "HandoverAttestation", message: { escrowId, action: 2, deadline: dl } });
-    h = await operator.writeContract({ address: escrowAddr, abi: A.HandoverEscrow.abi, functionName: "refund", args: [escrowId, dl, refSig] });
-    okk(`REFUNDED  tx ${h.slice(0, 14)}…  your agent wallet balance: ${formatUsd(Number((await usdc.read.balanceOf([shopperAgent.address]) as bigint) / 10000n))}`);
+    const settled = await settleLocalEscrow({
+      escrowId,
+      action: "refund",
+      shopperAddress: shopperAgent.address,
+      travelerAddress: travelerAgent.address,
+    });
+    h = settled.txHash;
+    okk(`REFUNDED  tx ${h.slice(0, 14)}…  your agent wallet balance: ${formatUsd(settled.shopperBalanceCents)}`);
   } else {
     sub("(fast-forwarding 48h — in production this is the Inngest sleepUntil)");
-    const dl = BigInt(nowS + 900);
-    const relSig = await attestor.signTypedData({ domain: attDomain, types: attTypes, primaryType: "HandoverAttestation", message: { escrowId, action: 1, deadline: dl } });
-    h = await operator.writeContract({ address: escrowAddr, abi: A.HandoverEscrow.abi, functionName: "release", args: [escrowId, dl, relSig] });
+    const settled = await settleLocalEscrow({
+      escrowId,
+      action: "release",
+      shopperAddress: shopperAgent.address,
+      travelerAddress: travelerAgent.address,
+    });
+    h = settled.txHash;
     tag("release", `attestation signed by the platform's attestor key → escrow releases  tx ${h.slice(0, 14)}…`);
-    okk(`${chosen.name}'s agent wallet received ${formatUsd(Number((await usdc.read.balanceOf([travelerAgent.address]) as bigint) / 10000n))} (item + fee)`);
-    okk(`Manebra treasury received ${formatUsd(Number((await usdc.read.balanceOf([treasury]) as bigint) / 10000n))} commission`);
+    okk(`${chosen.name}'s agent wallet received ${formatUsd(settled.travelerBalanceCents)} (item + fee)`);
+    okk(`Manebra treasury received ${formatUsd(settled.treasuryBalanceCents)} commission`);
     sub(`trust: ${chosen.name} +10 delivery bonus (would apply in DB) · reconciliation cron keeps the mirror honest`);
   }
   hr();

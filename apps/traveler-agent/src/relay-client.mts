@@ -171,3 +171,20 @@ export async function registerWebhook(url: string): Promise<{ id?: string; signi
     signingSecret: out?.signing_secret,
   };
 }
+
+/** Telegram-style long poll. 409 if a webhook is still enabled on this token. */
+export async function pollEvents(args: {
+  cursor?: number;
+  timeout: number;
+  limit?: number;
+}): Promise<{ events: any[]; next_cursor: number }> {
+  const q = new URLSearchParams({
+    timeout: String(args.timeout),
+    cursor: String(args.cursor ?? 0),
+    limit: String(args.limit ?? 100),
+  });
+  return api(`/v1/events?${q}`, {
+    method: "GET",
+    timeoutMs: Math.max(35_000, args.timeout * 1000 + 10_000),
+  });
+}

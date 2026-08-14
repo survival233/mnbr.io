@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # List Linq webhook subscriptions and optionally delete stale laptop relays.
 # Usage:
-#   bash apps/linq-agent/scripts/webhook-hygiene.sh
-#   bash apps/linq-agent/scripts/webhook-hygiene.sh --delete-localhost
+#   bash apps/shopper-agent/scripts/webhook-hygiene.sh
+#   bash apps/shopper-agent/scripts/webhook-hygiene.sh --delete-localhost
 set -euo pipefail
 
 DELETE_LOCAL=0

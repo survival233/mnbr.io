@@ -16,13 +16,15 @@ const SHOP_STEPS = new Set<string>([
   "await_max_fee",
   "await_extend",
   "await_traveler",
+  "await_brief_confirm",
+  "await_traveler_decision",
   "await_pay_confirm",
   "await_handover_done",
   "done",
 ]);
 
 function storePath(): string {
-  return process.env.LINQ_SESSIONS_PATH?.trim() || DEFAULT_PATH;
+  return process.env.SHOPPER_SESSIONS_PATH?.trim() || process.env.LINQ_SESSIONS_PATH?.trim() || DEFAULT_PATH;
 }
 
 type Persisted = {
@@ -87,10 +89,10 @@ export function loadSessionsInto(map: Map<string, Session>): number {
       map.set(key, deserialize(raw));
       n++;
     }
-    console.log(`[linq-agent] restored ${n} session(s) from ${path}`);
+    console.log(`[shopper-agent] restored ${n} session(s) from ${path}`);
     return n;
   } catch (e: any) {
-    console.warn(`[linq-agent] session load failed: ${e?.message ?? e}`);
+    console.warn(`[shopper-agent] session load failed: ${e?.message ?? e}`);
     return 0;
   }
 }
@@ -106,7 +108,7 @@ function flush(map: Map<string, Session>) {
     renameSync(tmp, path);
     dirty = false;
   } catch (e: any) {
-    console.warn(`[linq-agent] session save failed: ${e?.message ?? e}`);
+    console.warn(`[shopper-agent] session save failed: ${e?.message ?? e}`);
   }
 }
 

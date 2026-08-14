@@ -1,7 +1,11 @@
-# Manebra Linq Agent — always-on iMessage shopper
+# Manebra Shopper Agent
 
-Testers **only open Messages**. They do not run `npm run demo` or `demo:linq`.
-You (or Render) run this service; it receives Linq webhooks and replies.
+Relay is the product chat surface (`npm run demo` starts this app). Leftover Linq/iMessage harness is optional (`demo:linq`).
+
+Production Relay still points at `https://manebra-linq-agent.onrender.com` until that Render service is renamed/redeployed. This repo’s blueprint is `manebra-shopper-agent` in [`render.yaml`](../../render.yaml).
+
+Testers on the leftover iMessage path **only open Messages**. They do not run `npm run demo` or `demo:linq`.
+You (or Render) run this service; Relay long-poll is the local inbound. Linq webhooks remain for the optional harness.
 
 Shopper journey: product → listing → city/deadline/fee → match traveler → **optional escrow** (test USDC).
 
@@ -16,9 +20,9 @@ Off by default. When `SETTLEMENT_ENABLED=1` and [`apps/api/.env`](../api/.env) h
 ```bash
 # Local sandbox (Anvil :8545 already deployed — see apps/api/.env)
 npm run seed:linq-travelers
-# in apps/linq-agent/.env:
+# in apps/shopper-agent/.env:
 # SETTLEMENT_ENABLED=1
-npm run linq-agent
+npm run shopper-agent
 ```
 
 **Base Sepolia (public):** fund deployer/operator/attestor ETH + Circle faucet USDC, then:
@@ -57,14 +61,14 @@ They must text first (inbound-first on free Shared Line). After that they just c
 
 ```bash
 # 1. Env
-cp apps/linq-agent/.env.example apps/linq-agent/.env
+cp apps/shopper-agent/.env.example apps/shopper-agent/.env
 # LINQ_API_KEY=$(linq tokens show)   # paste the UUID token
 # LINQ_FROM_PHONE=+12053968556
 # SERPAPI_API_KEY=…  HF_TOKEN or OPENAI_API_KEY
 # (missing keys also fall back to apps/agent-cli/.env)
 
 # 2. Start agent
-npm run linq-agent
+npm run shopper-agent
 # → listening on :8790   GET /health
 
 # 3. Forward Linq events (second terminal) — local only
@@ -78,14 +82,14 @@ Then text the Linq Number from an allowed contact.
 
 ### 1. Deploy
 
-Blueprint: [`render.yaml`](../../render.yaml) (service `manebra-linq-agent`).
+Blueprint: [`render.yaml`](../../render.yaml) (service `manebra-shopper-agent`).
 
 Or create a Render **Web Service** manually:
 
 | Setting | Value |
 |--------|--------|
 | Build | `npm install` |
-| Start | `npm run linq-agent` |
+| Start | `npm run shopper-agent` |
 | Health | `/health` |
 | Env | see below |
 
@@ -129,7 +133,7 @@ Save the signing secret from the response as `LINQ_WEBHOOK_SECRET` on the servic
 
 ```json
 {
-  "service": "manebra-linq-agent",
+  "service": "manebra-shopper-agent",
   "status": "ok",
   "uptimeSec": 120,
   "lastInboundAt": "…",
@@ -139,7 +143,7 @@ Save the signing secret from the response as `LINQ_WEBHOOK_SECRET` on the servic
 }
 ```
 
-Sessions persist to `apps/linq-agent/.sessions.json` (override with `LINQ_SESSIONS_PATH`).
+Sessions persist to `apps/shopper-agent/.sessions.json` (override with `SHOPPER_SESSIONS_PATH` or `LINQ_SESSIONS_PATH`).
 
 ## Conversational corrections
 
@@ -154,8 +158,8 @@ On listings, testers can:
 Laptop `linq webhooks listen` drops and stale relays cause “hi does nothing”. Clean up:
 
 ```bash
-bash apps/linq-agent/scripts/webhook-hygiene.sh
-bash apps/linq-agent/scripts/webhook-hygiene.sh --delete-localhost
+bash apps/shopper-agent/scripts/webhook-hygiene.sh
+bash apps/shopper-agent/scripts/webhook-hygiene.sh --delete-localhost
 ```
 
 Then create **one** permanent webhook to the hosted agent URL (see Production above).

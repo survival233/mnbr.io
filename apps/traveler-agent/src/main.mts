@@ -16,6 +16,10 @@ const SHARED_FROM_SIBLINGS = new Set([
   "OPENAI_API_KEY",
 ]);
 
+const linqOff =
+  process.env.LINQ_DISABLED === "1" || process.env.DEMO_RELAY_POLL === "1";
+const skipFromFiles = new Set(["DEMO_TRANSPORT", "LINQ_TO_PHONE", "LINQ_FROM_PHONE", "LINQ_CHAT_ID"]);
+
 function loadEnvFile(rel: string, allowKeys?: Set<string>) {
   try {
     const p = new URL(rel, import.meta.url);
@@ -24,6 +28,7 @@ function loadEnvFile(rel: string, allowKeys?: Set<string>) {
       if (!m) continue;
       const key = m[1]!;
       if (process.env[key]) continue;
+      if (linqOff && skipFromFiles.has(key)) continue;
       if (allowKeys && !allowKeys.has(key)) continue;
       process.env[key] = m[2]!.trim();
     }
@@ -33,16 +38,16 @@ function loadEnvFile(rel: string, allowKeys?: Set<string>) {
 }
 
 loadEnvFile("./../.env");
-loadEnvFile("./../../linq-agent/.env", SHARED_FROM_SIBLINGS);
+loadEnvFile("./../../shopper-agent/.env", SHARED_FROM_SIBLINGS);
 loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
 
 const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
   "./linq-client.mts"
 );
-const { extractRelayInbound, relayConfigured, verifyRelayWebhookSignature } = await import(
+const { extractRelayInbound, pollEvents, relayConfigured, verifyRelayWebhookSignature } = await import(
   "./relay-client.mts"
 );
-const { handleInbound } = await import("./traveler-flow.mts");
+const { handleInbound, syncTravelerMarketplace } = await import("./traveler-flow.mts");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
@@ -102,6 +107,77 @@ function rememberEvent(eventId: string | undefined): boolean {
   return true;
 }
 
+function ingestRelayEvent(event: any): void {
+  if ((event.event_type ?? event.type) !== "message.received") return;
+  if (!rememberEvent(event.event_id ?? event.id)) return;
+
+  const inbound = extractRelayInbound(event);
+  if (!inbound) return;
+
+  lastInboundAt = Date.now();
+  inboundCount += 1;
+  lastChannel = "relay";
+  console.log(`[traveler-agent] ← relay ${inbound.userId}: ${inbound.text.slice(0, 120)}`);
+  enqueueForIdentity(inbound.userId, () =>
+    handleInbound({
+      phone: inbound.userId,
+      chatId: inbound.conversationId,
+      text: inbound.text,
+      channel: "relay",
+      relayEventId: inbound.eventId,
+      relayMessageId: inbound.messageId,
+    }),
+  );
+}
+
+async function startRelayLongPoll() {
+  if (process.env.DEMO_RELAY_POLL !== "1") return;
+  if (!relayConfigured()) {
+    console.log(
+      "[traveler-agent] DEMO_RELAY_POLL=1 but RELAY_AGENT_TOKEN missing — set it in apps/traveler-agent/.env",
+    );
+    return;
+  }
+  let cursor = 0;
+  try {
+    while (true) {
+      const page = await pollEvents({ cursor, timeout: 0, limit: 100 });
+      cursor = page.next_cursor ?? cursor;
+      if (!page.events?.length || page.events.length < 100) break;
+    }
+    console.log(`[traveler-agent] Relay long-poll starting (cursor ${cursor})`);
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (/409/.test(msg)) {
+      console.error(
+        "[traveler-agent] Relay long-poll 409 — disable the webhook on this agent or use a local-only token",
+      );
+      return;
+    }
+    console.warn(`[traveler-agent] Relay backlog drain: ${msg}`);
+  }
+  const loop = async () => {
+    while (true) {
+      try {
+        const page = await pollEvents({ cursor, timeout: 25, limit: 100 });
+        for (const event of page.events ?? []) ingestRelayEvent(event);
+        cursor = page.next_cursor ?? cursor;
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        if (/409/.test(msg)) {
+          console.error(
+            "[traveler-agent] Relay long-poll 409 — disable the webhook on this agent or use a local-only token",
+          );
+          return;
+        }
+        console.warn(`[traveler-agent] Relay long-poll: ${msg}`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  };
+  void loop();
+}
+
 const server = createServer(async (req, res) => {
   const url = req.url ?? "/";
 
@@ -129,7 +205,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "POST" && url.startsWith("/webhooks/linq")) {
+  if (!linqOff && req.method === "POST" && url.startsWith("/webhooks/linq")) {
     const raw = await readBody(req);
     const secret = process.env.LINQ_WEBHOOK_SECRET;
     if (secret) {
@@ -186,27 +262,7 @@ const server = createServer(async (req, res) => {
     ok(res, { received: true }, 202);
 
     try {
-      const event = JSON.parse(raw);
-      if ((event.event_type ?? event.type) !== "message.received") return;
-      if (!rememberEvent(event.event_id ?? event.id)) return;
-
-      const inbound = extractRelayInbound(event);
-      if (!inbound) return;
-
-      lastInboundAt = Date.now();
-      inboundCount += 1;
-      lastChannel = "relay";
-      console.log(`[traveler-agent] ← relay ${inbound.userId}: ${inbound.text.slice(0, 120)}`);
-      enqueueForIdentity(inbound.userId, () =>
-        handleInbound({
-          phone: inbound.userId,
-          chatId: inbound.conversationId,
-          text: inbound.text,
-          channel: "relay",
-          relayEventId: inbound.eventId,
-          relayMessageId: inbound.messageId,
-        }),
-      );
+      ingestRelayEvent(JSON.parse(raw));
     } catch (e: any) {
       console.error(`[traveler-agent] relay handler error: ${e.message}`);
     }
@@ -227,13 +283,19 @@ function gracefulExit(code = 0) {
 
 server.listen(PORT, () => {
   console.log(`[traveler-agent] listening on :${PORT}`);
-  console.log(`[traveler-agent] webhook POST /webhooks/linq?version=2026-02-03`);
+  if (!linqOff) console.log(`[traveler-agent] webhook POST /webhooks/linq?version=2026-02-03`);
   console.log(`[traveler-agent] webhook POST /webhooks/relay (optional)`);
   console.log(
-    `[traveler-agent] linq=${
-      process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"
-    } relay=${relayConfigured() ? "set" : "off"}`,
+    `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"}`,
   );
+  void startRelayLongPoll();
+  if (process.env.PAYMENT_MODE === "demo" || process.env.DEMO_LOCAL_CHAIN === "1" || process.env.DEMO_LOCAL_CHAIN === "true") {
+    setInterval(() => {
+      void syncTravelerMarketplace().catch((e: any) => {
+        console.warn(`[traveler-agent] marketplace sync: ${e?.message ?? e}`);
+      });
+    }, 2000);
+  }
 });
 
 process.on("SIGINT", () => {

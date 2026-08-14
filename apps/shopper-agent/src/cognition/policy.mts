@@ -57,6 +57,14 @@ function entitiesSummary(s: Session): string {
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
     step: s.step,
+    form: {
+      searchQuery: s.searchQuery ?? null,
+      shoppingCity: s.shoppingCity,
+      deliveryCity: s.deliveryCity ?? null,
+      deadline: s.deadline?.toISOString?.() ?? null,
+      maxFeeCents: s.maxFeeCents ?? null,
+    },
+    pending: s.pending ?? s.offer ?? null,
   });
 }
 

@@ -14,6 +14,8 @@ export type Step =
   | "await_max_fee"
   | "await_extend"
   | "await_traveler"
+  | "await_brief_confirm"
+  | "await_traveler_decision"
   | "await_pay_confirm"
   | "await_handover_done"
   | "done";
@@ -26,6 +28,21 @@ export type RankedTraveler = {
 };
 
 export type Channel = "linq" | "relay";
+
+/** Last value the agent offered. “yeah” / “that one” apply this — not the raw utterance. */
+export type DialogOffer = {
+  field: "shoppingCity" | "deliveryCity" | "deadline" | "maxFeeCents" | "listing" | "traveler" | "pay";
+  value: string;
+};
+
+/** Open question the shopper must answer. Survives reconnect via session-store. */
+export type PendingSlot = {
+  slot: "shopping_city" | "delivery_city" | "need_by" | "delivery_fee" | "listing" | "traveler" | "pay" | "brief";
+  proposed: string | number | null;
+  kind: "date" | "choice" | "money" | "text" | "bool";
+  prompt: string;
+  options?: { id: string; label: string }[];
+};
 
 export type Session = {
   phone: string;
@@ -48,6 +65,10 @@ export type Session = {
   ranked?: RankedTraveler[];
   extendCandidate?: RankedTraveler;
   chosenTravelerId?: string;
+  /** Suggested slot shown in the last agent turn (dialog state, not chat log). */
+  offer?: DialogOffer;
+  /** Canonical open question. Prefer this over offer when resolving a turn. */
+  pending?: PendingSlot | null;
   bidId?: string;
   escrowId?: string;
   handoverCode?: string;
@@ -59,6 +80,8 @@ export type Session = {
 };
 
 const byPhone = new Map<string, Session>();
+/** Same Relay conversation keeps the same form + pending. */
+const byChat = new Map<string, Session>();
 let loaded = false;
 
 /** Call once at process start before accepting webhooks. */
@@ -66,6 +89,9 @@ export function initSessionStore(): void {
   if (loaded) return;
   loaded = true;
   loadSessionsInto(byPhone);
+  for (const s of byPhone.values()) {
+    if (s.chatId) byChat.set(s.chatId, s);
+  }
 }
 
 function touchPersist() {
@@ -79,7 +105,7 @@ export function digits(phone: string): string {
 /** Stable map key: E.164 digits for Linq phones; raw usr_/relay ids for Relay. */
 export function sessionKey(id: string): string {
   const t = id.trim();
-  if (t.startsWith("usr_") || t.startsWith("relay:") || t.startsWith("cnv_")) return t;
+  if (t.startsWith("usr_") || t.startsWith("relay:") || t.startsWith("cnv_") || t.startsWith("chat_")) return t;
   const d = digits(t);
   return d || t;
 }
@@ -91,7 +117,7 @@ export function getOrCreateSession(
 ): Session {
   if (!loaded) initSessionStore();
   const key = sessionKey(phone);
-  let s = byPhone.get(key);
+  let s = (chatId ? byChat.get(chatId) : undefined) ?? byPhone.get(key);
   if (!s) {
     s = {
       phone,
@@ -99,11 +125,18 @@ export function getOrCreateSession(
       channel: opts?.channel ?? "linq",
       step: "idle",
       shoppingCity: "New York",
+      pending: null,
       updatedAt: Date.now(),
     };
     byPhone.set(key, s);
+  } else {
+    byPhone.set(key, s);
+    if (s.phone !== phone) s.phone = phone;
   }
-  if (chatId) s.chatId = chatId;
+  if (chatId) {
+    s.chatId = chatId;
+    byChat.set(chatId, s);
+  }
   if (opts?.channel) s.channel = opts.channel;
   if (opts?.relayEventId) {
     s.relayEventId = opts.relayEventId;
@@ -130,6 +163,8 @@ export function resetSession(s: Session) {
   s.ranked = undefined;
   s.extendCandidate = undefined;
   s.chosenTravelerId = undefined;
+  s.offer = undefined;
+  s.pending = null;
   s.bidId = undefined;
   s.escrowId = undefined;
   s.handoverCode = undefined;
@@ -154,6 +189,10 @@ export function persistSessionsNow() {
   persistNow(byPhone);
 }
 
+export function allSessions(): Session[] {
+  return [...byPhone.values()];
+}
+
 export function sessionStats(): { count: number; lastActivityAt: number | null } {
   let last: number | null = null;
   for (const s of byPhone.values()) {
@@ -167,9 +206,12 @@ const MONTHS: Record<string, number> = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-/** Accepts "15th August", "aug 15", "15/08", "2026-08-15". */
+/** Accepts "15th August", "aug 15", "15/08", "2026-08-15", "today", "tomorrow", "the 20th". */
 export function parseDate(text: string): Date | null {
-  const t = text.toLowerCase().trim();
+  const t = text.toLowerCase().trim().replace(/^[,\s]+/, "");
+  const now = new Date();
+  if (/^today\b/.test(t)) return endOfLocalDay(now);
+  if (/^tomorrow\b/.test(t)) return endOfLocalDay(new Date(now.getTime() + 86400_000));
   const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return endOfLocalDay(new Date(+iso[1], +iso[2] - 1, +iso[3]));
   const slash = t.match(/^(\d{1,2})[\/.](\d{1,2})$/);
@@ -183,8 +225,12 @@ export function parseDate(text: string): Date | null {
   } else if (m) {
     day = parseInt(m[1].match(/\d/) ? m[1] : m[2], 10);
     mon = MONTHS[(m[1].match(/\d/) ? m[2] : m[1]).slice(0, 3)]!;
-  } else return null;
-  const now = new Date();
+  } else {
+    const dayOnly = t.match(/^(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?$/);
+    if (!dayOnly) return null;
+    day = +dayOnly[1]!;
+    mon = now.getMonth();
+  }
   let d = endOfLocalDay(new Date(now.getFullYear(), mon, day));
   if (d < now) d = endOfLocalDay(new Date(now.getFullYear() + 1, mon, day));
   return d;

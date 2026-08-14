@@ -27,6 +27,7 @@ packages/settlement/contracts/out/
 .DS_Store
 coverage/
 
-# linq-agent session durability
-apps/linq-agent/.sessions.json
-apps/linq-agent/.sessions.json.tmp
+# shopper-agent session durability
+apps/shopper-agent/.sessions.json
+apps/shopper-agent/.sessions.json.tmp
+apps/agent-cli/.demo-marketplace.json

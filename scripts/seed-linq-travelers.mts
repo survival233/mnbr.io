@@ -4,9 +4,9 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { LINQ_TRAVELERS } from "../apps/linq-agent/src/traveler-seeds.mts";
+import { LINQ_TRAVELERS } from "../apps/shopper-agent/src/traveler-seeds.mts";
 
-for (const rel of ["apps/api/.env", "apps/linq-agent/.env"]) {
+for (const rel of ["apps/api/.env", "apps/shopper-agent/.env"]) {
   try {
     for (const line of readFileSync(resolve(rel), "utf8").split("\n")) {
       const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
