@@ -21,8 +21,6 @@ import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import { LINQ_TRAVELERS } from "./traveler-seeds.mts";
 import {
-  settlementEnabled,
-  fundEscrowOrder,
   completeHandoverAndRelease,
 } from "./settlement-bridge.mts";
 import { demoLocalChain, fundLocalEscrow, settleLocalEscrow } from "../../agent-cli/src/local-escrow.mts";
@@ -703,6 +701,14 @@ async function lockTraveler(s: Session, idx: number): Promise<void> {
   );
 }
 
+function travelerDisplayName(s: Session, fallback = "The traveler"): string {
+  return (s.ranked ?? []).find((t) => t.id === s.chosenTravelerId)?.name ?? fallback;
+}
+
+function acceptedNoFundCopy(travelerName: string): string {
+  return `${travelerName} accepted. Funding isn’t available on this host yet — I’ll keep the order as accepted.`;
+}
+
 function nextRanked(s: Session): { id: string; name: string; departs: string } | null {
   const ranked = s.ranked ?? [];
   const i = ranked.findIndex((t) => t.id === s.chosenTravelerId);
@@ -749,18 +755,24 @@ export async function syncWaitingShoppers(): Promise<void> {
     if (!carry || carry.notifiedShopper) continue;
     if (carry.status === "accepted") {
       updateCarry(carry.id, { notifiedShopper: true });
-      s.step = "await_pay_confirm";
-      setOffer(
-        s,
-        "pay",
-        "yes",
-        `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
-      );
-      await say(
-        s,
-        `${carry.travelerName} accepted. Fund ${formatUsd(carry.totalCents)} USDC to lock it.`,
-        `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
-      );
+      if (demoLocalChain()) {
+        s.step = "await_pay_confirm";
+        setOffer(
+          s,
+          "pay",
+          "yes",
+          `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
+        );
+        await say(
+          s,
+          `${carry.travelerName} accepted. Fund ${formatUsd(carry.totalCents)} USDC to lock it.`,
+          `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
+        );
+      } else {
+        console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
+        clearPending(s);
+        await say(s, acceptedNoFundCopy(carry.travelerName));
+      }
     } else if (carry.status === "declined") {
       updateCarry(carry.id, { notifiedShopper: true });
       const next = nextRanked(s);
@@ -792,12 +804,9 @@ function escrowErrorForUser(e: unknown): string {
 }
 
 async function fundAfterAccept(s: Session): Promise<void> {
-  if (!settlementEnabled() && !demoLocalChain()) {
-    console.warn("[shopper-agent] payment stub: PAYMENT_MODE is not demo and settlement is off");
-    await reply(
-      s,
-      `Can't lock escrow: demo chain isn't running (PAYMENT_MODE=demo) and settlement isn't configured.`,
-    );
+  if (!demoLocalChain()) {
+    console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
+    await reply(s, acceptedNoFundCopy(travelerDisplayName(s)));
     return;
   }
   await reply(s, `Opening escrow… one moment.`, { thinkMs: 600 });
@@ -807,40 +816,25 @@ async function fundAfterAccept(s: Session): Promise<void> {
     const fee = suggestedTravelerFeeCents(item.priceCents);
     const capped = Math.min(fee, s.maxFeeCents ?? fee);
     const requestId = s.bidId;
-    const out = demoLocalChain()
-      ? await withTimeout(
-          fundLocalEscrow({
-            shopperUserId: s.phone,
-            travelerId: s.chosenTravelerId!,
-            itemCostCents: item.priceCents,
-            travelerFeeCents: capped,
-          }),
-          ESCROW_TIMEOUT_MS,
-          "escrow fund",
-        )
-      : await withTimeout(
-          fundEscrowOrder({
-            phone: s.phone,
-            travelerId: s.chosenTravelerId!,
-            selected: item,
-            deliveryCity: s.deliveryCity!,
-            deadline: s.deadline!,
-            shoppingCity: s.shoppingCity,
-            maxFeeCents: s.maxFeeCents!,
-            category: s.category ?? categoryOf(item.productTitle) ?? undefined,
-          }),
-          ESCROW_TIMEOUT_MS,
-          "escrow fund",
-        );
-    if (!demoLocalChain()) s.bidId = out.bidId;
+    const out = await withTimeout(
+      fundLocalEscrow({
+        shopperUserId: s.phone,
+        travelerId: s.chosenTravelerId!,
+        itemCostCents: item.priceCents,
+        travelerFeeCents: capped,
+      }),
+      ESCROW_TIMEOUT_MS,
+      "escrow fund",
+    );
     s.escrowId = out.escrowId;
     s.handoverCode = out.handoverCode;
     s.fundTxHash = out.fundTxHash;
     s.totalCents = out.totalCents;
     s.step = "await_handover_done";
     s.offer = undefined;
+    s.pending = null;
     markSessionDirty();
-    if (demoLocalChain() && requestId) {
+    if (requestId) {
       updateCarry(requestId, {
         escrowId: out.escrowId,
         handoverCode: out.handoverCode,
@@ -1354,6 +1348,11 @@ async function handleInboundInner(
         await reply(s, `What should we change — another traveler, or a different date?`);
         return;
       }
+      const carry = s.bidId ? findCarry(s.bidId) : null;
+      if (carry?.status === "accepted") {
+        await reply(s, acceptedNoFundCopy(carry.travelerName));
+        return;
+      }
       const waitingName = s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler";
       if (s.offer?.field === "traveler") {
         const next = nextRanked(s);
@@ -1364,6 +1363,11 @@ async function handleInboundInner(
       return;
     }
     case "await_pay_confirm": {
+      if (!demoLocalChain()) {
+        console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
+        await reply(s, acceptedNoFundCopy(travelerDisplayName(s)));
+        return;
+      }
       if (!isYes(text) && intent.kind !== "yes" && !acceptsOffer(text, intent)) {
         await reply(
           s,
