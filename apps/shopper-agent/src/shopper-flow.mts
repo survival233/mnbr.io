@@ -216,6 +216,13 @@ function isYes(text: string): boolean {
   return /^(y|yes|ok|okay|sure|yeah|yep|yup|that'?s\s+fine|that'?s\s+ok(?:ay)?)\b/i.test(text.trim());
 }
 
+/** Never treat these as a product search query. */
+function isAffirmationOrCloser(text: string): boolean {
+  return /^(y|yes|yeah|yep|yup|ok|okay|sure|that'?s\s+fine|that'?s\s+ok(?:ay)?|n|no|nope|nah)\.?$/i.test(
+    text.trim(),
+  );
+}
+
 /** Affirm / defer-to-agent — apply the last offer, do not parse this utterance as a slot. */
 function acceptsOffer(text: string, intent: { kind: string }): boolean {
   if (intent.kind === "yes") return true;
@@ -930,10 +937,15 @@ export async function handleInbound(args: {
     await handleInboundInner(s, args, text, imageUrls);
   } catch (e: any) {
     console.error(`[shopper-agent] handleInbound boom: ${e?.message ?? e}`);
+    markSessionDirty();
     try {
+      const prompt = s.pending?.prompt?.trim();
       await reply(
         s,
-        `I hit a snag on my side — still here though. Say hi to start fresh, or send that again.`,
+        prompt ||
+          (s.ranked?.length && s.selected
+            ? `Still on that order — say yes to see the total and wait on ${s.ranked[0]!.name}.`
+            : `Still on that last step — say yes to continue.`),
         { thinkMs: 400 },
       );
     } catch (sendErr: any) {
@@ -1019,8 +1031,27 @@ async function handleInboundInner(
 
   const explicitRestart = /^(start over|reset|restart)\b/i.test(text);
   const openForm = FORM_HOLD.has(s.step) || Boolean(s.pending || s.offer);
+  const closer = !hasImages && isAffirmationOrCloser(text);
 
-  if (explicitRestart || (!openForm && (intent.kind === "restart" || s.step === "idle" || s.step === "done"))) {
+  // Match already ran (e.g. Ama ranked) and only the outbound send failed — recap + wait, do not new-shop or re-stretch.
+  if (
+    closer &&
+    (isYes(text) || intent.kind === "yes") &&
+    s.selected &&
+    (s.ranked?.length ?? 0) > 0 &&
+    ["await_extend", "await_traveler_decision", "await_product", "idle", "done", "await_brief_confirm"].includes(
+      s.step,
+    )
+  ) {
+    if (s.chatId) presenceTyping(s);
+    await presentQuoteAndWait(s);
+    return;
+  }
+
+  if (
+    explicitRestart ||
+    (!openForm && !closer && (intent.kind === "restart" || s.step === "idle" || s.step === "done"))
+  ) {
     resetSession(s);
     s.step = "await_product";
     markSessionDirty();
@@ -1039,13 +1070,18 @@ async function handleInboundInner(
     }
   }
 
+  if (closer && !FORM_HOLD.has(s.step) && !s.pending && !s.offer) {
+    await reply(s, "What are you looking for? Text or a photo of the item works.");
+    return;
+  }
+
   if (await resolveOpenQuestion(s, text, intent)) return;
   if (await applyDialogAffirm(s, text, intent)) return;
 
   // Cognitive turn — not on open form slots (yeah / 20 / that’s fine must not search).
   const skipCognitionForSlot =
     !hasImages &&
-    [
+    ([
       "await_deadline",
       "await_max_fee",
       "await_delivery_city",
@@ -1055,7 +1091,8 @@ async function handleInboundInner(
       "await_pay_confirm",
       "await_traveler_decision",
       "await_handover_done",
-    ].includes(s.step);
+    ].includes(s.step) ||
+      (closer && s.step !== "await_product_confirm"));
   const shouldCognize =
     hasImages ||
     (!skipCognitionForSlot &&
@@ -1107,11 +1144,13 @@ async function handleInboundInner(
   if (
     intent.kind === "new_query" &&
     intent.query &&
+    !isAffirmationOrCloser(intent.query) &&
     s.step !== "await_product" &&
     s.step !== "await_product_confirm" &&
     s.step !== "await_deadline" &&
     s.step !== "await_max_fee" &&
     s.step !== "await_delivery_city" &&
+    s.step !== "await_extend" &&
     s.step !== "await_brief_confirm" &&
     s.step !== "await_pay_confirm" &&
     s.step !== "await_traveler_decision"
@@ -1135,6 +1174,10 @@ async function handleInboundInner(
     case "await_product": {
       if (hasImages) {
         await reply(s, `I couldn’t tell what that is from the photo — type the item?`);
+        return;
+      }
+      if (isAffirmationOrCloser(text)) {
+        await reply(s, s.pending?.prompt || "What are you looking for? Text or a photo of the item works.");
         return;
       }
       let query = normalizeSearchQuery(text);
