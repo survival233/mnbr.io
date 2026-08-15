@@ -231,7 +231,7 @@ You MUST reply with ONE JSON object only (no markdown) matching this shape:
 }
 
 Rules:
-- If the user sent an image of a product, identify it (e.g. PlayStation 5) and usually action=propose_product with confirmQuestion like "Looks like a PlayStation 5 — want me to shop that for Ghana hand-delivery?"
+- If the user sent an image of a product, identify it concretely (brand, model, color, size if visible). If confident, action=set_slots with product filled. If unsure, action=ask_user with one clarifying question. Never search the word "image".
 - Never invent a product if the image/text is unclear — action=ask_user.
 - ghCity = Ghana delivery city; usCity = US shopping city (must be a real US city name like New York, Atlanta — never put questions into slots).
 - If the user asks which city is best / for advice, action=ask_user and put a short recommendation in askUser (suggest New York or Atlanta), do NOT set usCity to their question text.
@@ -263,7 +263,7 @@ export async function runCognitiveTurn(
     `User text: ${args.text || "(none — image only)"}\n`;
   userParts.push({ type: "text", text: preamble });
   for (const url of args.imageUrls.slice(0, 3)) {
-    userParts.push({ type: "image_url", image_url: { url, detail: "low" } });
+    userParts.push({ type: "image_url", image_url: { url, detail: "high" } });
   }
 
   const o = args.imageUrls.length

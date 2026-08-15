@@ -380,9 +380,9 @@ async function runMatching(s: Session): Promise<string> {
   }
 
   if (ranked.length === 0) {
-    s.step = "done";
+    s.ranked = [];
     markSessionDirty();
-    return "I’m not finding a traveler for that city/date right now. Say hi anytime and we can try again.";
+    return "";
   }
 
   s.ranked = ranked.map((r) => {
@@ -394,11 +394,44 @@ async function runMatching(s: Session): Promise<string> {
       departs: t.trip.departureDate.toDateString(),
     };
   });
-  s.step = "await_traveler";
-  setOffer(s, "traveler", "0");
   markSessionDirty();
-  const lines = s.ranked.map((r, i) => `${i + 1}. ${r.name} — flies ${r.departs}`);
-  return `Here’s who I’d trust for this:\n${lines.join("\n")}\n\nWho should I go with? A name or number works.`;
+  return "";
+}
+
+function quoteLines(s: Session): string {
+  const item = s.selected!;
+  const fee = suggestedTravelerFeeCents(item.priceCents);
+  const capped = Math.min(fee, s.maxFeeCents ?? fee);
+  const fees = computeFees(item.priceCents, capped);
+  s.totalCents = fees.totalCents;
+  markSessionDirty();
+  return (
+    `${item.productTitle.slice(0, 80)}\n` +
+    `Item ${formatUsd(item.priceCents)} + traveler ${formatUsd(capped)} → ${formatUsd(fees.totalCents)} all-in`
+  );
+}
+
+/** After the quote: wait on a traveler. No payment copy. */
+async function presentQuoteAndWait(s: Session): Promise<void> {
+  const matchText = await runMatching(s);
+  if (s.step === "await_extend") {
+    await reply(s, matchText, { thinkMs: 1400 });
+    return;
+  }
+  const quote = quoteLines(s);
+  if (s.ranked?.length) {
+    await say(s, quote);
+    await lockTraveler(s, 0, { quoteAlreadyShown: true });
+    return;
+  }
+  s.step = "await_traveler_decision";
+  s.chosenTravelerId = undefined;
+  clearPending(s);
+  await say(
+    s,
+    quote,
+    `No one's heading to ${s.deliveryCity ?? "your city"} yet. I’ll notify you when a traveler is on that route and agrees after they book.`,
+  );
 }
 
 async function continueAfterListing(s: Session): Promise<void> {
@@ -433,7 +466,7 @@ async function continueAfterListing(s: Session): Promise<void> {
     return;
   }
   if (s.chatId) presenceTyping(s);
-  await reply(s, await runMatching(s), { thinkMs: 1400 });
+  await presentQuoteAndWait(s);
 }
 
 async function searchAndPromptListings(s: Session): Promise<string> {
@@ -582,7 +615,7 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
       s.maxFeeCents = cents;
       clearPending(s);
       if (s.chatId) presenceTyping(s);
-      await reply(s, await runMatching(s), { thinkMs: 1400 });
+      await presentQuoteAndWait(s);
       return true;
     }
     await reply(
@@ -652,7 +685,7 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     s.maxFeeCents = n;
     markSessionDirty();
     if (s.chatId) presenceTyping(s);
-    await reply(s, await runMatching(s), { thinkMs: 1400 });
+    await presentQuoteAndWait(s);
     return true;
   }
   if (field === "listing") {
@@ -671,34 +704,24 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
   return false;
 }
 
-async function lockTraveler(s: Session, idx: number): Promise<void> {
+async function lockTraveler(s: Session, idx: number, opts?: { quoteAlreadyShown?: boolean }): Promise<void> {
   const ranked = s.ranked ?? [];
   const chosen = ranked[idx]!;
   s.chosenTravelerId = chosen.id;
-  s.offer = { field: "traveler", value: "yes" };
-  s.pending = {
-    slot: "brief",
-    proposed: "yes",
-    kind: "bool",
-    prompt: "Look right? Say yes to send it — no payment until they accept.",
-  };
   const item = s.selected!;
   const fee = suggestedTravelerFeeCents(item.priceCents);
   const capped = Math.min(fee, s.maxFeeCents ?? fee);
   const fees = computeFees(item.priceCents, capped);
   s.totalCents = fees.totalCents;
-  s.step = "await_brief_confirm";
   markSessionDirty();
-  await say(
-    s,
-    `Here’s the request:\n` +
-      `• ${item.productTitle.slice(0, 80)}\n` +
-      `• Shop ${s.shoppingCity} → ${s.deliveryCity ?? "Accra"}` +
-      (s.deadline ? ` by ${s.deadline.toDateString()}` : "") +
-      `\n• ${chosen.name} (flies ${chosen.departs})\n` +
-      `• About ${formatUsd(fees.totalCents)} all-in`,
-    `Look right? Say yes to send it — no payment until they accept.`,
-  );
+  if (!opts?.quoteAlreadyShown) {
+    await say(
+      s,
+      `${item.productTitle.slice(0, 80)}\n` +
+        `Item ${formatUsd(item.priceCents)} + traveler ${formatUsd(capped)} → ${formatUsd(fees.totalCents)} all-in`,
+    );
+  }
+  await parkWaitingOnTraveler(s);
 }
 
 function travelerDisplayName(s: Session, fallback = "The traveler"): string {
@@ -743,7 +766,7 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
   });
   await say(
     s,
-    `Got it. I’ll send this to ${chosen?.name ?? "the traveler"}. I’ll ping you when they accept — no payment until then.`,
+    `I’ll send this to ${chosen?.name ?? "a traveler"} heading your way. I’ll ping you when they agree.`,
   );
 }
 
@@ -1064,6 +1087,10 @@ async function handleInboundInner(
       markSessionDirty();
       return;
     }
+    if (hasImages && !decision.confirmedProduct && !s.searchQuery) {
+      await reply(s, `I couldn’t tell what that is from the photo — type the item?`);
+      return;
+    }
   }
 
   if (
@@ -1095,6 +1122,10 @@ async function handleInboundInner(
       return;
     }
     case "await_product": {
+      if (hasImages) {
+        await reply(s, `I couldn’t tell what that is from the photo — type the item?`);
+        return;
+      }
       let query = normalizeSearchQuery(text);
       if (!query || /^(photo|image|\[attachment\])$/i.test(query)) {
         await reply(s, `What are you looking for? Text or a photo of the item works.`);
@@ -1240,7 +1271,7 @@ async function handleInboundInner(
         s.offer = undefined;
         markSessionDirty();
         if (s.chatId) presenceTyping(s);
-        await reply(s, await runMatching(s), { thinkMs: 1400 });
+        await presentQuoteAndWait(s);
         return;
       }
       if (intent.kind === "no") {
@@ -1251,7 +1282,7 @@ async function handleInboundInner(
           s.offer = undefined;
           markSessionDirty();
           if (s.chatId) presenceTyping(s);
-          await reply(s, await runMatching(s), { thinkMs: 1400 });
+          await presentQuoteAndWait(s);
           return;
         }
         s.offer = undefined;
@@ -1268,7 +1299,7 @@ async function handleInboundInner(
       s.offer = undefined;
       markSessionDirty();
       if (s.chatId) presenceTyping(s);
-      await reply(s, await runMatching(s), { thinkMs: 1400 });
+      await presentQuoteAndWait(s);
       return;
     }
     case "await_extend": {
@@ -1293,7 +1324,7 @@ async function handleInboundInner(
         thinkMs: 900,
       });
       if (s.chatId) presenceTyping(s);
-      await reply(s, await runMatching(s), { thinkMs: 1200 });
+      await presentQuoteAndWait(s);
       return;
     }
     case "await_traveler": {
@@ -1322,7 +1353,7 @@ async function handleInboundInner(
         await parkWaitingOnTraveler(s);
         return;
       }
-      await reply(s, `Look right? Say yes to send it — no payment until they accept.`);
+      await reply(s, `I’ll send this to the traveler heading your way — say yes to confirm.`);
       return;
     }
     case "await_traveler_decision": {
@@ -1359,7 +1390,7 @@ async function handleInboundInner(
         await reply(s, next ? `They couldn’t take it. Want me to try ${next.name}?` : `They couldn’t take it. Want a different traveler?`);
         return;
       }
-      await reply(s, `Still waiting on ${waitingName} — no payment until they accept.`);
+      await reply(s, `Still waiting on ${waitingName}. I’ll ping you when they agree.`);
       return;
     }
     case "await_pay_confirm": {

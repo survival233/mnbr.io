@@ -261,6 +261,29 @@ export async function runPolicyTurn(args: {
     };
   }
 
+  // Photo inbound: name the item and search (same path as typed text). Confirm only if unsure.
+  if (hasMedia && turn.productHypothesis) {
+    if (turn.confidence < 0.45) {
+      return {
+        bubbles: [
+          turn.askUser ??
+            turn.confirmQuestion ??
+            `I think it might be ${turn.productHypothesis} — what should I shop for?`,
+        ],
+        fallthrough: false,
+        monologueLog: cog.lastMonologue,
+      };
+    }
+    cog.pending = null;
+    return {
+      bubbles: [`Looks like ${turn.productHypothesis}.`],
+      confirmedProduct: turn.productHypothesis,
+      applySlots: { ...turn.slots, product: turn.productHypothesis },
+      fallthrough: false,
+      monologueLog: cog.lastMonologue,
+    };
+  }
+
   // Policy: propose_product must confirm — never search yet
   if (turn.action === "propose_product" && turn.productHypothesis) {
     if (turn.confidence < 0.45) {

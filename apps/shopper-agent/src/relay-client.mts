@@ -194,8 +194,25 @@ export function extractRelayImageUrls(event: any): string[] {
       pushImageRef(urls, fromData.url, fromData.attachmentId);
       continue;
     }
-    if (!isMediaImagePart(p)) continue;
-    pushImageRef(urls, p.url, p.attachment_id);
+    if (isMediaImagePart(p)) {
+      pushImageRef(urls, p.url, p.attachment_id);
+      continue;
+    }
+    const file = p?.file ?? p?.image ?? p?.media;
+    if (file && typeof file === "object") {
+      const mime = String(file.mime_type ?? file.content_type ?? file.mimeType ?? "").toLowerCase();
+      if (!mime || mime.startsWith("image/")) {
+        pushImageRef(urls, file.url, file.id ?? file.attachment_id);
+      }
+    }
+  }
+  const atts = msg?.attachments ?? event?.data?.attachments ?? [];
+  if (Array.isArray(atts)) {
+    for (const a of atts) {
+      const mime = String(a?.mime_type ?? a?.content_type ?? a?.mimeType ?? "").toLowerCase();
+      if (mime && !mime.startsWith("image/")) continue;
+      pushImageRef(urls, a?.url, a?.id ?? a?.attachment_id);
+    }
   }
   return [...new Set(urls)].slice(0, 3);
 }
