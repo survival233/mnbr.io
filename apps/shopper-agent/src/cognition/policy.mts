@@ -194,8 +194,15 @@ export async function runPolicyTurn(args: {
       "cognitive turn",
     );
   } catch (e: any) {
-    console.warn(`[cognition] turn failed: ${e?.message ?? e}`);
+    const err = String(e?.message ?? e);
+    console.warn(`[cognition] turn failed: ${err.slice(0, 180)}`);
     if (hasMedia) {
+      if (/API 401|API 403|invalid_api_key/i.test(err)) {
+        return {
+          bubbles: ["I can see the photo, but I can’t identify products right now — type the item?"],
+          fallthrough: false,
+        };
+      }
       return {
         bubbles: ["I’m having trouble reading that photo — what product should I shop for?"],
         fallthrough: false,

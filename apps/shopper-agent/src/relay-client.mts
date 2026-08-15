@@ -238,6 +238,8 @@ export async function resolveImagesForVision(refs: string[]): Promise<string[]> 
   for (const ref of refs.slice(0, 3)) {
     try {
       let url = ref;
+      const kind = ref.startsWith("relay-att:") ? "att" : ref.startsWith("data:") ? "data" : ref.startsWith("http") ? "http" : "other";
+      console.log(`[relay] vision ref kind=${kind} hasUrl=${kind === "http" || kind === "data"}`);
       if (ref.startsWith("relay-att:")) {
         const id = ref.slice("relay-att:".length);
         const resolved = await fetchAttachmentUrl(id);
@@ -253,21 +255,40 @@ export async function resolveImagesForVision(refs: string[]): Promise<string[]> 
   return out;
 }
 
+function urlHost(url: string): string {
+  try {
+    return new URL(url).host || "unknown";
+  } catch {
+    return "invalid";
+  }
+}
+
 async function downloadAsDataUrl(url: string): Promise<string | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10_000);
+  const host = urlHost(url);
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
       headers: { authorization: `Bearer ${token()}` },
     });
+    let used = res;
+    let auth = "bearer";
     if (!res.ok) {
-      // Some capability URLs are public; retry without auth
       const res2 = await fetch(url, { signal: ctrl.signal });
-      if (!res2.ok) throw new Error(`download ${res.status}/${res2.status}`);
-      return bufferToDataUrl(await res2.arrayBuffer(), res2.headers.get("content-type"));
+      if (!res2.ok) {
+        console.warn(`[relay] vision fetch host=${host} status=${res.status}/${res2.status} ok=false`);
+        throw new Error(`download ${res.status}/${res2.status}`);
+      }
+      used = res2;
+      auth = "none";
     }
-    return bufferToDataUrl(await res.arrayBuffer(), res.headers.get("content-type"));
+    const buf = await used.arrayBuffer();
+    const dataUrl = bufferToDataUrl(buf, used.headers.get("content-type"));
+    console.log(
+      `[relay] vision fetch host=${host} auth=${auth} status=${used.status} bytes=${buf.byteLength} out=${dataUrl ? "data" : "none"}`,
+    );
+    return dataUrl;
   } finally {
     clearTimeout(timer);
   }

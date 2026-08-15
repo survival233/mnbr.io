@@ -10,29 +10,42 @@ export interface LlmConfig {
   model: string;
 }
 
+function normalizeApiKey(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  let k = raw.trim().replace(/^["']|["']$/g, "").trim();
+  k = k.replace(/^Bearer\s+/i, "").trim();
+  return k || undefined;
+}
+
+function sanitizeLlmError(text: string): string {
+  return text.replace(/sk-[a-zA-Z0-9_\-]{8,}/g, "sk-***").replace(/Bearer\s+\S+/gi, "Bearer ***");
+}
+
 export function makeLlm(): LlmConfig | null {
+  const openaiKey = normalizeApiKey(process.env.OPENAI_API_KEY);
+  const hfKey = normalizeApiKey(process.env.HF_TOKEN);
   const explicit = process.env.LLM_PROVIDER?.toLowerCase();
   const provider =
     explicit === "openai" || explicit === "hf"
       ? explicit
-      : process.env.OPENAI_API_KEY
+      : openaiKey
         ? "openai"
-        : process.env.HF_TOKEN
+        : hfKey
           ? "hf"
           : null;
-  if (provider === "openai" && process.env.OPENAI_API_KEY) {
+  if (provider === "openai" && openaiKey) {
     return {
       provider,
       baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: openaiKey,
       model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
     };
   }
-  if (provider === "hf" && process.env.HF_TOKEN) {
+  if (provider === "hf" && hfKey) {
     return {
       provider,
       baseUrl: process.env.HF_BASE_URL ?? "https://router.huggingface.co/v1",
-      apiKey: process.env.HF_TOKEN,
+      apiKey: hfKey,
       model: process.env.HF_MODEL ?? "meta-llama/Llama-3.3-70B-Instruct",
     };
   }
@@ -41,11 +54,12 @@ export function makeLlm(): LlmConfig | null {
 
 /** Always OpenAI when a key exists — HF cannot do vision / reliable cognition. */
 export function makeOpenAiLlm(model?: string): LlmConfig | null {
-  if (!process.env.OPENAI_API_KEY) return null;
+  const apiKey = normalizeApiKey(process.env.OPENAI_API_KEY);
+  if (!apiKey) return null;
   return {
     provider: "openai",
     baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey,
     model: model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   };
 }
@@ -66,7 +80,9 @@ async function chatCompletions(cfg: LlmConfig, body: Record<string, unknown>): P
     headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${cfg.provider} API ${res.status}: ${(await res.text()).slice(0, 400)}`);
+  if (!res.ok) {
+    throw new Error(`${cfg.provider} API ${res.status}: ${sanitizeLlmError((await res.text()).slice(0, 400))}`);
+  }
   return res.json();
 }
 
@@ -262,7 +278,11 @@ export async function runCognitiveTurn(
     `Episodic memory: ${args.memorySummary}\n` +
     `User text: ${args.text || "(none — image only)"}\n`;
   userParts.push({ type: "text", text: preamble });
-  for (const url of args.imageUrls.slice(0, 3)) {
+  const imageParts = args.imageUrls.filter(Boolean).slice(0, 3);
+  console.log(
+    `[llm] vision parts images=${imageParts.length} data=${imageParts.filter((u) => u.startsWith("data:")).length}`,
+  );
+  for (const url of imageParts) {
     userParts.push({ type: "image_url", image_url: { url, detail: "high" } });
   }
 

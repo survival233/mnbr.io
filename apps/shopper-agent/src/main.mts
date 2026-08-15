@@ -109,8 +109,9 @@ function ingestRelayEvent(event: any): void {
   enqueueForIdentity(inbound.userId, async () => {
     const imageUrls = inbound.imageRefs.length ? await resolveImagesForVision(inbound.imageRefs) : [];
     if (inbound.imageRefs.length) {
+      const data = imageUrls.filter((u) => u.startsWith("data:")).length;
       console.log(
-        `[shopper-agent] vision resolved ${imageUrls.length}/${inbound.imageRefs.length} image(s) for ${inbound.userId}`,
+        `[shopper-agent] vision resolved ${imageUrls.length}/${inbound.imageRefs.length} image(s) data=${data} http=${imageUrls.length - data}`,
       );
     }
     await handleInbound({
