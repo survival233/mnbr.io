@@ -34,6 +34,7 @@ const { handleInbound, syncWaitingShoppers } = await import("./shopper-flow.mts"
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
+const { makeCognitiveLlm, makeVisionLlm, logLlmClient } = await import("@manebra/llm");
 
 initSessionStore();
 
@@ -285,6 +286,8 @@ server.listen(PORT, () => {
   console.log(
     `[shopper-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"}`,
   );
+  logLlmClient("cognition", makeCognitiveLlm());
+  logLlmClient("vision", makeVisionLlm());
   void startRelayLongPoll();
   if (process.env.PAYMENT_MODE === "demo" || process.env.DEMO_LOCAL_CHAIN === "1" || process.env.DEMO_LOCAL_CHAIN === "true") {
     setInterval(() => {

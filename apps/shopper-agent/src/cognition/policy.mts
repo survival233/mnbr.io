@@ -1,6 +1,7 @@
 import {
   makeVisionLlm,
   makeCognitiveLlm,
+  logLlmClient,
   runCognitiveTurn,
   type CognitiveTurnResult,
 } from "@manebra/llm";
@@ -154,6 +155,7 @@ export async function runPolicyTurn(args: {
   }
 
   const llm = hasMedia ? makeVisionLlm() : makeCognitiveLlm();
+  logLlmClient(hasMedia ? "vision" : "cognition", llm);
   if (!llm) {
     if (hasMedia) {
       return {

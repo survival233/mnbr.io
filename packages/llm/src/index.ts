@@ -8,6 +8,26 @@ export interface LlmConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** Env var the apiKey was read from — never log apiKey itself. */
+  keyEnv: string;
+}
+
+function keyPrefix(k: string): string {
+  if (k.startsWith("sk-proj-")) return "sk-proj-";
+  if (k.startsWith("sk-")) return "sk-";
+  return k ? "other" : "none";
+}
+
+/** Safe fingerprint: var name, set, length, prefix, last 4. Never the key. */
+export function logLlmClient(role: string, cfg: LlmConfig | null): void {
+  if (!cfg) {
+    console.log(`[llm] ${role} env=none set=no len=0 prefix=none last4=none`);
+    return;
+  }
+  const k = cfg.apiKey ?? "";
+  console.log(
+    `[llm] ${role} env=${cfg.keyEnv} set=${k ? "yes" : "no"} len=${k.length} prefix=${keyPrefix(k)} last4=${k.slice(-4) || "none"} model=${cfg.model}`,
+  );
 }
 
 function normalizeApiKey(raw: string | undefined): string | undefined {
@@ -18,7 +38,10 @@ function normalizeApiKey(raw: string | undefined): string | undefined {
 }
 
 function sanitizeLlmError(text: string): string {
-  return text.replace(/sk-[a-zA-Z0-9_\-]{8,}/g, "sk-***").replace(/Bearer\s+\S+/gi, "Bearer ***");
+  return text
+    .replace(/Incorrect API key provided:[^"\\]*/gi, "Incorrect API key provided: [redacted]")
+    .replace(/sk-[a-zA-Z0-9_\-]{8,}/g, "sk-***")
+    .replace(/Bearer\s+\S+/gi, "Bearer ***");
 }
 
 export function makeLlm(): LlmConfig | null {
@@ -39,6 +62,7 @@ export function makeLlm(): LlmConfig | null {
       baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
       apiKey: openaiKey,
       model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      keyEnv: "OPENAI_API_KEY",
     };
   }
   if (provider === "hf" && hfKey) {
@@ -47,6 +71,7 @@ export function makeLlm(): LlmConfig | null {
       baseUrl: process.env.HF_BASE_URL ?? "https://router.huggingface.co/v1",
       apiKey: hfKey,
       model: process.env.HF_MODEL ?? "meta-llama/Llama-3.3-70B-Instruct",
+      keyEnv: "HF_TOKEN",
     };
   }
   return null;
@@ -61,17 +86,25 @@ export function makeOpenAiLlm(model?: string): LlmConfig | null {
     baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
     apiKey,
     model: model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    keyEnv: "OPENAI_API_KEY",
   };
 }
 
-/** Vision path: require OpenAI. Never fall back to HF for images. */
-export function makeVisionLlm(): LlmConfig | null {
-  return makeOpenAiLlm(process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini");
+/** Conversational cognition: prefer OpenAI even if LLM_PROVIDER=hf. */
+let cognitiveClient: LlmConfig | null | undefined;
+export function makeCognitiveLlm(): LlmConfig | null {
+  if (cognitiveClient === undefined) cognitiveClient = makeOpenAiLlm() ?? makeLlm();
+  return cognitiveClient;
 }
 
-/** Conversational cognition: prefer OpenAI even if LLM_PROVIDER=hf. */
-export function makeCognitiveLlm(): LlmConfig | null {
-  return makeOpenAiLlm() ?? makeLlm();
+/** Same apiKey object as cognition; only the model may differ (OPENAI_VISION_MODEL). */
+export function makeVisionLlm(): LlmConfig | null {
+  const cog = makeCognitiveLlm();
+  if (cog?.apiKey) {
+    const visionModel = process.env.OPENAI_VISION_MODEL?.trim() || cog.model;
+    return { ...cog, apiKey: cog.apiKey, model: visionModel };
+  }
+  return makeOpenAiLlm(process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini");
 }
 
 async function chatCompletions(cfg: LlmConfig, body: Record<string, unknown>): Promise<any> {
@@ -81,7 +114,11 @@ async function chatCompletions(cfg: LlmConfig, body: Record<string, unknown>): P
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`${cfg.provider} API ${res.status}: ${sanitizeLlmError((await res.text()).slice(0, 400))}`);
+    const raw = sanitizeLlmError((await res.text()).slice(0, 400));
+    if (res.status === 401 || res.status === 403) {
+      console.warn(`[llm] ${cfg.keyEnv} ${cfg.provider} ${res.status} body=${raw.replace(/\s+/g, " ").slice(0, 240)}`);
+    }
+    throw new Error(`${cfg.provider} API ${res.status}: ${raw}`);
   }
   return res.json();
 }
