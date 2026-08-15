@@ -289,7 +289,12 @@ server.listen(PORT, () => {
   logLlmClient("cognition", makeCognitiveLlm());
   logLlmClient("vision", makeVisionLlm());
   void startRelayLongPoll();
-  if (process.env.PAYMENT_MODE === "demo" || process.env.DEMO_LOCAL_CHAIN === "1" || process.env.DEMO_LOCAL_CHAIN === "true") {
+  const pollMarketplace =
+    Boolean(process.env.DATABASE_URL?.trim()) ||
+    process.env.PAYMENT_MODE === "demo" ||
+    process.env.DEMO_LOCAL_CHAIN === "1" ||
+    process.env.DEMO_LOCAL_CHAIN === "true";
+  if (pollMarketplace) {
     setInterval(() => {
       void syncWaitingShoppers().catch((e: any) => {
         console.warn(`[shopper-agent] traveler-wait sync: ${e?.message ?? e}`);

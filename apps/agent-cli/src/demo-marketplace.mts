@@ -1,5 +1,6 @@
 /**
- * Demo-only shared carry file. Chat logs are not source of truth.
+ * Demo-only shared carry file for `npm run demo` when DATABASE_URL is unset.
+ * Production Shopper + Traveler use Postgres (`marketplace_offers` / `marketplace_trips`).
  * Path: DEMO_MARKETPLACE_PATH (set by npm run demo).
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -28,7 +29,7 @@ export type Carry = {
   nextTravelerName?: string;
 };
 
-type Store = { carries: Carry[] };
+type Store = { carries: Carry[]; offers?: unknown[]; trips?: unknown[] };
 
 function defaultPath(): string {
   return fileURLToPath(new URL("../.demo-marketplace.json", import.meta.url));
@@ -55,7 +56,7 @@ function save(store: Store): void {
 }
 
 export function initMarketplace(): void {
-  save({ carries: [] });
+  save({ carries: [], offers: [], trips: [] });
 }
 
 export function writeCarry(input: Omit<Carry, "createdAt"> & { createdAt?: number }): Carry {

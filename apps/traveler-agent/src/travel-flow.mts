@@ -7,8 +7,11 @@ import {
   bookFlight,
   formatFlightOption,
   parseDepartDate,
+  cityFromAirport,
   type FlightOption,
 } from "@manebra/flights";
+import { normalizeCity } from "@manebra/calendar";
+import { upsertLiveTrip } from "@manebra/db";
 import type { Session } from "./session.mts";
 import { markSessionDirty, persistSessionsNow } from "./session.mts";
 import { persistBookedTrip, acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
@@ -35,6 +38,44 @@ function persistTrip(s: Session) {
   markSessionDirty();
   // Flush immediately so Render restarts don’t drop mid-turn slot fills.
   persistSessionsNow();
+}
+
+function tripCity(raw?: string): string | null {
+  if (!raw) return null;
+  return normalizeCity(raw) ?? normalizeCity(cityFromAirport(raw)) ?? (raw.trim() || null);
+}
+
+function tripDate(raw?: string): Date {
+  const iso =
+    raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)
+      ? raw
+      : raw
+        ? parseDepartDate(raw)
+        : null;
+  if (iso) return new Date(`${iso}T12:00:00`);
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  d.setHours(12, 0, 0, 0);
+  return d;
+}
+
+async function publishLiveTrip(s: Session): Promise<void> {
+  const trip = s.trip;
+  if (!trip?.destination) return;
+  const dest = tripCity(trip.destination);
+  if (!dest) return;
+  try {
+    await upsertLiveTrip({
+      travelerId: s.phone,
+      travelerName: `Traveler ${s.phone.slice(-4)}`,
+      originCity: tripCity(trip.origin) ?? "",
+      destinationCity: dest,
+      departureDate: tripDate(trip.departure_date),
+      optedIn: true,
+    });
+  } catch (e: any) {
+    console.warn(`[traveler-agent] marketplace trip upsert skipped: ${e?.message ?? e}`);
+  }
 }
 
 export async function handleTravelInbound(
@@ -93,6 +134,7 @@ async function handleCollectAndSearch(
   mirrorTripToLegacy(s);
   s.step = "await_travel_intent";
   persistTrip(s);
+  void publishLiveTrip(s);
 
   const after = tripSnapshot(trip);
   const missing = missingFields(trip);
@@ -203,6 +245,7 @@ async function handlePickOrBook(
     s.flightBookingRef = booking.bookingRef;
     s.step = "trip_confirmed";
     persistTrip(s);
+    void publishLiveTrip(s);
     await say(s, booking.message, `I’ll watch for the confirmation and keep this trip on file.`);
 
     const { earnOffers } = await persistBookedTrip({ identity: s.phone, booking });

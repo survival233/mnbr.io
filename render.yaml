@@ -6,6 +6,14 @@
 # Shopper folder is apps/shopper-agent. Keep the live Render service name
 # `manebra-linq-agent` so https://manebra-linq-agent.onrender.com stays stable
 # for existing Relay agents. Do not rename the cloud hostname in this pass.
+#
+# One Render Postgres for the marketplace. Both agents get the same
+# DATABASE_URL (internal connection string). Do not put the URL in git.
+databases:
+  - name: manebra-marketplace
+    region: oregon
+    plan: basic-256mb
+
 services:
   - type: web
     name: manebra-linq-agent
@@ -39,7 +47,13 @@ services:
       - key: SETTLEMENT_ENABLED
         value: "0"
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: manebra-marketplace
+          property: connectionString
+      - key: DIRECT_URL
+        fromDatabase:
+          name: manebra-marketplace
+          property: connectionString
 
   - type: web
     name: manebra-traveler-agent
@@ -61,7 +75,13 @@ services:
       - key: SERPAPI_API_KEY
         sync: false
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: manebra-marketplace
+          property: connectionString
+      - key: DIRECT_URL
+        fromDatabase:
+          name: manebra-marketplace
+          property: connectionString
       - key: FLIGHTS_ALLOW_DEMO
         value: "1"
       # Optional later — Relay chat pipe

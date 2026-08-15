@@ -289,7 +289,12 @@ server.listen(PORT, () => {
     `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"}`,
   );
   void startRelayLongPoll();
-  if (process.env.PAYMENT_MODE === "demo" || process.env.DEMO_LOCAL_CHAIN === "1" || process.env.DEMO_LOCAL_CHAIN === "true") {
+  const pollMarketplace =
+    Boolean(process.env.DATABASE_URL?.trim()) ||
+    process.env.PAYMENT_MODE === "demo" ||
+    process.env.DEMO_LOCAL_CHAIN === "1" ||
+    process.env.DEMO_LOCAL_CHAIN === "true";
+  if (pollMarketplace) {
     setInterval(() => {
       void syncTravelerMarketplace().catch((e: any) => {
         console.warn(`[traveler-agent] marketplace sync: ${e?.message ?? e}`);

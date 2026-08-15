@@ -1,10 +1,11 @@
 /**
  * Persist booked trips + surface earn jobs when DATABASE_URL is available.
  */
-import { randomUUID, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { suggestedTravelerFeeCents, computeFees } from "@manebra/shared";
 import { cityFromAirport, type FlightBooking } from "@manebra/flights";
 import { inferDirection, normalizeCity } from "@manebra/calendar";
+import { upsertLiveTrip, listOpenOffers, updateOffer, getOffer } from "@manebra/db";
 
 export type EarnOffer = {
   proposalId: string;
@@ -69,20 +70,36 @@ export async function persistBookedTrip(args: {
     cityFromAirport(booking.offer.destination);
   const direction = inferDirection(depCity, destCity) ?? "us_to_gh";
 
+  try {
+    await upsertLiveTrip({
+      travelerId: args.identity,
+      travelerName: `Traveler ${args.identity.slice(-4)}`,
+      originCity: depCity,
+      destinationCity: destCity,
+      departureDate: booking.offer.departAt,
+      optedIn: true,
+    });
+  } catch (e: any) {
+    console.warn(`[traveler-bridge] marketplace trip skipped: ${e?.message ?? e}`);
+  }
+
   if (!dbConfigured()) {
-    const earnOffers: EarnOffer[] = /accra/i.test(destCity)
-      ? [
-          {
-            proposalId: `local-${randomUUID()}`,
-            itemRequestId: "local-item",
-            itemName: "AirPods Pro",
-            destinationCity: "Accra",
-            feeCents: suggestedTravelerFeeCents(25_000),
-            score: 80,
-          },
-        ]
-      : [];
-    return { tripId: null, earnOffers };
+    try {
+      const open = await listOpenOffers();
+      return {
+        tripId: null,
+        earnOffers: open.slice(0, 3).map((o) => ({
+          proposalId: `mkt-${o.id}`,
+          itemRequestId: o.id,
+          itemName: o.item,
+          destinationCity: o.destinationCity ?? destCity,
+          feeCents: o.travelerFeeCents || o.totalCents,
+          score: 90,
+        })),
+      };
+    } catch {
+      return { tripId: null, earnOffers: [] };
+    }
   }
 
   try {
@@ -106,40 +123,44 @@ export async function persistBookedTrip(args: {
 
     let earnOffers: EarnOffer[] = [];
     try {
-      const { proposeMatchesForTrip } = await import("@manebra/agents/matching");
-      await proposeMatchesForTrip(trip.id);
-      const proposals = await prisma.matchProposal.findMany({
-        where: { tripId: trip.id, status: "proposed" },
-        orderBy: { score: "desc" },
-        take: 3,
-      });
-      for (const p of proposals) {
-        const item = await prisma.itemRequest.findUnique({ where: { id: p.itemRequestId } });
-        if (!item) continue;
+      const open = await listOpenOffers();
+      for (const o of open.slice(0, 3)) {
         earnOffers.push({
-          proposalId: p.id,
-          itemRequestId: item.id,
-          itemName: item.itemName,
-          destinationCity: item.destinationCity,
-          feeCents: suggestedTravelerFeeCents(item.itemCostCents),
-          score: p.score,
+          proposalId: `mkt-${o.id}`,
+          itemRequestId: o.id,
+          itemName: o.item,
+          destinationCity: o.destinationCity ?? destCity,
+          feeCents: o.travelerFeeCents || o.totalCents,
+          score: 90,
         });
       }
     } catch (e: any) {
-      console.warn(`[traveler-bridge] match failed: ${e?.message ?? e}`);
+      console.warn(`[traveler-bridge] marketplace offers: ${e?.message ?? e}`);
     }
-
-    if (earnOffers.length === 0 && /accra/i.test(destCity)) {
-      earnOffers = [
-        {
-          proposalId: `hint-${trip.id}`,
-          itemRequestId: "",
-          itemName: "a sealed electronics parcel",
-          destinationCity: destCity,
-          feeCents: 7000,
-          score: 50,
-        },
-      ];
+    try {
+      if (earnOffers.length === 0) {
+        const { proposeMatchesForTrip } = await import("@manebra/agents/matching");
+        await proposeMatchesForTrip(trip.id);
+        const proposals = await prisma.matchProposal.findMany({
+          where: { tripId: trip.id, status: "proposed" },
+          orderBy: { score: "desc" },
+          take: 3,
+        });
+        for (const p of proposals) {
+          const item = await prisma.itemRequest.findUnique({ where: { id: p.itemRequestId } });
+          if (!item) continue;
+          earnOffers.push({
+            proposalId: p.id,
+            itemRequestId: item.id,
+            itemName: item.itemName,
+            destinationCity: item.destinationCity,
+            feeCents: suggestedTravelerFeeCents(item.itemCostCents),
+            score: p.score,
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[traveler-bridge] match failed: ${e?.message ?? e}`);
     }
 
     return { tripId: trip.id, earnOffers };
@@ -153,6 +174,18 @@ export async function acceptEarnOffer(args: {
   identity: string;
   proposalId: string;
 }): Promise<{ ok: boolean; message: string }> {
+  if (args.proposalId.startsWith("mkt-")) {
+    const id = args.proposalId.slice(4);
+    const offer = await getOffer(id);
+    if (!offer || offer.status !== "offered") {
+      return { ok: false, message: "That job isn’t available anymore." };
+    }
+    await updateOffer(id, { status: "accepted", notifiedShopper: false });
+    return {
+      ok: true,
+      message: `Accepted. Waiting for the shopper to fund — no carry until then.`,
+    };
+  }
   if (!dbConfigured() || args.proposalId.startsWith("local-") || args.proposalId.startsWith("hint-")) {
     return {
       ok: true,

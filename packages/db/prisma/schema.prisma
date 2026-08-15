@@ -604,3 +604,50 @@ model AdminAuditLog {
   @@index([targetType, targetId])
   @@map("admin_audit_log")
 }
+
+// Relay shopper/traveler marketplace (string identities, not Bid UUID state).
+// Shared by shopper-agent + traveler-agent on Postgres — not a local JSON file.
+model MarketplaceOffer {
+  id                     String    @id @db.VarChar(128)
+  travelerId             String    @map("traveler_id") @db.VarChar(128)
+  travelerName           String    @map("traveler_name") @db.VarChar(255)
+  item                   String    @db.VarChar(255)
+  itemCostCents          Int       @default(0) @map("item_cost_cents")
+  travelerFeeCents       Int       @default(0) @map("traveler_fee_cents")
+  totalCents             Int       @map("total_cents")
+  needBy                 DateTime? @map("need_by") @db.Timestamptz()
+  destinationCity        String?   @map("destination_city") @db.VarChar(100)
+  bidId                  String    @default("") @map("bid_id") @db.VarChar(128)
+  escrowId               String    @default("") @map("escrow_id") @db.VarChar(128)
+  handoverCode           String    @default("") @map("handover_code") @db.VarChar(32)
+  status                 String    @default("offered") @db.VarChar(32)
+  shopperKey             String?   @map("shopper_key") @db.VarChar(255)
+  shopperChatId          String?   @map("shopper_chat_id") @db.VarChar(255)
+  notifiedShopper        Boolean   @default(false) @map("notified_shopper")
+  notifiedTraveler       Boolean   @default(false) @map("notified_traveler")
+  notifiedTravelerFunded Boolean   @default(false) @map("notified_traveler_funded")
+  nextTravelerId         String?   @map("next_traveler_id") @db.VarChar(128)
+  nextTravelerName       String?   @map("next_traveler_name") @db.VarChar(255)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([status, createdAt])
+  @@index([travelerId, status])
+  @@map("marketplace_offers")
+}
+
+model MarketplaceTrip {
+  id              String   @id @default(uuid()) @db.Uuid
+  travelerId      String   @unique @map("traveler_id") @db.VarChar(128)
+  travelerName    String   @map("traveler_name") @db.VarChar(255)
+  originCity      String   @default("") @map("origin_city") @db.VarChar(100)
+  destinationCity String   @map("destination_city") @db.VarChar(100)
+  departureDate   DateTime @map("departure_date") @db.Date
+  optedIn         Boolean  @default(true) @map("opted_in")
+  status          String   @default("upcoming") @db.VarChar(32)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([optedIn, destinationCity, departureDate])
+  @@map("marketplace_trips")
+}

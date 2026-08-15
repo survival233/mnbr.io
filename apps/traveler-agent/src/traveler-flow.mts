@@ -10,8 +10,12 @@ import {
 } from "./session.mts";
 import { handleTravelInbound } from "./travel-flow.mts";
 import { blankTrip } from "./trip-state.mts";
-import { latestActiveCarry, updateCarry } from "../../agent-cli/src/demo-marketplace.mts";
-import { demoLocalChain } from "../../agent-cli/src/local-escrow.mts";
+import {
+  latestOpenOffer,
+  latestActiveOffer,
+  updateOffer,
+} from "@manebra/db";
+import { isTravelIntent } from "@manebra/flights";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -91,25 +95,25 @@ function latestTravelerSession(): Session | null {
   return withChat.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
 }
 
-/** Ping Traveler when a shopper request appears or funds land (shared marketplace file). */
+/** Ping Traveler when a shopper request appears or funds land (shared marketplace store). */
 export async function syncTravelerMarketplace(): Promise<void> {
-  if (!demoLocalChain()) return;
-  const carry = latestActiveCarry();
-  if (!carry) return;
   const s = latestTravelerSession();
   if (!s?.chatId) return;
 
-  if (carry.status === "offered" && !carry.notifiedTraveler) {
-    updateCarry(carry.id, { notifiedTraveler: true });
+  const open = await latestOpenOffer();
+  if (open && !open.notifiedTraveler) {
+    await updateOffer(open.id, { notifiedTraveler: true });
     await say(
       s,
-      `New carry request: ${carry.item} — about ${carryUsd(carry.totalCents)}.`,
+      `New carry request: ${open.item} — about ${carryUsd(open.totalCents)}.`,
       `Accept or decline?`,
     );
     return;
   }
-  if (carry.status === "funded" && !carry.notifiedTravelerFunded) {
-    updateCarry(carry.id, { notifiedTravelerFunded: true });
+
+  const carry = await latestActiveOffer();
+  if (carry?.status === "funded" && !carry.notifiedTravelerFunded) {
+    await updateOffer(carry.id, { notifiedTravelerFunded: true });
     await say(
       s,
       `Shopper funded — ${carry.item} is locked in escrow.`,
@@ -118,13 +122,14 @@ export async function syncTravelerMarketplace(): Promise<void> {
   }
 }
 
-async function tryHandleDemoCarry(
+async function tryHandleMarketplaceOffer(
   s: Session,
   text: string,
   io: { reply: typeof reply; say: typeof say },
 ): Promise<boolean> {
-  if (!demoLocalChain()) return false;
-  const carry = latestActiveCarry();
+  const open = await latestOpenOffer();
+  const active = await latestActiveOffer();
+  const carry = open ?? (active && active.status !== "offered" ? active : null);
   if (!carry) return false;
 
   const yes = /^(y|yes|ok|okay|sure|yeah|yep|accept)\b/i.test(text);
@@ -135,16 +140,16 @@ async function tryHandleDemoCarry(
 
   if (carry.status === "offered") {
     if (yes) {
-      updateCarry(carry.id, { status: "accepted", notifiedShopper: false });
+      await updateOffer(carry.id, { status: "accepted", notifiedShopper: false });
       await io.say(s, `Accepted. Waiting for the shopper to fund — no carry until then.`);
       return true;
     }
     if (no) {
-      updateCarry(carry.id, { status: "declined", notifiedShopper: false });
+      await updateOffer(carry.id, { status: "declined", notifiedShopper: false });
       await io.say(s, `Declined. I’ll let the shopper know.`);
       return true;
     }
-    if (flights) return false;
+    if (flights || isTravelIntent(text)) return false;
     await io.say(
       s,
       `Carry request: ${carry.item} — about ${carryUsd(carry.totalCents)}.`,
@@ -164,7 +169,7 @@ async function tryHandleDemoCarry(
       try {
         const { settleLocalEscrow } = await import("../../agent-cli/src/local-escrow.mts");
         await settleLocalEscrow({ escrowId: carry.escrowId as `0x${string}`, action: "release" });
-        updateCarry(carry.id, { status: "released" });
+        await updateOffer(carry.id, { status: "released" });
         await io.reply(s, `Handover confirmed — escrow released. You’re paid (test USDC).`);
       } catch (e: any) {
         console.error(`[traveler-agent] local release: ${e?.message ?? e}`);
@@ -194,7 +199,7 @@ export async function handleInbound(args: {
     relayMessageId: args.relayMessageId,
   });
 
-  if (await tryHandleDemoCarry(s, text, { reply, say })) return;
+  if (await tryHandleMarketplaceOffer(s, text, { reply, say })) return;
 
   const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
   const restart = /^(restart|start over|reset|menu)\b/i.test(text);

@@ -24,7 +24,12 @@ import {
   completeHandoverAndRelease,
 } from "./settlement-bridge.mts";
 import { demoLocalChain, fundLocalEscrow, settleLocalEscrow } from "../../agent-cli/src/local-escrow.mts";
-import { writeCarry, updateCarry, findCarry } from "../../agent-cli/src/demo-marketplace.mts";
+import {
+  writeOffer,
+  updateOffer,
+  getOffer,
+  listLiveTrips,
+} from "@manebra/db";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
 import { parseUsShoppingCity, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
@@ -290,6 +295,37 @@ function travelerLabels(s: Session) {
 }
 
 async function loadLiveTravelers(city: string, deadline: Date): Promise<TravelerSeed[] | null> {
+  try {
+    const mkt = await listLiveTrips(city);
+    if (mkt.length) {
+      return mkt.map((t) => ({
+        id: t.travelerId,
+        name: t.travelerName,
+        trustScore: 120,
+        avgRating: null,
+        totalDeliveries: 0,
+        minFeeCents: 2000,
+        trip: {
+          id: t.id,
+          travelerId: t.travelerId,
+          direction: "us_to_gh" as const,
+          destinationCity: t.destinationCity,
+          departureDate: t.departureDate,
+          status: "upcoming" as const,
+        },
+        profile: {
+          id: t.travelerId,
+          isVerified: true,
+          accountStatus: "active" as const,
+          trustScore: 120,
+          avgRating: null,
+          totalDeliveries: 0,
+        },
+      }));
+    }
+  } catch (e: any) {
+    console.warn(`[shopper-agent] marketplace trips unavailable: ${e?.message ?? e}`);
+  }
   if (!process.env.DATABASE_URL?.trim()) return null;
   try {
     const { prisma } = await import("@manebra/db");
@@ -761,15 +797,21 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
   s.step = "await_traveler_decision";
   clearPending(s);
   try {
-    writeCarry({
+    const fee = suggestedTravelerFeeCents(item.priceCents);
+    const capped = Math.min(fee, s.maxFeeCents ?? fee);
+    await writeOffer({
       id,
       travelerId: s.chosenTravelerId!,
       travelerName: chosen?.name ?? "Traveler",
       item: item.productTitle.slice(0, 80),
+      itemCostCents: item.priceCents,
+      travelerFeeCents: capped,
+      totalCents: s.totalCents ?? 0,
+      needBy: s.deadline ?? null,
+      destinationCity: s.deliveryCity ?? null,
       bidId: id,
       escrowId: "",
       handoverCode: "",
-      totalCents: s.totalCents ?? 0,
       status: "offered",
       shopperKey: sessionKey(s.phone),
       shopperChatId: s.chatId,
@@ -780,7 +822,7 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
       nextTravelerName: next?.name,
     });
   } catch (e: any) {
-    console.warn(`[shopper-agent] marketplace carry skipped: ${e?.message ?? e}`);
+    console.warn(`[shopper-agent] marketplace offer skipped: ${e?.message ?? e}`);
   }
   await say(
     s,
@@ -792,10 +834,11 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
 export async function syncWaitingShoppers(): Promise<void> {
   for (const s of allSessions()) {
     if (s.step !== "await_traveler_decision" || !s.bidId) continue;
-    const carry = findCarry(s.bidId);
+    const carry = await getOffer(s.bidId);
     if (!carry || carry.notifiedShopper) continue;
     if (carry.status === "accepted") {
-      updateCarry(carry.id, { notifiedShopper: true });
+      await updateOffer(carry.id, { notifiedShopper: true });
+      await say(s, `${carry.travelerName} agreed.`);
       if (demoLocalChain()) {
         s.step = "await_pay_confirm";
         setOffer(
@@ -804,18 +847,14 @@ export async function syncWaitingShoppers(): Promise<void> {
           "yes",
           `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
         );
-        await say(
-          s,
-          `${carry.travelerName} accepted. Fund ${formatUsd(carry.totalCents)} USDC to lock it.`,
-          `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
-        );
+        await say(s, `Fund ${formatUsd(carry.totalCents)} USDC to lock it.`);
       } else {
         console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
         clearPending(s);
         await say(s, acceptedNoFundCopy(carry.travelerName));
       }
     } else if (carry.status === "declined") {
-      updateCarry(carry.id, { notifiedShopper: true });
+      await updateOffer(carry.id, { notifiedShopper: true });
       const next = nextRanked(s);
       if (next) {
         setOffer(
@@ -876,7 +915,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
     s.pending = null;
     markSessionDirty();
     if (requestId) {
-      updateCarry(requestId, {
+      await updateOffer(requestId, {
         escrowId: out.escrowId,
         handoverCode: out.handoverCode,
         totalCents: out.totalCents,
@@ -1433,7 +1472,7 @@ async function handleInboundInner(
         await reply(s, `What should we change — another traveler, or a different date?`);
         return;
       }
-      const carry = s.bidId ? findCarry(s.bidId) : null;
+      const carry = s.bidId ? await getOffer(s.bidId) : null;
       if (carry?.status === "accepted") {
         await reply(s, acceptedNoFundCopy(carry.travelerName));
         return;
@@ -1478,7 +1517,7 @@ async function handleInboundInner(
                   escrowId: s.escrowId as `0x${string}`,
                   action: "release",
                 });
-                if (s.bidId) updateCarry(s.bidId, { status: "released" });
+                if (s.bidId) await updateOffer(s.bidId, { status: "released" });
                 return { released: Boolean(settled.txHash), settleTxHash: settled.txHash };
               })(),
               ESCROW_TIMEOUT_MS,
