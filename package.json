@@ -14,6 +14,7 @@
     "demo:cli": "DEMO_MODE=cli tsx apps/agent-cli/src/main.mts",
     "demo:linq": "DEMO_MODE=linq DEMO_TRANSPORT=linq tsx apps/agent-cli/src/main.mts",
     "shopper-agent": "tsx apps/shopper-agent/src/main.mts",
+    "linq-agent": "npm run shopper-agent",
     "traveler-agent": "tsx apps/traveler-agent/src/main.mts",
     "seed:linq-travelers": "tsx scripts/seed-linq-travelers.mts",
     "agent": "DEMO_MODE=relay tsx apps/agent-cli/src/main.mts",
