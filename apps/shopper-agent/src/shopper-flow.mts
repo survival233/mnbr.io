@@ -141,6 +141,10 @@ function relayIdempotencyKey(s: Session, text: string, attempt = 0): string {
 
 /** Typing bubble + paced send so it feels like a person, not a USSD menu. */
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
+  if (!text?.trim()) {
+    console.warn("[shopper-agent] skip empty reply (Relay rejects blank text)");
+    return;
+  }
   if (s.channel === "relay") {
     if (s.chatId) {
       if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
@@ -414,7 +418,10 @@ function quoteLines(s: Session): string {
 /** After the quote: wait on a traveler. No payment copy. */
 async function presentQuoteAndWait(s: Session): Promise<void> {
   const matchText = await runMatching(s);
-  if (s.step === "await_extend") {
+  // Only park on extend when matching just produced that prompt. A leftover
+  // await_extend after the shopper said yes must continue to recap + wait
+  // (success returns "" and used to POST empty text → Relay 422).
+  if (s.step === "await_extend" && matchText.trim()) {
     await reply(s, matchText, { thinkMs: 1400 });
     return;
   }
@@ -746,24 +753,28 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
   s.bidId = id;
   s.step = "await_traveler_decision";
   clearPending(s);
-  writeCarry({
-    id,
-    travelerId: s.chosenTravelerId!,
-    travelerName: chosen?.name ?? "Traveler",
-    item: item.productTitle.slice(0, 80),
-    bidId: id,
-    escrowId: "",
-    handoverCode: "",
-    totalCents: s.totalCents ?? 0,
-    status: "offered",
-    shopperKey: sessionKey(s.phone),
-    shopperChatId: s.chatId,
-    notifiedShopper: false,
-    notifiedTraveler: false,
-    notifiedTravelerFunded: false,
-    nextTravelerId: next?.id,
-    nextTravelerName: next?.name,
-  });
+  try {
+    writeCarry({
+      id,
+      travelerId: s.chosenTravelerId!,
+      travelerName: chosen?.name ?? "Traveler",
+      item: item.productTitle.slice(0, 80),
+      bidId: id,
+      escrowId: "",
+      handoverCode: "",
+      totalCents: s.totalCents ?? 0,
+      status: "offered",
+      shopperKey: sessionKey(s.phone),
+      shopperChatId: s.chatId,
+      notifiedShopper: false,
+      notifiedTraveler: false,
+      notifiedTravelerFunded: false,
+      nextTravelerId: next?.id,
+      nextTravelerName: next?.name,
+    });
+  } catch (e: any) {
+    console.warn(`[shopper-agent] marketplace carry skipped: ${e?.message ?? e}`);
+  }
   await say(
     s,
     `I’ll send this to ${chosen?.name ?? "a traveler"} heading your way. I’ll ping you when they agree.`,
