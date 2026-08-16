@@ -3,18 +3,15 @@
  *
  *   npm run demo              boot Anvil + escrow + seeds, start Shopper + Traveler, stay up
  *   npm run demo:cli          old interactive terminal pipeline
- *   npm run demo:linq         optional iMessage harness (not the product path)
  *   DEMO_AUTO=1 npm run demo  non-interactive CLI defaults
  *
- * Product path is Relay only. DEMO_TRANSPORT=linq in .env is ignored unless
- * you run `npm run demo:linq`.
+ * Product path is Relay only.
  */
 import { createPublicClient, createWalletClient, http, getContract, type Hex } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 import { readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline/promises";
-import { createLinqTransport, type LinqTransport } from "./linq-transport.mts";
 import { agentWallet, fundLocalEscrow, settleLocalEscrow } from "./local-escrow.mts";
 
 import {
@@ -48,9 +45,7 @@ const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
 // anvil's default dev mnemonic — public constant, local chain only
 const MNEMONIC = "test test test test test test test test test test test junk";
 const AUTO = process.env.DEMO_AUTO === "1";
-/** iMessage only for `npm run demo:linq`. .env DEMO_TRANSPORT=linq cannot enable it. */
-const USE_LINQ = process.env.DEMO_MODE === "linq";
-const USE_RELAY_HARNESS = !AUTO && !USE_LINQ && process.env.DEMO_MODE !== "cli";
+const USE_RELAY_HARNESS = !AUTO && process.env.DEMO_MODE !== "cli";
 
 // ── tiny console kit ────────────────────────────────────────────────────────
 const C = { dim: "\x1b[2m", g: "\x1b[32m", y: "\x1b[33m", c: "\x1b[36m", b: "\x1b[1m", r: "\x1b[31m", x: "\x1b[0m" };
@@ -60,32 +55,17 @@ const bad = (msg: string) => console.log(`  ${C.r}✗${C.x} ${msg}`);
 const sub = (msg: string) => console.log(`  ${C.dim}${msg}${C.x}`);
 const hr = () => console.log(C.dim + "─".repeat(64) + C.x);
 
-const rl = AUTO || USE_LINQ || USE_RELAY_HARNESS ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
-let linq: LinqTransport | null = null;
+const rl = AUTO || USE_RELAY_HARNESS ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
 
-/** Interactive: terminal, Linq iMessage, or DEMO_AUTO defaults. */
+/** Interactive terminal, or DEMO_AUTO defaults. */
 async function ask(q: string, auto?: string): Promise<string> {
-  if (AUTO && !USE_LINQ) { console.log(`${C.y}?${C.x} ${q} ${C.dim}(auto: ${auto})${C.x}`); return auto!; }
-  if (USE_LINQ && linq) {
-    console.log(`${C.y}?${C.x} ${q} ${C.dim}(via iMessage)${C.x}`);
-    while (true) {
-      const a = (await linq.ask(q, auto)).trim();
-      if (a) return a;
-      bad("empty iMessage reply — ask again on your phone");
-    }
-  }
+  if (AUTO) { console.log(`${C.y}?${C.x} ${q} ${C.dim}(auto: ${auto})${C.x}`); return auto!; }
   let a = "";
   while (!a) {
     a = (await rl!.question(`${C.y}?${C.x} ${q} `)).trim();
     if (!a) bad("please type an answer (Enter alone does nothing)");
   }
   return a;
-}
-
-async function notifyPhone(msg: string) {
-  if (USE_LINQ && linq) {
-    try { await linq.say(msg); } catch (e: any) { bad(`linq notify failed: ${e.message}`); }
-  }
 }
 
 // ── light input parsing (rule-based; the LLM skin comes later) ──────────────
@@ -139,17 +119,6 @@ async function main() {
   console.log(`\n${C.b}MANEBRA — agentic marketplace demo session${C.x}`);
   const hasLlm = !!(process.env.OPENAI_API_KEY || process.env.HF_TOKEN);
   console.log(`${C.dim}Real engines + real escrow contract on a local chain. ${hasLlm ? "Language intake: live LLM." : "No LLM key set: intake is question-by-question."}${C.x}\n`);
-
-  if (USE_LINQ) {
-    const to = process.env.LINQ_TO_PHONE;
-    if (!to) {
-      bad("DEMO_TRANSPORT=linq requires LINQ_TO_PHONE=+E.164 in apps/agent-cli/.env");
-      process.exit(1);
-    }
-    tag("linq", "routing demo questions to iMessage via Linq CLI…");
-    linq = await createLinqTransport({ toPhone: to, log: (m) => console.log(`  ${C.dim}${m}${C.x}`) });
-    await notifyPhone("Manebra demo is live — reply here to answer each question.");
-  }
 
   // ── boot the platform ─────────────────────────────────────────────────────
   tag("boot", "connecting local chain, deploying USDC + HandoverEscrow…");
@@ -260,10 +229,6 @@ async function main() {
     sub(`${l.productUrl}`);
     return line;
   });
-  if (USE_LINQ) {
-    await notifyPhone(`Pick a listing — reply with the number:\n${listingLines.join("\n")}`);
-  }
-
   let listingIdx = 0;
   while (true) {
     const choice = await ask(`Which listing? (1–${listings.length})`, "1");
@@ -390,7 +355,7 @@ async function main() {
     }
   }
 
-  if (ranked.length === 0) { bad("no eligible trips before your deadline — agent would keep watching"); await notifyPhone("No eligible travelers before your deadline — demo stopped."); process.exit(0); }
+  if (ranked.length === 0) { bad("no eligible trips before your deadline — agent would keep watching"); process.exit(0); }
   const names = ranked.map((r: any, i: number) => `${i + 1}) ${travelers.find((t) => t.id === r.traveler.id)!.name} (score ${r.score})`).join("  ");
   const pick = parseInt(await ask(`Matching agent proposes: ${names}. Choose`, "1"), 10) - 1;
   const chosen = travelers.find((t) => t.id === (ranked[pick] as any).traveler.id)!;
@@ -456,7 +421,6 @@ async function main() {
   const codeHash = hashHandoverCode(code, "bid-demo", "demo-secret");
   tag("handover", `platform shows YOU (the shopper) a one-time code: ${C.b}${code}${C.x}`);
   sub("you inspect the item in person, then read the code to the traveler");
-  await notifyPhone(`Your handover code is ${code}. When prompted, enter it (or have the traveler enter it).`);
   let attempts = 0, confirmed = false;
   while (attempts < HANDOVER_MAX_ATTEMPTS && !confirmed) {
     const entered = await ask(`${chosen.name} enters the 6-digit code`, code);
@@ -498,14 +462,11 @@ async function main() {
   console.log(`${C.b}Session complete.${C.x} Everything above was the real system: real fee math, real matching`);
   console.log(`scorer, real negotiation engine, real HMAC handover, real escrow contract on a live`);
   console.log(`local chain. The LLM layer, when added, only translates language → this pipeline.\n`);
-  await notifyPhone("Manebra demo complete — thanks!");
   if (rl) rl.close();
-  if (linq) await linq.close();
   if (anvilChild) anvilChild.kill();
 }
 
 main().catch(async (e) => {
   console.error(e);
-  try { if (linq) await linq.close(); } catch {}
   process.exit(1);
 });
