@@ -1,8 +1,8 @@
 /**
- * Stable Linq beta travelers — same IDs used in shopper-flow ranking and DB seeds.
+ * Stable seed travelers — same IDs used in shopper-flow ranking.
  * Emails are internal; wallets provisioned on first bids.accept.
  */
-export const LINQ_TRAVELERS = [
+export const SEED_TRAVELERS = [
   {
     id: "a1111111-1111-4111-8111-111111111111",
     email: "linq-ama@manebra.test",
@@ -35,4 +35,4 @@ export const LINQ_TRAVELERS = [
   },
 ] as const;
 
-export type LinqTravelerSeed = (typeof LINQ_TRAVELERS)[number];
+export type SeedTraveler = (typeof SEED_TRAVELERS)[number];

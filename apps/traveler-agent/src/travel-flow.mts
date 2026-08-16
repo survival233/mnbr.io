@@ -13,6 +13,7 @@ import {
 import { normalizeCity } from "@manebra/calendar";
 import { upsertLiveTrip } from "@manebra/db";
 import type { Session } from "./session.mts";
+import { persistBeforeAsk } from "@manebra/dialog";
 import { markSessionDirty, persistSessionsNow } from "./session.mts";
 import { persistBookedTrip, acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
 import {
@@ -36,8 +37,7 @@ function sleep(ms: number) {
 function persistTrip(s: Session) {
   mirrorTripToLegacy(s);
   markSessionDirty();
-  // Flush immediately so Render restarts don’t drop mid-turn slot fills.
-  persistSessionsNow();
+  persistBeforeAsk(persistSessionsNow);
 }
 
 function tripCity(raw?: string): string | null {

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@manebra/shared": "*",
+    "@manebra/dialog": "*",
     "@manebra/agents": "*",
     "@manebra/flights": "*",
     "@manebra/calendar": "*",

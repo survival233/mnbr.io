@@ -3,26 +3,12 @@
  * not a list of famous phrases. Search is allowed only after NEW.
  */
 import { normalizeCity } from "@manebra/calendar";
-import {
-  categoryOf,
-  parseDate,
-  parseUsdCents,
-  type PendingSlot,
-  type Session,
-} from "./session.mts";
-import { fuzzyMatchIndex } from "./intent.mts";
-import { parseUsShoppingCity } from "./cognition/cities.mts";
+import { parseDate, parseUsdCents, categoryOf } from "./parse";
+import { fuzzyMatchIndex } from "./fuzzy";
+import { parseUsShoppingCity } from "./cities";
+import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
 
-export type TurnAct = "META" | "REPAIR" | "CONTINUE" | "NEW" | "REASK";
-
-export type ClassifiedTurn = {
-  act: TurnAct;
-  meta?: "cancel" | "status" | "wait";
-  slot?: PendingSlot["slot"] | "product";
-  value?: string | number;
-  optionIndex?: number;
-  query?: string;
-};
+export type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
 
 const FORM_STEPS = new Set([
   "await_product_confirm",
@@ -125,7 +111,7 @@ export function parseFuzzyDate(text: string): Date | null {
   return null;
 }
 
-export function filledSlotKeys(s: Session): string[] {
+export function filledSlotKeys(s: DialogSession): string[] {
   const keys: string[] = [];
   if (s.searchQuery) keys.push("product");
   if (s.selected) keys.push("listing");
@@ -137,15 +123,15 @@ export function filledSlotKeys(s: Session): string[] {
   return keys;
 }
 
-export function isFormOpen(s: Session): boolean {
+export function isFormOpen(s: DialogSession): boolean {
   return Boolean(s.pending?.slot || s.offer || FORM_STEPS.has(s.step) || filledSlotKeys(s).length);
 }
 
-export function requestedSlot(s: Session): PendingSlot | null {
+export function requestedSlot(s: DialogSession): DialogPendingSlot | null {
   return s.pending?.slot ? s.pending : null;
 }
 
-function lastOptions(s: Session): Array<{ id: string; label: string; haystack?: string }> {
+function lastOptions(s: DialogSession): Array<{ id: string; label: string; haystack?: string }> {
   if (s.pending?.options?.length) {
     return s.pending.options.map((o) => ({ id: o.id, label: o.label, haystack: o.label }));
   }
@@ -160,7 +146,7 @@ function lastOptions(s: Session): Array<{ id: string; label: string; haystack?: 
     return (s.ranked ?? []).map((r, i) => ({
       id: String(i),
       label: r.name,
-      haystack: `${r.name} ${r.departs}`,
+      haystack: `${r.name} ${r.departs ?? ""}`,
     }));
   }
   return [];
@@ -213,7 +199,7 @@ function productSignal(text: string): boolean {
   return leftover.split(/\s+/).length >= 2 && leftover.length >= 8;
 }
 
-function isRecapLeftover(s: Session, text: string): boolean {
+function isRecapLeftover(s: DialogSession, text: string): boolean {
   const t = text.trim().toLowerCase();
   if (t.length < 4) return false;
   const title = s.selected?.productTitle?.toLowerCase() ?? "";
@@ -231,7 +217,7 @@ export type PendingParse =
   | { ok: true; value?: string | number; optionIndex?: number; applyProposed?: boolean }
   | { ok: false };
 
-export function parseAgainstPending(s: Session, text: string): PendingParse {
+export function parseAgainstPending(s: DialogSession, text: string): PendingParse {
   const pending = requestedSlot(s);
   const t = text.trim();
   if (!pending) return { ok: false };
@@ -282,7 +268,7 @@ export function parseAgainstPending(s: Session, text: string): PendingParse {
   return { ok: false };
 }
 
-function detectRepair(s: Session, text: string): ClassifiedTurn | null {
+function detectRepair(s: DialogSession, text: string): ClassifiedTurn | null {
   const t = text.trim();
   if (!/^(actually|instead|make it|change( it)? to|not)\b/i.test(t)) return null;
   const rest = t
@@ -315,7 +301,7 @@ function detectRepair(s: Session, text: string): ClassifiedTurn | null {
   return null;
 }
 
-function unmistakableNewItem(s: Session, text: string, hasPhoto: boolean): boolean {
+function unmistakableNewItem(s: DialogSession, text: string, hasPhoto: boolean): boolean {
   if (hasPhoto) return true;
   if (isRecapLeftover(s, text)) return false;
   if (!productSignal(text)) return false;
@@ -329,7 +315,7 @@ function unmistakableNewItem(s: Session, text: string, hasPhoto: boolean): boole
 }
 
 /** Invalid / missing model act → re-ask if a question is open; never NEW. */
-export function actFromModel(raw: unknown, s: Session): TurnAct {
+export function actFromModel(raw: unknown, s: DialogSession): TurnAct {
   const act = typeof raw === "string" ? raw.toUpperCase() : "";
   if (act === "META" || act === "REPAIR" || act === "CONTINUE" || act === "NEW" || act === "REASK") {
     return act;
@@ -338,7 +324,7 @@ export function actFromModel(raw: unknown, s: Session): TurnAct {
 }
 
 export function classifyTurn(
-  s: Session,
+  s: DialogSession,
   input: { text: string; hasPhoto?: boolean },
 ): ClassifiedTurn {
   const text = (input.text ?? "").trim();

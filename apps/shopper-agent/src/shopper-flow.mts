@@ -20,10 +20,10 @@ import {
   allSessions,
 } from "./session.mts";
 import { classifyIntent, normalizeSearchQuery } from "./intent.mts";
-import { classifyTurn, filledSlotKeys, type ClassifiedTurn } from "./turn.mts";
+import { classifyTurn, filledSlotKeys, persistBeforeAsk, type ClassifiedTurn } from "@manebra/dialog";
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
-import { LINQ_TRAVELERS } from "./traveler-seeds.mts";
+import { SEED_TRAVELERS } from "./traveler-seeds.mts";
 import {
   completeHandoverAndRelease,
 } from "./settlement-bridge.mts";
@@ -65,7 +65,7 @@ type TravelerSeed = {
 function seedTravelers(): TravelerSeed[] {
   const now = new Date();
   const day = (n: number) => new Date(now.getTime() + n * 86400_000);
-  return LINQ_TRAVELERS.map((t) => ({
+  return SEED_TRAVELERS.map((t) => ({
     id: t.id,
     name: t.name,
     trustScore: t.trustScore,
@@ -276,7 +276,7 @@ function setOffer(s: Session, field: DialogOffer["field"], value: string, prompt
     options: lastChoiceOptions(s, field),
   };
   markSessionDirty();
-  persistSessionsNow();
+  persistBeforeAsk(persistSessionsNow);
 }
 
 function clearPending(s: Session) {

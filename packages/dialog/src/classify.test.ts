@@ -1,21 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { actFromModel, classifyTurn, type ClassifiedTurn } from "./turn.mts";
-import type { Session } from "./session.mts";
+import { actFromModel, classifyTurn, type ClassifiedTurn, type DialogSession } from "./classify";
 
-function sess(partial: Partial<Session>): Session {
+function sess(partial: Partial<DialogSession>): DialogSession {
   return {
-    phone: "usr_test",
-    chatId: "cnv_test",
-    channel: "relay",
     step: "idle",
     shoppingCity: "New York",
     pending: null,
-    updatedAt: Date.now(),
     ...partial,
   };
 }
 
-function act(s: Session, text: string, hasPhoto = false): ClassifiedTurn {
+function act(s: DialogSession, text: string, hasPhoto = false): ClassifiedTurn {
   return classifyTurn(s, { text, hasPhoto });
 }
 
@@ -24,7 +19,7 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     const s = sess({
       step: "await_deadline",
       searchQuery: "PS5",
-      selected: { productTitle: "PS5", storeName: "Target", priceCents: 49900 } as Session["selected"],
+      selected: { productTitle: "PS5" },
       pending: {
         slot: "need_by",
         proposed: "15th August",
@@ -54,7 +49,7 @@ describe("classifyTurn — open question after a gap is never a search", () => {
       listings: [
         { storeName: "Target", productTitle: "Black hoodie", priceCents: 4000 },
         { storeName: "Walmart", productTitle: "Grey hoodie", priceCents: 2500 },
-      ] as Session["listings"],
+      ],
       pending: {
         slot: "listing",
         proposed: "0",
@@ -78,7 +73,7 @@ describe("classifyTurn — open question after a gap is never a search", () => {
       listings: [
         { storeName: "Target", productTitle: "Hoodie A", priceCents: 4000 },
         { storeName: "Walmart", productTitle: "Hoodie B", priceCents: 2500 },
-      ] as Session["listings"],
+      ],
       pending: { slot: "listing", proposed: "0", kind: "choice", prompt: "Pick one" },
     });
     const t = act(s, "the cheaper one");
@@ -109,7 +104,7 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     const s = sess({
       step: "await_traveler",
       searchQuery: "PS5",
-      ranked: [{ id: "ama", name: "Ama", score: 1, departs: "Fri" }],
+      ranked: [{ name: "Ama", departs: "Fri" }],
       pending: {
         slot: "traveler",
         proposed: "0",
@@ -192,9 +187,7 @@ describe("classifyTurn — open question after a gap is never a search", () => {
       searchQuery: "Sony WH-1000XM5",
       selected: {
         productTitle: "Sony WH-1000XM5 Wireless Headphones",
-        storeName: "Best Buy",
-        priceCents: 32800,
-      } as Session["selected"],
+      },
     });
     expect(act(s, "Sony WH-1000XM5 Wireless Headphones").act).not.toBe("NEW");
   });
@@ -204,10 +197,9 @@ describe("classifyTurn — open question after a gap is never a search", () => {
       step: "await_deadline",
       searchQuery: "PS5",
       pending: { slot: "need_by", proposed: "15th August", kind: "date", prompt: "Need it by?" },
-      updatedAt: Date.now() - 8 * 3600_000,
     });
     const now = act(s, "tomorow");
-    const later = act({ ...s, updatedAt: Date.now() }, "tomorow");
+    const later = act({ ...s }, "tomorow");
     expect(now.act).toBe(later.act);
     expect(now.act).toBe("CONTINUE");
   });

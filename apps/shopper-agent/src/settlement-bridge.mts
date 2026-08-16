@@ -1,5 +1,5 @@
 /**
- * In-process settlement bridge for Linq agent.
+ * In-process settlement bridge for Shopper agent.
  * Requires SETTLEMENT_ENABLED=1 and apps/api/.env (RPC, escrow, attestor, operator, DB).
  *
  * Flow: ensure shopper + travelers → item → bid → accept → top-up USDC → fund
@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { suggestedTravelerFeeCents, computeFees, endOfLocalDay } from "@manebra/shared";
 import { centsToUsdc } from "@manebra/settlement";
 import type { ProductListing } from "@manebra/catalog";
-import { LINQ_TRAVELERS } from "./traveler-seeds.mts";
+import { SEED_TRAVELERS } from "./traveler-seeds.mts";
 import { digits } from "./session.mts";
 
 export function settlementEnabled(): boolean {
@@ -137,7 +137,7 @@ async function ensureTravelers(prisma: typeof import("@manebra/db").prisma) {
     d.setUTCHours(12, 0, 0, 0);
     return d;
   };
-  for (const t of LINQ_TRAVELERS) {
+  for (const t of SEED_TRAVELERS) {
     await prisma.user.upsert({
       where: { id: t.id },
       create: {
@@ -221,7 +221,7 @@ export async function fundEscrowOrder(input: FundOrderInput): Promise<FundOrderR
 
   await ensureTravelers(prisma);
   const shopper = await ensureShopper(prisma, input.phone);
-  const traveler = LINQ_TRAVELERS.find((t) => t.id === input.travelerId);
+  const traveler = SEED_TRAVELERS.find((t) => t.id === input.travelerId);
   if (!traveler) throw new Error(`Unknown traveler ${input.travelerId}`);
 
   const trip = await prisma.travelerTrip.findFirst({
