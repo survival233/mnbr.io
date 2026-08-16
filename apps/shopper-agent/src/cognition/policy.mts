@@ -315,7 +315,7 @@ export async function runPolicyTurn(args: {
     s.step = "await_product_confirm";
     const q =
       turn.confirmQuestion ??
-      `Looks like ${turn.productHypothesis} — want me to shop that for Ghana hand-delivery?`;
+      `Looks like ${turn.productHypothesis} — want me to shop that?`;
     return { bubbles: [q], fallthrough: false, monologueLog: cog.lastMonologue };
   }
 

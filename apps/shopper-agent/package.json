@@ -16,6 +16,7 @@
     "@manebra/llm": "*",
     "@manebra/catalog": "*",
     "@manebra/calendar": "*",
+    "@manebra/geo": "*",
     "@manebra/db": "*",
     "@manebra/settlement": "*",
     "@manebra/api": "*",

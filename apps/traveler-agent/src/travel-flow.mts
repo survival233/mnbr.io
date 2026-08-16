@@ -168,7 +168,7 @@ async function handleCollectAndSearch(
   const ask = nextQuestion(trip);
   if (ask) {
     if (ask.field === "departure_date") {
-      s.offer = { field: "departure_date", value: parseDepartDate("15th August") ?? "15th August" };
+      s.offer = undefined;
     }
     const dest = trip.destination;
     if (dest) rememberItem(stayOf(s), dest);

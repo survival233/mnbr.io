@@ -1,5 +1,6 @@
 import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents } from "@manebra/shared";
 import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
+import { resolveMetro, sameMetro } from "@manebra/geo";
 import { searchProducts, hasSerpApiKey } from "@manebra/catalog";
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -48,6 +49,7 @@ import {
   updateOffer,
   getOffer,
   listLiveTrips,
+  listUpcomingTrips,
 } from "@manebra/db";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
@@ -243,10 +245,28 @@ async function replyPair(s: Session, first: string, second: string) {
   await say(s, first, second);
 }
 
+const DEST_ASK = "Which city should it land in?";
+
 function shopperIntakeLine(s: Session): string {
   return s.channel === "relay"
     ? "What should I shop for you?"
-    : "Send a product (text or photo) and I’ll find US stock and a traveler to Accra.";
+    : "Send a product (text or photo) and I’ll find stock and a traveler heading to your city.";
+}
+
+function parkDestAsk(s: Session, prompt = DEST_ASK) {
+  s.step = "await_delivery_city";
+  s.offer = undefined;
+  s.pending = { slot: "delivery_city", proposed: null, kind: "text", prompt };
+  rememberQuestion(stayOf(s), prompt);
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
+}
+
+function commitDeliveryCity(s: Session, raw: string): void {
+  const t = raw.trim();
+  s.deliveryCity = resolveMetro(t)?.city ?? normalizeCity(t) ?? t;
+  s.offer = undefined;
+  markSessionDirty();
 }
 
 function isYes(text: string): boolean {
@@ -333,10 +353,45 @@ function listingLabels(s: Session) {
 }
 
 function travelerLabels(s: Session) {
-  return (s.ranked ?? []).map((r) => ({
+  const rows = [...(s.ranked ?? [])];
+  if (s.extendCandidate && !rows.some((r) => r.id === s.extendCandidate!.id)) {
+    rows.push(s.extendCandidate);
+  }
+  return rows.map((r) => ({
     label: r.name,
     haystack: `${r.name} ${r.departs}`,
   }));
+}
+
+/** Guest-facing date that parseDate can commit on yes. Never a fixed calendar default. */
+function guestDate(d: Date): string {
+  const n = d.getDate();
+  const ord =
+    n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th";
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  return `${n}${ord} ${months[d.getMonth()]}`;
+}
+
+function parseDepartLabel(raw: string | undefined): Date | null {
+  if (!raw?.trim()) return null;
+  const parsed = parseDate(raw);
+  if (parsed) return parsed;
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) return null;
+  return endOfLocalDay(new Date(ms));
 }
 
 function upcomingOnOrAfter(d: Date, now: Date): boolean {
@@ -430,6 +485,111 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
   }
 }
 
+/** Live opted-in upcoming trips whose arrival metro matches. Seeds only if none. Origin unconstrained. */
+async function upcomingToDest(city: string): Promise<TravelerSeed[]> {
+  const now = new Date();
+  if (!resolveMetro(city)) return [];
+  const dest = resolveMetro(city)!.city;
+  let live: TravelerSeed[] = [];
+  try {
+    live = (await listUpcomingTrips())
+      .filter(
+        (t) =>
+          t.optedIn &&
+          t.status === "upcoming" &&
+          upcomingOnOrAfter(t.departureDate, now) &&
+          sameMetro(t.destinationCity, city),
+      )
+      .map((t) => ({
+        id: t.travelerId,
+        name: t.travelerName,
+        trustScore: 120,
+        avgRating: null,
+        totalDeliveries: 0,
+        minFeeCents: 2000,
+        trip: {
+          id: t.id,
+          travelerId: t.travelerId,
+          direction: "us_to_gh" as const,
+          destinationCity: dest,
+          departureDate: t.departureDate,
+          status: "upcoming" as const,
+        },
+        profile: {
+          id: t.travelerId,
+          isVerified: true,
+          accountStatus: "active" as const,
+          trustScore: 120,
+          avgRating: null,
+          totalDeliveries: 0,
+        },
+      }));
+  } catch (e: any) {
+    console.warn(`[shopper-agent] upcoming trips unavailable: ${e?.message ?? e}`);
+  }
+  const pool = live.length ? live : seedTravelers();
+  return pool
+    .filter((t) => upcomingOnOrAfter(t.trip.departureDate, now) && sameMetro(t.trip.destinationCity, city))
+    .sort((a, b) => a.trip.departureDate.getTime() - b.trip.departureDate.getTime());
+}
+
+function commitNeedBy(s: Session, raw: string | Date): boolean {
+  const d = raw instanceof Date ? raw : parseDepartLabel(raw);
+  if (!d || Number.isNaN(d.getTime())) return false;
+  s.deadline = endOfLocalDay(d);
+  s.extendCandidate = undefined;
+  clearPending(s);
+  markSessionDirty();
+  return true;
+}
+
+async function commitStretch(s: Session): Promise<boolean> {
+  const alt = s.extendCandidate;
+  if (!alt) return false;
+  const fromLabel = parseDepartLabel(alt.departs);
+  if (fromLabel) return commitNeedBy(s, fromLabel);
+  const dest = s.deliveryCity ?? "";
+  const trips = dest ? await upcomingToDest(dest) : [];
+  const t = trips.find((x) => x.id === alt.id);
+  if (!t) return false;
+  return commitNeedBy(s, t.trip.departureDate);
+}
+
+function dateAskPrompt(dest: string, proposed: string | null): string {
+  if (proposed) {
+    return `When do you need it by at most? Next traveler to ${dest} is ${proposed} — say yes, or send another date.`;
+  }
+  return "When do you need it by at most? Send a date.";
+}
+
+async function askNeedBy(s: Session, act?: ClassifiedTurn["act"]): Promise<void> {
+  s.step = "await_deadline";
+  const dest = s.deliveryCity ? (resolveMetro(s.deliveryCity)?.city ?? s.deliveryCity) : "";
+  const trips = dest ? await upcomingToDest(s.deliveryCity ?? dest) : [];
+  const proposed = trips[0] ? guestDate(trips[0].trip.departureDate) : null;
+  const prompt = dateAskPrompt(dest || "your city", proposed);
+  if (proposed) {
+    setOffer(s, "deadline", proposed, prompt);
+    const seen = new Set<string>();
+    const options: { id: string; label: string }[] = [];
+    for (const t of trips) {
+      const label = guestDate(t.trip.departureDate);
+      if (seen.has(label)) continue;
+      seen.add(label);
+      options.push({ id: t.id, label });
+      if (options.length >= 3) break;
+    }
+    if (s.pending) s.pending.options = options;
+  } else {
+    s.offer = undefined;
+    s.pending = { slot: "need_by", proposed: null, kind: "date", prompt };
+    rememberQuestion(stayOf(s), prompt);
+    persistBeforeAsk(persistSessionsNow);
+  }
+  markSessionDirty();
+  await sayHost(s, act ?? stayOf(s).lastAct ?? "CONTINUE", prompt);
+}
+
 async function runMatching(s: Session): Promise<string> {
   const selected = s.selected!;
   const city = s.deliveryCity!;
@@ -476,7 +636,7 @@ async function runMatching(s: Session): Promise<string> {
       id: next.t.id,
       name: next.t.name,
       score: 0,
-      departs: next.t.trip.departureDate.toDateString(),
+      departs: guestDate(next.t.trip.departureDate),
     };
     s.step = "await_extend";
     markSessionDirty();
@@ -499,7 +659,7 @@ async function runMatching(s: Session): Promise<string> {
       id: t.id,
       name: t.name,
       score: r.score,
-      departs: t.trip.departureDate.toDateString(),
+      departs: guestDate(t.trip.departureDate),
     };
   });
   markSessionDirty();
@@ -526,16 +686,20 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
   // await_extend after the shopper said yes must continue to recap + wait
   // (success returns "" and used to POST empty text → Relay 422).
   if (s.step === "await_extend" && matchText.trim()) {
-    s.pending = {
-      slot: "brief",
-      proposed: "yes",
-      kind: "bool",
-      prompt: matchText,
-    };
-    rememberQuestion(stayOf(s), matchText);
-    persistSessionsNow();
-    await reply(s, matchText, { thinkMs: 1400 });
-    return;
+    const altDay = parseDepartLabel(s.extendCandidate?.departs);
+    if (altDay && s.deadline && endOfLocalDay(s.deadline).getTime() >= altDay.getTime()) {
+      // Already committed this stretch — recap, do not re-ask.
+    } else {
+      const proposed = s.extendCandidate?.departs;
+      if (proposed) setOffer(s, "deadline", proposed, matchText);
+      else {
+        s.pending = { slot: "brief", proposed: "yes", kind: "bool", prompt: matchText };
+        rememberQuestion(stayOf(s), matchText);
+      }
+      persistSessionsNow();
+      await reply(s, matchText, { thinkMs: 1400 });
+      return;
+    }
   }
   const quote = quoteLines(s);
   rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
@@ -557,21 +721,12 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
 
 async function continueAfterListing(s: Session): Promise<void> {
   if (!s.deliveryCity) {
-    s.step = "await_delivery_city";
-    setOffer(s, "deliveryCity", "Accra", "Where in Ghana should it land? Accra, Kumasi…");
-    markSessionDirty();
-    await say(
-      s,
-      `Nice — ${s.selected!.storeName}, ${formatUsd(s.selected!.priceCents)}.`,
-      `Where in Ghana should it land? Accra, Kumasi…`,
-    );
+    parkDestAsk(s);
+    await say(s, `Nice — ${s.selected!.storeName}, ${formatUsd(s.selected!.priceCents)}.`, DEST_ASK);
     return;
   }
   if (!s.deadline) {
-    s.step = "await_deadline";
-    setOffer(s, "deadline", "15th August", "Need it by 15th August? Say yes, or send another date.");
-    markSessionDirty();
-    await sayHost(s, stayOf(s).lastAct ?? "CONTINUE", `Need it by 15th August? Say yes, or send another date.`);
+    await askNeedBy(s);
     return;
   }
   if (s.maxFeeCents == null) {
@@ -690,7 +845,19 @@ function hydratePending(s: Session): void {
     return;
   }
   if (s.step === "await_deadline") {
-    setOffer(s, "deadline", "15th August", "Need it by 15th August? Say yes, or send another date.");
+    s.pending = {
+      slot: "need_by",
+      proposed: null,
+      kind: "date",
+      prompt: s.pending?.prompt || dateAskPrompt(s.deliveryCity ?? "your city", null),
+    };
+  } else if (s.step === "await_extend" && s.extendCandidate) {
+    setOffer(
+      s,
+      "deadline",
+      s.extendCandidate.departs,
+      s.pending?.prompt || `Want me to stretch your deadline to meet ${s.extendCandidate.name}? Just say yes or no.`,
+    );
   } else if (s.step === "await_max_fee") {
     setOffer(
       s,
@@ -699,7 +866,8 @@ function hydratePending(s: Session): void {
       "What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.",
     );
   } else if (s.step === "await_delivery_city") {
-    setOffer(s, "deliveryCity", s.deliveryCity ?? "Accra", "Where in Ghana should it land? Accra, Kumasi…");
+    if (s.deliveryCity) setOffer(s, "deliveryCity", s.deliveryCity, DEST_ASK);
+    else parkDestAsk(s);
   } else if (s.step === "await_shopping_city") {
     setOffer(s, "shoppingCity", "New York", "Which US city should I shop in? New York is usually solid.");
   } else if (s.step === "await_listing" && s.listings?.length) {
@@ -713,11 +881,11 @@ function reaskPrompt(s: Session): string {
   return (
     s.pending?.prompt?.trim() ||
     (s.step === "await_deadline"
-      ? "Need it by 15th August? Say yes, or send another date."
+      ? dateAskPrompt(s.deliveryCity ?? "your city", s.offer?.field === "deadline" ? s.offer.value : null)
       : s.step === "await_max_fee"
         ? "Send a dollar amount, or say that’s fine for $30."
         : s.step === "await_delivery_city"
-          ? "Where in Ghana should it land? Accra, Kumasi…"
+          ? DEST_ASK
           : s.step === "await_shopping_city"
             ? "Which US city should I shop in? New York is usually solid."
             : s.step === "await_listing"
@@ -799,7 +967,7 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
       await continueAfterListing(s);
       return true;
     }
-    await reply(s, s.pending?.prompt || "Need it by 15th August? Say yes, or send another date.");
+    await reply(s, s.pending?.prompt || dateAskPrompt(s.deliveryCity ?? "your city", s.offer?.field === "deadline" ? s.offer.value : null));
     return true;
   }
 
@@ -825,6 +993,12 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
 
 /** “yeah” / “that one” / “idk” apply the last offered slot. Matching never sees raw chat. */
 async function applyDialogAffirm(s: Session, text: string, intent: { kind: string }): Promise<boolean> {
+  if (s.step === "await_extend" && acceptsOffer(text, intent)) {
+    if (await commitStretch(s)) {
+      await continueAfterListing(s);
+      return true;
+    }
+  }
   if (s.step === "await_brief_confirm" && acceptsOffer(text, intent)) {
     await parkWaitingOnTraveler(s);
     return true;
@@ -845,7 +1019,7 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
   const matches =
     (field === "shoppingCity" && s.step === "await_shopping_city") ||
     (field === "deliveryCity" && s.step === "await_delivery_city") ||
-    (field === "deadline" && s.step === "await_deadline") ||
+    (field === "deadline" && (s.step === "await_deadline" || s.step === "await_extend")) ||
     (field === "maxFeeCents" && s.step === "await_max_fee") ||
     (field === "listing" && s.step === "await_listing") ||
     (field === "traveler" && s.step === "await_traveler");
@@ -861,16 +1035,12 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     return true;
   }
   if (field === "deliveryCity") {
-    s.deliveryCity = value;
-    markSessionDirty();
+    commitDeliveryCity(s, value);
     await continueAfterListing(s);
     return true;
   }
   if (field === "deadline") {
-    const d = parseDate(value);
-    if (!d) return false;
-    s.deadline = d;
-    markSessionDirty();
+    if (!commitNeedBy(s, value)) return false;
     await continueAfterListing(s);
     return true;
   }
@@ -1273,11 +1443,28 @@ async function handleInboundInner(
         return;
       }
     }
+    if (s.step === "await_extend") {
+      const named =
+        Boolean(s.extendCandidate?.name) &&
+        s.extendCandidate!.name.split(/\s+/)[0]!.length >= 2 &&
+        text.toLowerCase().includes(s.extendCandidate!.name.split(/\s+/)[0]!.toLowerCase());
+      const rawNeedBy = typeof turn.value === "string" ? turn.value : turn.query;
+      if (closer || turn.slot === "brief" || turn.slot === "need_by" || named) {
+        const ok =
+          turn.slot === "need_by" && rawNeedBy
+            ? commitNeedBy(s, rawNeedBy)
+            : await commitStretch(s);
+        if (ok) {
+          await continueAfterListing(s);
+          return;
+        }
+      }
+    }
     if (
       closer &&
       s.selected &&
       (s.ranked?.length ?? 0) > 0 &&
-      ["await_extend", "await_product", "idle", "done", "await_brief_confirm"].includes(s.step)
+      ["await_product", "idle", "done", "await_brief_confirm"].includes(s.step)
     ) {
       if (s.chatId) presenceTyping(s);
       await presentQuoteAndWait(s);
@@ -1293,11 +1480,9 @@ async function handleInboundInner(
       await lockTraveler(s, turn.optionIndex);
       return;
     }
-    if (turn.slot === "need_by" && typeof turn.value === "string") {
-      const d = parseDate(turn.value) ?? new Date(turn.value);
-      if (!Number.isNaN(d.getTime())) {
-        s.deadline = d;
-        clearPending(s);
+    if (turn.slot === "need_by") {
+      const raw = typeof turn.value === "string" ? turn.value : turn.query;
+      if (raw && commitNeedBy(s, raw)) {
         await continueAfterListing(s);
         return;
       }
@@ -1316,7 +1501,7 @@ async function handleInboundInner(
       return;
     }
     if (turn.slot === "delivery_city" && typeof turn.value === "string") {
-      s.deliveryCity = turn.value;
+      commitDeliveryCity(s, turn.value);
       clearPending(s);
       await continueAfterListing(s);
       return;
@@ -1521,20 +1706,15 @@ async function handleInboundInner(
       if (intent.kind === "no") {
         const rest = text.replace(/^(n|no|nope|nah)[,.\s]*/i, "").trim();
         if (rest) {
-          s.deliveryCity = normalizeCity(rest) ?? rest;
-          s.offer = undefined;
-          markSessionDirty();
+          commitDeliveryCity(s, rest);
           await continueAfterListing(s);
           return;
         }
-        s.offer = undefined;
-        markSessionDirty();
-        await reply(s, `Which city in Ghana — Accra, Kumasi, or another?`);
+        parkDestAsk(s);
+        await reply(s, DEST_ASK);
         return;
       }
-      s.deliveryCity = normalizeCity(text) ?? text;
-      s.offer = undefined;
-      markSessionDirty();
+      commitDeliveryCity(s, text);
       await continueAfterListing(s);
       return;
     }
@@ -1542,26 +1722,31 @@ async function handleInboundInner(
       if (intent.kind === "no") {
         const rest = text.replace(/^(n|no|nope|nah)[,.\s]*/i, "").trim();
         const d = rest ? parseDate(rest) : null;
-        if (d) {
-          s.deadline = d;
-          s.offer = undefined;
-          markSessionDirty();
+        if (d && commitNeedBy(s, d)) {
           await continueAfterListing(s);
           return;
         }
         s.offer = undefined;
-        setOffer(s, "deadline", "15th August");
-        await reply(s, `No problem — what date works? “20th” or “15th August” is fine.`);
+        s.pending = {
+          slot: "need_by",
+          proposed: null,
+          kind: "date",
+          prompt: dateAskPrompt(s.deliveryCity ?? "your city", null),
+        };
+        rememberQuestion(stayOf(s), s.pending.prompt);
+        persistBeforeAsk(persistSessionsNow);
+        await sayHost(s, stayOf(s).lastAct ?? "CONTINUE", s.pending.prompt);
         return;
       }
       const d = parseDate(text);
       if (!d) {
-        await reply(s, `I didn’t catch that date — try something like “15th August”, or say yes to use that.`);
+        await reply(s, s.pending?.prompt || dateAskPrompt(s.deliveryCity ?? "your city", s.offer?.field === "deadline" ? s.offer.value : null));
         return;
       }
-      s.deadline = d;
-      s.offer = undefined;
-      markSessionDirty();
+      if (!commitNeedBy(s, d)) {
+        await askNeedBy(s);
+        return;
+      }
       await continueAfterListing(s);
       return;
     }
@@ -1606,27 +1791,23 @@ async function handleInboundInner(
     }
     case "await_extend": {
       if (!isYes(text) && intent.kind !== "yes") {
-        s.step = "done";
-        markSessionDirty();
-        await reply(s, `Got it — I’ll leave it. Ping me with hi whenever you want to try again.`);
-        return;
+        const named =
+          Boolean(s.extendCandidate?.name) &&
+          text.toLowerCase().includes((s.extendCandidate!.name.split(/\s+/)[0] ?? "").toLowerCase());
+        if (!named) {
+          s.step = "done";
+          markSessionDirty();
+          await reply(s, `Got it — I’ll leave it. Ping me with hi whenever you want to try again.`);
+          return;
+        }
       }
-      const travelers = seedTravelers();
-      const alt = s.extendCandidate;
-      if (!alt) {
+      if (!(await commitStretch(s))) {
         s.step = "done";
         markSessionDirty();
         await reply(s, `Nothing left to extend — say hi to start over.`);
         return;
       }
-      const t = travelers.find((x) => x.id === alt.id);
-      if (t) s.deadline = endOfLocalDay(t.trip.departureDate);
-      markSessionDirty();
-      await reply(s, `Cool — deadline moved to ${s.deadline!.toDateString()}. Matching now…`, {
-        thinkMs: 900,
-      });
-      if (s.chatId) presenceTyping(s);
-      await presentQuoteAndWait(s);
+      await continueAfterListing(s);
       return;
     }
     case "await_traveler": {

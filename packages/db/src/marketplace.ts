@@ -518,6 +518,37 @@ export async function listLiveTrips(destinationCity: string): Promise<StoredTrip
   }));
 }
 
+/** Upcoming opted-in trips, any destination. Callers filter by metro. */
+export async function listUpcomingTrips(): Promise<StoredTrip[]> {
+  const now = new Date();
+  if (!marketplaceConfigured()) {
+    return loadFile().trips.filter(
+      (t) => t.optedIn && t.status === "upcoming" && t.departureDate.getTime() > now.getTime(),
+    );
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const rows = await prisma.marketplaceTrip.findMany({
+    where: {
+      optedIn: true,
+      status: "upcoming",
+      departureDate: { gt: now },
+    },
+    orderBy: { departureDate: "asc" },
+    take: 40,
+  });
+  return rows.map((t) => ({
+    id: t.id,
+    travelerId: t.travelerId,
+    travelerName: t.travelerName,
+    originCity: t.originCity,
+    destinationCity: t.destinationCity,
+    departureDate: t.departureDate,
+    optedIn: t.optedIn,
+    status: t.status,
+  }));
+}
+
 export function initMarketplaceFile(): void {
   saveFile({ offers: [], trips: [] });
 }

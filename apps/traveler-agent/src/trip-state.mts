@@ -162,7 +162,7 @@ export function nextQuestion(trip: TripState): { field: TripField; text: string 
     case "destination":
       return {
         field,
-        text: `Where do you need to fly? (e.g. New York → Accra, or JFK→ACC)`,
+        text: `Where are you flying? City or airport is fine.`,
       };
     case "origin":
       return {
@@ -174,7 +174,7 @@ export function nextQuestion(trip: TripState): { field: TripField; text: string 
     case "departure_date":
       return {
         field,
-        text: `Got ${trip.origin} → ${trip.destination}. What day do you want to depart? (e.g. Friday, or 15th August)`,
+        text: `Got ${trip.origin} → ${trip.destination}. What day do you want to depart?`,
       };
   }
 }

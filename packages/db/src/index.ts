@@ -9,6 +9,7 @@ export {
   latestActiveOffer,
   upsertLiveTrip,
   listLiveTrips,
+  listUpcomingTrips,
   marketplaceConfigured,
   initMarketplaceFile,
 } from "./marketplace";

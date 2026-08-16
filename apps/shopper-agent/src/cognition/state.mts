@@ -167,10 +167,10 @@ export function predictiveAsk(args: {
       : `US shopping city for ${args.product}?`;
   }
   if (!args.deliveryCity) {
-    return warm ? "Where in Ghana should it land — Accra, Kumasi…?" : "Ghana delivery city?";
+    return warm ? "Which city should it land in?" : "Delivery city?";
   }
   if (!args.deadline) {
-    return warm ? "When do you need it by? Something like “15th August” works." : "Delivery deadline?";
+    return warm ? "When do you need it by at most?" : "When do you need it by at most?";
   }
   if (args.maxFeeCents == null) {
     return warm ? "What’s the most you’d pay the traveler in USD?" : "Max traveler fee (USD)?";
