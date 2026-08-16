@@ -5,6 +5,7 @@ import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
 import {
   type Session,
+  type Step,
   type DialogOffer,
   type PendingSlot,
   getOrCreateSession,
@@ -13,10 +14,13 @@ import {
   parseUsdCents,
   categoryOf,
   markSessionDirty,
+  persistSessionsNow,
+  appendDialogTurn,
   sessionKey,
   allSessions,
 } from "./session.mts";
 import { classifyIntent, normalizeSearchQuery } from "./intent.mts";
+import { classifyTurn, filledSlotKeys, type ClassifiedTurn } from "./turn.mts";
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import { LINQ_TRAVELERS } from "./traveler-seeds.mts";
@@ -150,6 +154,7 @@ async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
     console.warn("[shopper-agent] skip empty reply (Relay rejects blank text)");
     return;
   }
+  appendDialogTurn(s, "assistant", text);
   if (s.channel === "relay") {
     if (s.chatId) {
       if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
@@ -249,6 +254,16 @@ const OFFER_META: Record<
   pay: { slot: "pay", kind: "bool" },
 };
 
+function lastChoiceOptions(s: Session, field: DialogOffer["field"]): PendingSlot["options"] {
+  if (field === "listing") {
+    return (s.listings ?? []).map((l, i) => ({ id: String(i), label: l.storeName }));
+  }
+  if (field === "traveler") {
+    return (s.ranked ?? []).map((r, i) => ({ id: String(i), label: r.name }));
+  }
+  return s.pending?.options;
+}
+
 function setOffer(s: Session, field: DialogOffer["field"], value: string, prompt?: string) {
   s.offer = { field, value };
   const meta = OFFER_META[field];
@@ -258,8 +273,10 @@ function setOffer(s: Session, field: DialogOffer["field"], value: string, prompt
     proposed: Number.isFinite(asNum) ? asNum : value,
     kind: meta.kind,
     prompt: prompt ?? s.pending?.prompt ?? "",
+    options: lastChoiceOptions(s, field),
   };
   markSessionDirty();
+  persistSessionsNow();
 }
 
 function clearPending(s: Session) {
@@ -465,6 +482,13 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
   // await_extend after the shopper said yes must continue to recap + wait
   // (success returns "" and used to POST empty text → Relay 422).
   if (s.step === "await_extend" && matchText.trim()) {
+    s.pending = {
+      slot: "brief",
+      proposed: "yes",
+      kind: "bool",
+      prompt: matchText,
+    };
+    persistSessionsNow();
     await reply(s, matchText, { thinkMs: 1400 });
     return;
   }
@@ -627,7 +651,74 @@ function hydratePending(s: Session): void {
     setOffer(s, "deliveryCity", s.deliveryCity ?? "Accra", "Where in Ghana should it land? Accra, Kumasi…");
   } else if (s.step === "await_shopping_city") {
     setOffer(s, "shoppingCity", "New York", "Which US city should I shop in? New York is usually solid.");
+  } else if (s.step === "await_listing" && s.listings?.length) {
+    setOffer(s, "listing", "0", s.pending?.prompt);
+  } else if (s.step === "await_traveler" && s.ranked?.length) {
+    setOffer(s, "traveler", "0", s.pending?.prompt);
   }
+}
+
+function reaskPrompt(s: Session): string {
+  return (
+    s.pending?.prompt?.trim() ||
+    (s.step === "await_deadline"
+      ? "Need it by 15th August? Say yes, or send another date."
+      : s.step === "await_max_fee"
+        ? "Send a dollar amount, or say that’s fine for $30."
+        : s.step === "await_delivery_city"
+          ? "Where in Ghana should it land? Accra, Kumasi…"
+          : s.step === "await_shopping_city"
+            ? "Which US city should I shop in? New York is usually solid."
+            : s.step === "await_listing"
+              ? `Pick one (1–${s.listings?.length ?? 1} or a store name), or tell me if these aren’t right.`
+              : s.step === "await_traveler"
+                ? `Pick a traveler — a name or number from 1 to ${s.ranked?.length ?? 1}.`
+                : s.step === "await_traveler_decision"
+                  ? `Still waiting on ${s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler"}. I’ll ping you when they agree.`
+                  : s.step === "await_pay_confirm"
+                    ? `Say yes when you’re ready to lock ${formatUsd(s.totalCents ?? 0)} test USDC.`
+                    : "Still on that last question — say yes to the suggestion, or send the value.")
+  );
+}
+
+async function reaskOpen(s: Session): Promise<void> {
+  hydratePending(s);
+  persistSessionsNow();
+  await reply(s, reaskPrompt(s));
+}
+
+function applyRepairSlots(s: Session, turn: ClassifiedTurn): void {
+  if (turn.slot === "need_by" && typeof turn.value === "string") {
+    const d = parseDate(turn.value) ?? new Date(turn.value);
+    if (!Number.isNaN(d.getTime())) s.deadline = d;
+  } else if (turn.slot === "delivery_city" && typeof turn.value === "string") {
+    s.deliveryCity = turn.value;
+  } else if (turn.slot === "shopping_city" && typeof turn.value === "string") {
+    s.shoppingCity = turn.value;
+  } else if (turn.slot === "delivery_fee" && typeof turn.value === "number") {
+    s.maxFeeCents = turn.value;
+  } else if (turn.slot === "traveler" && turn.optionIndex != null && s.ranked?.[turn.optionIndex]) {
+    s.chosenTravelerId = s.ranked[turn.optionIndex]!.id;
+  }
+  markSessionDirty();
+}
+
+async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
+  if (turn.meta === "cancel") {
+    resetSession(s);
+    s.step = "await_product";
+    persistSessionsNow();
+    await reply(s, shopperIntakeLine(s));
+    return;
+  }
+  const waiting = s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler";
+  if (s.step === "await_traveler_decision") {
+    await reply(s, `Still waiting on ${waiting}. I’ll ping you when they agree.`);
+    return;
+  }
+  hydratePending(s);
+  persistSessionsNow();
+  await reply(s, s.pending?.prompt ? `Still on: ${s.pending.prompt}` : `Still on that last step.`);
 }
 
 /** Resolve the open question before search/matching. Returns true if this turn is done. */
@@ -973,6 +1064,7 @@ export async function handleInbound(args: {
       );
       if (!text) return;
     }
+    appendDialogTurn(s, "user", text || (imageUrls.length ? "[photo]" : ""));
     await handleInboundInner(s, args, text, imageUrls);
   } catch (e: any) {
     console.error(`[shopper-agent] handleInbound boom: ${e?.message ?? e}`);
@@ -1056,6 +1148,12 @@ async function handleInboundInner(
   imageUrls: string[],
 ): Promise<void> {
   const hasImages = imageUrls.length > 0;
+  hydratePending(s);
+  const turn = classifyTurn(s, { text, hasPhoto: hasImages });
+  console.log(
+    `[shopper-agent] turn chat=${s.chatId ?? "none"} requested_slot=${s.pending?.slot ?? "-"} filled=${filledSlotKeys(s).join(",") || "-"} act=${turn.act}`,
+  );
+
   const intent = classifyIntent(text, {
     step: s.step,
     listingCount: s.listings?.length,
@@ -1068,85 +1166,126 @@ async function handleInboundInner(
     !hasImages &&
     /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
 
-  const explicitRestart = /^(start over|reset|restart)\b/i.test(text);
-  const openForm = FORM_HOLD.has(s.step) || Boolean(s.pending || s.offer);
   const closer = !hasImages && isAffirmationOrCloser(text);
 
-  // Match already ran (e.g. Ama ranked) and only the outbound send failed — recap + wait, do not new-shop or re-stretch.
-  if (
-    closer &&
-    (isYes(text) || intent.kind === "yes") &&
-    s.selected &&
-    (s.ranked?.length ?? 0) > 0 &&
-    ["await_extend", "await_traveler_decision", "await_product", "idle", "done", "await_brief_confirm"].includes(
-      s.step,
-    )
-  ) {
-    if (s.chatId) presenceTyping(s);
-    await presentQuoteAndWait(s);
+  if (turn.act === "META") {
+    await handleMetaTurn(s, turn);
     return;
   }
-
-  if (
-    explicitRestart ||
-    (!openForm && !closer && (intent.kind === "restart" || s.step === "idle" || s.step === "done"))
-  ) {
-    resetSession(s);
-    s.step = "await_product";
-    markSessionDirty();
-    if (greetingOnly || (!text && !hasImages)) {
+  if (turn.act === "REASK") {
+    if (!s.pending && (s.step === "idle" || s.step === "done" || s.step === "await_product")) {
+      s.step = "await_product";
+      persistSessionsNow();
       await replyPair(s, "Hey — I’m Manebra.", shopperIntakeLine(s));
       return;
     }
-    if (!hasImages && intent.kind === "restart") {
-      await replyPair(s, "Hey — I’m Manebra.", shopperIntakeLine(s));
-      const rest = text.replace(/^(hi|hello|hey|start|restart|menu)\b[,!.\s]*/i, "").trim();
-      if (!rest) return;
-      return handleInbound({ ...args, text: rest, imageUrls });
-    }
-    if (hasImages) {
-      await reply(s, "Hey — got your photo. One sec…", { thinkMs: 350 });
-    }
+    await reaskOpen(s);
+    return;
   }
-
-  if (closer && !FORM_HOLD.has(s.step) && !s.pending && !s.offer) {
-    await reply(s, "What are you looking for? Text or a photo of the item works.");
+  if (turn.act === "REPAIR") {
+    const openPrompt = s.pending?.prompt;
+    const openSlot = s.pending;
+    applyRepairSlots(s, turn);
+    if (openSlot) {
+      s.pending = openSlot;
+      if (openPrompt) s.pending.prompt = openPrompt;
+      persistSessionsNow();
+      await reaskOpen(s);
+      return;
+    }
+    await continueAfterListing(s);
+    return;
+  }
+  if (turn.act === "CONTINUE") {
+    if (s.step === "await_traveler_decision") {
+      await syncWaitingShoppers();
+      if ((s.step as string) === "await_pay_confirm" && closer) {
+        await fundAfterAccept(s);
+        return;
+      }
+    }
+    if (
+      closer &&
+      s.selected &&
+      (s.ranked?.length ?? 0) > 0 &&
+      ["await_extend", "await_product", "idle", "done", "await_brief_confirm"].includes(s.step)
+    ) {
+      if (s.chatId) presenceTyping(s);
+      await presentQuoteAndWait(s);
+      return;
+    }
+    if (await resolveOpenQuestion(s, text, intent)) return;
+    if (await applyDialogAffirm(s, text, intent)) return;
+    if (turn.slot === "listing" && turn.optionIndex != null) {
+      await selectListing(s, turn.optionIndex);
+      return;
+    }
+    if (turn.slot === "traveler" && turn.optionIndex != null) {
+      await lockTraveler(s, turn.optionIndex);
+      return;
+    }
+    if (turn.slot === "need_by" && typeof turn.value === "string") {
+      const d = parseDate(turn.value) ?? new Date(turn.value);
+      if (!Number.isNaN(d.getTime())) {
+        s.deadline = d;
+        clearPending(s);
+        await continueAfterListing(s);
+        return;
+      }
+    }
+    if (turn.slot === "delivery_fee" && typeof turn.value === "number") {
+      s.maxFeeCents = turn.value;
+      clearPending(s);
+      if (s.chatId) presenceTyping(s);
+      await presentQuoteAndWait(s);
+      return;
+    }
+    if (turn.slot === "shopping_city" && typeof turn.value === "string") {
+      s.shoppingCity = turn.value;
+      clearPending(s);
+      await runSearchFlow(s);
+      return;
+    }
+    if (turn.slot === "delivery_city" && typeof turn.value === "string") {
+      s.deliveryCity = turn.value;
+      clearPending(s);
+      await continueAfterListing(s);
+      return;
+    }
+    await reaskOpen(s);
     return;
   }
 
-  if (await resolveOpenQuestion(s, text, intent)) return;
-  if (await applyDialogAffirm(s, text, intent)) return;
+  // NEW only — search / cognition-as-new-item lives below this line.
+  resetSession(s);
+  s.step = "await_product";
+  markSessionDirty();
+  let inbound = text;
+  if (greetingOnly || (!text && !hasImages)) {
+    await replyPair(s, "Hey — I’m Manebra.", shopperIntakeLine(s));
+    return;
+  }
+  if (hasImages) {
+    await reply(s, "Hey — got your photo. One sec…", { thinkMs: 350 });
+  }
+  if (turn.query && !hasImages) {
+    inbound = turn.query;
+  }
 
-  // Cognitive turn — not on open form slots (yeah / 20 / that’s fine must not search).
-  const skipCognitionForSlot =
-    !hasImages &&
-    ([
-      "await_deadline",
-      "await_max_fee",
-      "await_delivery_city",
-      "await_extend",
-      "await_traveler",
-      "await_brief_confirm",
-      "await_pay_confirm",
-      "await_traveler_decision",
-      "await_handover_done",
-    ].includes(s.step) ||
-      (closer && s.step !== "await_product_confirm"));
-  const shouldCognize =
-    hasImages ||
-    (!skipCognitionForSlot &&
-      (Boolean(s.cognition?.pending) ||
-        [
-          "await_product",
-          "await_product_confirm",
-          "await_shopping_city",
-          "await_listing",
-        ].includes(s.step) ||
-        process.env.LINQ_COGNITION === "1"));
+  const shouldCognize = hasImages || Boolean(s.cognition?.pending) || process.env.LINQ_COGNITION === "1";
 
   if (shouldCognize) {
-    if ((hasImages || s.step === "await_shopping_city") && s.chatId) presenceTyping(s);
-    const decision = await runPolicyTurn({ session: s, text, imageUrls });
+    if ((hasImages || (s.step as Step) === "await_shopping_city") && s.chatId) presenceTyping(s);
+    let decision;
+    try {
+      decision = await runPolicyTurn({ session: s, text: inbound, imageUrls });
+    } catch (e: any) {
+      console.warn(`[shopper-agent] cognition failed: ${e?.message ?? e}`);
+      s.step = "await_product";
+      persistSessionsNow();
+      await reply(s, s.pending?.prompt || "What are you looking for? Text or a photo of the item works.");
+      return;
+    }
     if (decision.applySlots) applyCognitiveSlots(s, decision.applySlots);
     if (decision.bubbles.length) await say(s, ...decision.bubbles);
     if (decision.confirmedProduct) {
@@ -1157,7 +1296,7 @@ async function handleInboundInner(
         await runSearchFlow(s);
         return;
       }
-      if (s.step === "await_shopping_city" && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
+      if ((s.step as Step) === "await_shopping_city" && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
         setOffer(s, "shoppingCity", "New York");
         await reply(s, `Which US city should I shop in for ${s.searchQuery}? New York is usually strongest.`);
       }
@@ -1198,7 +1337,7 @@ async function handleInboundInner(
     return;
   }
 
-  switch (s.step) {
+  switch (s.step as Step) {
     case "await_product_confirm": {
       // Policy should have handled yes/no; if we fell through, ask again
       const hyp = s.cognition?.pending?.hypothesis;
@@ -1219,7 +1358,7 @@ async function handleInboundInner(
         await reply(s, s.pending?.prompt || "What are you looking for? Text or a photo of the item works.");
         return;
       }
-      let query = normalizeSearchQuery(text);
+      let query = normalizeSearchQuery(inbound);
       if (!query || /^(photo|image|\[attachment\])$/i.test(query)) {
         await reply(s, `What are you looking for? Text or a photo of the item works.`);
         return;
@@ -1228,7 +1367,7 @@ async function handleInboundInner(
       if (llm && process.env.LINQ_LLM_EXTRACT !== "0") {
         try {
           const o = await Promise.race([
-            extractOrder(llm, text),
+            extractOrder(llm, inbound),
             new Promise<null>((_, rej) => setTimeout(() => rej(new Error("extract timeout")), 3_000)),
           ]);
           if (o && (o as any).itemName) query = normalizeSearchQuery((o as any).itemName);

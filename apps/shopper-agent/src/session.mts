@@ -69,6 +69,8 @@ export type Session = {
   offer?: DialogOffer;
   /** Canonical open question. Prefer this over offer when resolving a turn. */
   pending?: PendingSlot | null;
+  /** Last N user/assistant turns (DST context). Not a second form store. */
+  turns?: Array<{ role: "user" | "assistant"; text: string }>;
   bidId?: string;
   escrowId?: string;
   handoverCode?: string;
@@ -187,6 +189,14 @@ export function markSessionDirty() {
 
 export function persistSessionsNow() {
   persistNow(byPhone);
+}
+
+export function appendDialogTurn(s: Session, role: "user" | "assistant", text: string): void {
+  const line = text.trim().slice(0, 400);
+  if (!line) return;
+  s.turns = [...(s.turns ?? []), { role, text: line }].slice(-8);
+  s.updatedAt = Date.now();
+  touchPersist();
 }
 
 export function allSessions(): Session[] {
