@@ -1,42 +1,40 @@
-# MANEBRA architecture
+# Manebra architecture
 
-Relay (`relayapp.im`) is the user-facing test surface. There is no `apps/app` shell and no `packages/channels` package — do not invent them.
+Relay (`relayapp.im`) is the chat window. Do not build a client in this repo.
 
-## Current → target
+## Packages and owners
 
-| Target layer | Existing location | Action |
+| Path | Owner | Role |
 |---|---|---|
-| App shell | None. Test UI is Relay | Do not build a Manebra client |
-| Shopper agent | `apps/shopper-agent` (`shopper-flow.mts`) | Keep. Local inbound is Relay long-poll (`GET /v1/events`) |
-| Traveler agent | `apps/traveler-agent` (`traveler-flow.mts`) | Keep flight flow. Demo adds pending-carry / handover |
-| Marketplace | `packages/agents` matching + `apps/shopper-agent/src/traveler-seeds.mts` | Keep. Demo writes a shared carry file only |
-| Escrow | `packages/settlement` + Anvil deploy in `apps/agent-cli` | Keep both. Demo reuses the CLI open/fund/release against the just-deployed contracts. `settlement-bridge.mts` (Postgres/tRPC) is unchanged |
-| Channels | `linq-client.mts` + `relay-client.mts` in each agent | Demo long-polls Relay only. Linq HTTP + `demo:linq` stay as an optional harness |
+| `packages/dialog` | conversation | `classifyTurn`, `persistBeforeAsk`, [POLICY.md](packages/dialog/POLICY.md) |
+| `apps/shopper-agent` | shopper | Shopper inbound → match → wait → fund-after-accept |
+| `apps/traveler-agent` | traveler | Flights + accept/decline + live trip upsert |
+| `apps/agent-cli` | platform | `npm run demo` only |
+| `packages/db` | platform | Prisma + `marketplace_offers` / `marketplace_trips` |
+| `packages/settlement` | platform | Escrow math + chain (do not rewrite) |
+| `packages/llm` | conversation | Intake LLM (do not swap) |
+| `packages/agents` | platform | Matching scorer (do not rewrite) |
+| `packages/shared` | platform | Fees, handover, dates |
+| `packages/catalog` | shopper | Product search |
+| `packages/calendar` | traveler | City normalize |
+| `packages/flights` | traveler | Flight search/book |
+
+Agents do not import each other’s `src`. Shared conversation is `@manebra/dialog`. Shared jobs are `@manebra/db` (not a second marketplace package).
+
+## Deploy
+
+[`render.yaml`](render.yaml) is the contract:
+
+- `manebra-linq-agent` → `npm run shopper-agent` (hostname stays)
+- `manebra-traveler-agent` → `npm run traveler-agent`
+- One Postgres `manebra-marketplace` → `DATABASE_URL` on both
 
 ## How to run
 
 ```bash
-npm run demo          # boot Anvil + USDC + HandoverEscrow + Ama/Kofi/Nana, start both agents, stay up
-# then open Relay and chat Shopper / Traveler
+npm run demo              # Anvil + escrow + both agents; chat on Relay
+npm run shopper-agent     # Shopper only
+npm run traveler-agent    # Traveler only
 ```
 
-Harnesses (not the product path):
-
-```bash
-npm run demo:cli      # old interactive terminal pipeline
-npm run demo:linq     # same pipeline over iMessage via Linq CLI
-DEMO_AUTO=1 npm run demo   # non-interactive CLI defaults
-```
-
-Linq/iMessage is not on the product path. `npm run demo` never starts a Linq webhook, never texts a phone, and never waits on iMessage. Chat is Relay only. `demo:linq` remains an optional harness.
-
-Production Relay still points at `https://manebra-linq-agent.onrender.com` until that Render service is renamed/redeployed. Local `render.yaml` names the shopper service `manebra-shopper-agent`.
-
-## Happy path (no phone)
-
-1. `npm run demo` — engines stay up in the terminal
-2. Open Relay
-3. Chat Shopper (“get me X from the US”)
-4. Shopper matches a seeded traveler (Ama / Kofi / Nana), escrow locks on the local chain
-5. Chat Traveler to accept / confirm handover
-6. Escrow releases
+Linq Partner API clients (`linq-client.mts`) stay as an optional transport on each agent. They are not the product name.

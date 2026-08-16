@@ -1,0 +1,35 @@
+name: typecheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace:
+          - "@manebra/dialog"
+          - "@manebra/shopper-agent"
+          - "@manebra/traveler-agent"
+          - "@manebra/agent-cli"
+          - "@manebra/db"
+          - "@manebra/llm"
+          - "@manebra/settlement"
+          - "@manebra/shared"
+          - "@manebra/agents"
+          - "@manebra/catalog"
+          - "@manebra/calendar"
+          - "@manebra/flights"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - run: npm run typecheck --workspace ${{ matrix.workspace }}

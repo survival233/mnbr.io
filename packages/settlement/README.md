@@ -1,5 +1,7 @@
 # @manebra/settlement
 
+Owner: **platform**. Do not rewrite matching math or escrow as a cleanup.
+
 Escrow-based, country-agnostic settlement for the agentic marketplace: USDC held on
 Base, released by an EIP-712 attestation the backend signs after the handover code is
 confirmed. One workspace package in the `mnbr/manebra` monorepo.

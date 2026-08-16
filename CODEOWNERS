@@ -1,0 +1,9 @@
+# Team names until GitHub teams exist. CODEOWNERS is the merge contract.
+
+/packages/dialog @manebra/conversation
+/apps/shopper-agent @manebra/shopper
+/apps/traveler-agent @manebra/traveler
+/packages/settlement @manebra/platform
+/packages/db/src/marketplace.ts @manebra/platform
+/packages/db/prisma @manebra/platform
+/render.yaml @manebra/platform

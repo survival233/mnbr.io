@@ -10,11 +10,15 @@
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",
-    "validate": "prisma validate"
+    "validate": "prisma validate",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^6.1.0",
     "prisma": "^6.1.0"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.10.0"
+  }
 }
