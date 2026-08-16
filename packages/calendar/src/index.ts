@@ -1,5 +1,6 @@
 export {
   normalizeCity,
+  sameDestinationCity,
   inferDirection,
   isGhanaCity,
   isUsCity,

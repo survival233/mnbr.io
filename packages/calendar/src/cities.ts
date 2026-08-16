@@ -78,6 +78,14 @@ const US: ReadonlySet<string> = new Set([
   "New York", "Newark", "Washington", "Atlanta", "Chicago", "Houston", "Los Angeles", "Dallas", "Boston",
 ]);
 
+/** Same destination only — Accra≠Kumasi. Aliases (ACC, Kotoka) still count as Accra. */
+export function sameDestinationCity(a?: string | null, b?: string | null): boolean {
+  if (!a?.trim() || !b?.trim()) return false;
+  const na = normalizeCity(a) ?? a.trim();
+  const nb = normalizeCity(b) ?? b.trim();
+  return na.toLowerCase() === nb.toLowerCase();
+}
+
 /** Normalize a free-text city / airport into a canonical corridor city, or null. */
 export function normalizeCity(raw: string | null | undefined): CorridorCity | null {
   if (!raw) return null;

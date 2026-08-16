@@ -17,6 +17,7 @@ import {
   updateOffer,
 } from "@manebra/db";
 import { isTravelIntent } from "@manebra/flights";
+import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
 import {
   classifyTurn,
   composeHostReply,
@@ -127,6 +128,30 @@ function carryUsd(cents: number): string {
   return `$${(cents / 100).toFixed(0)}`;
 }
 
+function travelerDestination(s: Session): string | null {
+  const raw = s.trip?.destination ?? s.travelDestination;
+  if (!raw?.trim()) return null;
+  return normalizeCity(raw) ?? raw.trim();
+}
+
+function offerFitsThisTraveler(s: Session, offer: { destinationCity?: string | null }): boolean {
+  const dest = travelerDestination(s);
+  if (!dest || !offer.destinationCity) return false;
+  return sameDestinationCity(offer.destinationCity, dest);
+}
+
+function requestInvite(s: Session, offer: { item: string; travelerFeeCents: number; totalCents: number; needBy: Date | null; destinationCity?: string | null }): string[] {
+  const dest = offer.destinationCity ?? travelerDestination(s) ?? "your city";
+  const when = s.trip?.departure_date ? ` on ${s.trip.departure_date}` : "";
+  const need = offer.needBy ? ` by ${new Date(offer.needBy).toLocaleDateString()}` : "";
+  const earn = offer.travelerFeeCents || offer.totalCents;
+  return [
+    `You’re headed to ${dest}${when}.`,
+    `A shopper needs ${offer.item}${need}. Traveler earnings about ${carryUsd(earn)}.`,
+    `Shop & Deliver — accept or decline?`,
+  ];
+}
+
 function latestTravelerSession(): Session | null {
   const withChat = allSessions().filter((s) => s.chatId);
   if (!withChat.length) return null;
@@ -139,16 +164,12 @@ export async function syncTravelerMarketplace(): Promise<void> {
   if (!s?.chatId) return;
 
   const open = await latestOpenOffer();
-  if (open && !open.notifiedTraveler) {
+  if (open && !open.notifiedTraveler && offerFitsThisTraveler(s, open)) {
     await updateOffer(open.id, { notifiedTraveler: true });
     rememberItem(stayOf(s), open.item);
     rememberOffer(stayOf(s), open.id);
-    rememberQuestion(stayOf(s), `Accept or decline?`);
-    await say(
-      s,
-      `New carry request: ${open.item} — about ${carryUsd(open.totalCents)}.`,
-      `Accept or decline?`,
-    );
+    rememberQuestion(stayOf(s), `Shop & Deliver — accept or decline?`);
+    await say(s, ...requestInvite(s, open));
     return;
   }
 
@@ -170,7 +191,9 @@ async function tryHandleMarketplaceOffer(
 ): Promise<boolean> {
   const open = await latestOpenOffer();
   const active = await latestActiveOffer();
-  const carry = open ?? (active && active.status !== "offered" ? active : null);
+  const listed = open && offerFitsThisTraveler(s, open) ? open : null;
+  const inFlight = active && active.status !== "offered" ? active : null;
+  const carry = listed ?? inFlight;
   if (!carry) return false;
 
   const yes = /^(y|yes|ok|okay|sure|yeah|yep|accept)\b/i.test(text);
@@ -185,7 +208,7 @@ async function tryHandleMarketplaceOffer(
       rememberItem(stayOf(s), carry.item);
       rememberOffer(stayOf(s), carry.id);
       rememberWait(stayOf(s));
-      await io.say(s, `Accepted. Waiting for the shopper to fund — no carry until then.`);
+      await io.say(s, `Accepted. Waiting for the shopper to fund — no Shop & Deliver until then.`);
       return true;
     }
     if (no) {
@@ -194,11 +217,7 @@ async function tryHandleMarketplaceOffer(
       return true;
     }
     if (flights || isTravelIntent(text)) return false;
-    await io.say(
-      s,
-      `Carry request: ${carry.item} — about ${carryUsd(carry.totalCents)}.`,
-      `Accept or decline?`,
-    );
+    await io.say(s, ...requestInvite(s, carry));
     return true;
   }
 
@@ -288,7 +307,7 @@ export async function handleInbound(args: {
       await sayHost(
         s,
         turn.act,
-        "Where are you flying? Origin, destination, and day — I’ll find options, then carry jobs on that route.",
+        "Where are you flying? Origin, destination, and day — I’ll find options, then Shop & Deliver requests on that route.",
       );
       if (greetingOnly || restart) {
         const rest = text

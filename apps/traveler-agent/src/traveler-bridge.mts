@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { suggestedTravelerFeeCents, computeFees } from "@manebra/shared";
 import { cityFromAirport, type FlightBooking } from "@manebra/flights";
-import { inferDirection, normalizeCity } from "@manebra/calendar";
+import { inferDirection, normalizeCity, sameDestinationCity } from "@manebra/calendar";
 import { upsertLiveTrip, listOpenOffers, updateOffer, getOffer } from "@manebra/db";
 
 export type EarnOffer = {
@@ -85,7 +85,7 @@ export async function persistBookedTrip(args: {
 
   if (!dbConfigured()) {
     try {
-      const open = await listOpenOffers();
+      const open = (await listOpenOffers()).filter((o) => sameDestinationCity(o.destinationCity, destCity));
       return {
         tripId: null,
         earnOffers: open.slice(0, 3).map((o) => ({
@@ -123,7 +123,7 @@ export async function persistBookedTrip(args: {
 
     let earnOffers: EarnOffer[] = [];
     try {
-      const open = await listOpenOffers();
+      const open = (await listOpenOffers()).filter((o) => sameDestinationCity(o.destinationCity, destCity));
       for (const o of open.slice(0, 3)) {
         earnOffers.push({
           proposalId: `mkt-${o.id}`,
@@ -178,19 +178,19 @@ export async function acceptEarnOffer(args: {
     const id = args.proposalId.slice(4);
     const offer = await getOffer(id);
     if (!offer || offer.status !== "offered") {
-      return { ok: false, message: "That job isn’t available anymore." };
+      return { ok: false, message: "That request isn’t available anymore." };
     }
     await updateOffer(id, { status: "accepted", notifiedShopper: false });
     return {
       ok: true,
-      message: `Accepted. Waiting for the shopper to fund — no carry until then.`,
+      message: `Accepted. Waiting for the shopper to fund — no Shop & Deliver until then.`,
     };
   }
   if (!dbConfigured() || args.proposalId.startsWith("local-") || args.proposalId.startsWith("hint-")) {
     return {
       ok: true,
       message:
-        "You’re opted in to carry on this trip. When a shopper funds escrow, I’ll walk you through pickup and handover.",
+        "You’re opted in to Shop & Deliver on this trip. When a shopper funds escrow, I’ll walk you through pickup and handover.",
     };
   }
   try {
@@ -199,7 +199,7 @@ export async function acceptEarnOffer(args: {
     const proposal = await prisma.matchProposal.findFirst({
       where: { id: args.proposalId, travelerId: user.id, status: "proposed" },
     });
-    if (!proposal) return { ok: false, message: "That job isn’t available anymore." };
+    if (!proposal) return { ok: false, message: "That request isn’t available anymore." };
 
     const item = await prisma.itemRequest.findUnique({ where: { id: proposal.itemRequestId } });
     if (!item || item.status !== "open") return { ok: false, message: "That request already closed." };

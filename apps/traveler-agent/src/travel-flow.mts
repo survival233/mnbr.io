@@ -293,15 +293,15 @@ async function handlePickOrBook(
       const top = earnOffers[0]!;
       await say(
         s,
-        `You’re flying into ${top.destinationCity}. You could earn ~$${(top.feeCents / 100).toFixed(0)} bringing ${top.itemName} for a shopper.`,
-        `Want to accept? (yes / no)`,
+        `You’re headed to ${top.destinationCity}. A shopper needs ${top.itemName}. Traveler earnings about $${(top.feeCents / 100).toFixed(0)}.`,
+        `Shop & Deliver — accept or decline?`,
       );
     } else {
       s.step = "done";
       persistTrip(s);
       await reply(
         s,
-        `No open carry jobs on that route yet — I’ll ping you if one shows up. Say hi anytime to search another flight.`,
+        `No open Shop & Deliver requests on that route yet — I’ll ping you if one shows up. Say hi anytime to search another flight.`,
       );
     }
   } catch (e: any) {
@@ -322,7 +322,7 @@ async function handleEarn(
   if (no) {
     s.step = "done";
     persistTrip(s);
-    await reply(s, `All good — trip stays on file. Ping me if you want jobs later.`);
+    await reply(s, `All good — trip stays on file. Ping me if you want a request later.`);
     return true;
   }
 
@@ -330,7 +330,7 @@ async function handleEarn(
   const n = parseInt(text, 10);
   if (n >= 1 && n <= offers.length) offer = offers[n - 1];
   if (!offer && !/^(y|yes|ok|okay|sure|yeah|yep|accept)\b/i.test(text)) {
-    await reply(s, `Say yes to accept the carry job, or no to skip.`);
+    await reply(s, `Say yes to accept this Shop & Deliver, or no to skip.`);
     return true;
   }
   if (!offer) {

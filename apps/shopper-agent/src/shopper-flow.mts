@@ -1,5 +1,5 @@
 import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents } from "@manebra/shared";
-import { normalizeCity } from "@manebra/calendar";
+import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
 import { searchProducts, hasSerpApiKey } from "@manebra/catalog";
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -339,9 +339,22 @@ function travelerLabels(s: Session) {
   }));
 }
 
+function upcomingOnOrAfter(d: Date, now: Date): boolean {
+  return d.getTime() > now.getTime();
+}
+
+function eligibleLiveTrip(t: { destinationCity: string; departureDate: Date; optedIn?: boolean; status?: string }, city: string, now: Date): boolean {
+  if (t.optedIn === false) return false;
+  if (t.status && t.status !== "upcoming") return false;
+  if (!upcomingOnOrAfter(t.departureDate, now)) return false;
+  return sameDestinationCity(t.destinationCity, city);
+}
+
 async function loadLiveTravelers(city: string, deadline: Date): Promise<TravelerSeed[] | null> {
+  const now = new Date();
+  const dest = normalizeCity(city) ?? city;
   try {
-    const mkt = await listLiveTrips(city);
+    const mkt = (await listLiveTrips(dest)).filter((t) => eligibleLiveTrip(t, dest, now));
     if (mkt.length) {
       return mkt.map((t) => ({
         id: t.travelerId,
@@ -354,7 +367,7 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
           id: t.id,
           travelerId: t.travelerId,
           direction: "us_to_gh" as const,
-          destinationCity: t.destinationCity,
+          destinationCity: dest,
           departureDate: t.departureDate,
           status: "upcoming" as const,
         },
@@ -378,15 +391,16 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
       where: {
         status: "upcoming",
         direction: "us_to_gh",
-        destinationCity: city,
-        departureDate: { lte: deadline },
+        destinationCity: dest,
+        departureDate: { gt: now },
       },
       include: { traveler: true },
       take: 20,
       orderBy: { departureDate: "asc" },
     });
-    if (!trips.length) return null;
-    return trips.map((t) => ({
+    const live = trips.filter((t) => eligibleLiveTrip(t, dest, now));
+    if (!live.length) return null;
+    return live.map((t) => ({
       id: t.travelerId,
       name: t.traveler.fullName,
       trustScore: t.traveler.trustScore,
@@ -397,7 +411,7 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
         id: t.id,
         travelerId: t.travelerId,
         direction: "us_to_gh" as const,
-        destinationCity: t.destinationCity,
+        destinationCity: dest,
         departureDate: t.departureDate,
         status: "upcoming" as const,
       },
@@ -421,19 +435,21 @@ async function runMatching(s: Session): Promise<string> {
   const city = s.deliveryCity!;
   const deadline = endOfLocalDay(s.deadline!);
   const category = s.category ?? categoryOf(selected.productTitle) ?? "electronics";
+  const dest = normalizeCity(city) ?? city;
   const live = await loadLiveTravelers(city, deadline);
-  const travelers = live ?? seedTravelers();
+  const now = new Date();
+  const pool = live ?? seedTravelers();
+  const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now));
   const itemRequest = {
     id: "item-linq",
     direction: "us_to_gh" as const,
-    destinationCity: city,
+    destinationCity: dest,
     category,
     itemCostCents: selected.priceCents,
     status: "open" as const,
     reviewStatus: "auto_approved" as const,
     expiresAt: deadline,
   };
-  const now = new Date();
   const scored = travelers.map((t) => ({
     t,
     r: scoreMatch(itemRequest as any, t.trip as any, t.profile as any, CFG as any, now),
@@ -499,7 +515,7 @@ function quoteLines(s: Session): string {
   markSessionDirty();
   return (
     `${item.productTitle.slice(0, 80)}\n` +
-    `Item ${formatUsd(item.priceCents)} + traveler ${formatUsd(capped)} → ${formatUsd(fees.totalCents)} all-in`
+    `Item ${formatUsd(item.priceCents)} + traveler earnings ${formatUsd(capped)} → ${formatUsd(fees.totalCents)} all-in`
   );
 }
 
@@ -980,7 +996,7 @@ export async function syncWaitingShoppers(): Promise<void> {
           s,
           "pay",
           "yes",
-          `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this carry?`,
+          `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this request?`,
         );
         await say(s, `Fund ${formatUsd(carry.totalCents)} USDC to lock it.`);
       } else {
@@ -1451,7 +1467,7 @@ async function handleInboundInner(
       }
       if (/^(thanks|thank you|cool|great)\.?$/i.test(text)) {
         setOffer(s, "shoppingCity", s.offer?.field === "shoppingCity" ? s.offer.value : "New York");
-        await reply(s, `Still on it — which US city should I search near? New York is usually strongest.`);
+        await reply(s, `Still on this — which US city should I search near? New York is usually strongest.`);
         return;
       }
       if (isCityAdviceQuestion(text)) {

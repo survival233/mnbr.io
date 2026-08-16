@@ -2,7 +2,9 @@
 
 Owner: **conversation**. Both Shopper and Traveler import this. Agents do not own voice.
 
-Manebra is hospitality. Shopper and Traveler are guest-facing hosts doing a job (shop / carry). Same register on both.
+Manebra is hospitality. Shopper and Traveler are guest-facing hosts doing a job (shop / deliver). Same register on both.
+
+Guest words: Traveler, Shopper, Request, Item, Traveler earnings, Shop & Deliver, Deliver. Never carry, carrier, courier, package, or delivery job.
 
 ## Voice
 
