@@ -23,6 +23,12 @@ const FORM_STEPS = new Set([
   "await_traveler_decision",
   "await_pay_confirm",
   "await_handover_done",
+  "await_travel_intent",
+  "await_flight_pick",
+  "await_book_confirm",
+  "trip_confirmed",
+  "await_earn_opt_in",
+  "await_job_pick",
 ]);
 
 const DATE_LEX = [
@@ -124,7 +130,16 @@ export function filledSlotKeys(s: DialogSession): string[] {
 }
 
 export function isFormOpen(s: DialogSession): boolean {
-  return Boolean(s.pending?.slot || s.offer || FORM_STEPS.has(s.step) || filledSlotKeys(s).length);
+  const stay = s.stay;
+  return Boolean(
+    s.pending?.slot ||
+      s.offer ||
+      FORM_STEPS.has(s.step) ||
+      filledSlotKeys(s).length ||
+      stay?.lastItem ||
+      stay?.lastOfferId ||
+      stay?.lastQuestion,
+  );
 }
 
 export function requestedSlot(s: DialogSession): DialogPendingSlot | null {

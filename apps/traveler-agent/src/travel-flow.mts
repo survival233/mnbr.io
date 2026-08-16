@@ -13,7 +13,16 @@ import {
 import { normalizeCity } from "@manebra/calendar";
 import { upsertLiveTrip } from "@manebra/db";
 import type { Session } from "./session.mts";
-import { persistBeforeAsk } from "@manebra/dialog";
+import {
+  persistBeforeAsk,
+  composeHostReply,
+  HOSPITALITY_PERSONA,
+  TRAVELER_SLOT_SCHEMA,
+  ensureStay,
+  rememberQuestion,
+  rememberItem,
+  type DialogPendingSlot,
+} from "@manebra/dialog";
 import { markSessionDirty, persistSessionsNow } from "./session.mts";
 import { persistBookedTrip, acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
 import {
@@ -34,10 +43,24 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+void TRAVELER_SLOT_SCHEMA;
+void HOSPITALITY_PERSONA;
+
+function stayOf(s: Session) {
+  s.stay = ensureStay(s.stay);
+  return s.stay;
+}
+
 function persistTrip(s: Session) {
   mirrorTripToLegacy(s);
   markSessionDirty();
   persistBeforeAsk(persistSessionsNow);
+}
+
+function parkAsk(s: Session, slot: DialogPendingSlot["slot"], prompt: string, proposed: string | number | null, kind: DialogPendingSlot["kind"]) {
+  s.pending = { slot, proposed, kind, prompt };
+  rememberQuestion(stayOf(s), prompt);
+  persistTrip(s);
 }
 
 function tripCity(raw?: string): string | null {
@@ -147,9 +170,22 @@ async function handleCollectAndSearch(
     if (ask.field === "departure_date") {
       s.offer = { field: "departure_date", value: parseDepartDate("15th August") ?? "15th August" };
     }
-    persistTrip(s);
-    // Only ask for the first missing field — never re-ask confirmed ones.
-    await reply(s, ask.text);
+    const dest = trip.destination;
+    if (dest) rememberItem(stayOf(s), dest);
+    parkAsk(
+      s,
+      ask.field,
+      ask.text,
+      s.offer?.field === ask.field ? s.offer.value : null,
+      ask.field === "departure_date" ? "date" : "text",
+    );
+    const beats = composeHostReply({
+      act: stayOf(s).lastAct ?? "CONTINUE",
+      stay: stayOf(s),
+      next: ask.text,
+    });
+    if (beats.length > 1) await say(s, ...beats);
+    else await reply(s, beats[0] ?? ask.text);
     return true;
   }
 
@@ -173,7 +209,7 @@ async function handleCollectAndSearch(
     s.flightOptions = options;
     s.step = "await_flight_pick";
     s.offer = { field: "flight", value: "0" };
-    persistTrip(s);
+    parkAsk(s, "flight", `Reply with 1–${options.length}, or name a departure.`, "0", "choice");
     const lines = options.map((o, i) => formatFlightOption(o, i)).join("\n\n");
     await say(
       s,

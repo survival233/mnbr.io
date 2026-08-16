@@ -1,4 +1,5 @@
 import type { ProductListing } from "@manebra/catalog";
+import type { StayMemory } from "@manebra/dialog";
 import { loadSessionsInto, schedulePersist, persistNow } from "./session-store.mts";
 import { blankCognition, type CognitionState } from "./cognition/state.mts";
 
@@ -70,6 +71,8 @@ export type Session = {
   pending?: PendingSlot | null;
   /** Last N user/assistant turns (DST context). Not a second form store. */
   turns?: Array<{ role: "user" | "assistant"; text: string }>;
+  /** Shared stay — last item, quote, counterparty, offer, wait, last ask. */
+  stay?: StayMemory;
   bidId?: string;
   escrowId?: string;
   handoverCode?: string;
@@ -127,6 +130,7 @@ export function getOrCreateSession(
       step: "idle",
       shoppingCity: "New York",
       pending: null,
+      stay: { openedAt: Date.now() },
       updatedAt: Date.now(),
     };
     byPhone.set(key, s);
@@ -171,6 +175,7 @@ export function resetSession(s: Session) {
   s.handoverCode = undefined;
   s.fundTxHash = undefined;
   s.totalCents = undefined;
+  s.stay = { openedAt: Date.now() };
   // Keep long-horizon persona/memory; clear only in-flight confirm.
   if (s.cognition) {
     s.cognition.pending = null;

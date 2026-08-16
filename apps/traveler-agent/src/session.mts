@@ -1,4 +1,5 @@
 import type { FlightOption } from "@manebra/flights";
+import type { DialogPendingSlot, StayMemory } from "@manebra/dialog";
 import type { EarnOffer } from "./traveler-bridge.mts";
 import { loadSessionsInto, schedulePersist, persistNow } from "./session-store.mts";
 import { blankTrip, ensureTrip, type TripState } from "./trip-state.mts";
@@ -36,6 +37,9 @@ export type Session = {
   earnOffers?: EarnOffer[];
   /** Last slot the agent offered (e.g. suggested date or first flight). */
   offer?: { field: "origin" | "destination" | "departure_date" | "flight"; value: string };
+  pending?: DialogPendingSlot | null;
+  turns?: Array<{ role: "user" | "assistant"; text: string }>;
+  stay?: StayMemory;
   updatedAt: number;
 };
 
@@ -83,6 +87,8 @@ export function getOrCreateSession(
       channel: opts?.channel ?? "linq",
       step: "idle",
       trip: blankTrip(),
+      stay: { openedAt: Date.now() },
+      pending: null,
       updatedAt: Date.now(),
     };
     byPhone.set(key, s);
@@ -121,6 +127,16 @@ export function resetSession(s: Session) {
   s.flightBookingRef = undefined;
   s.earnOffers = undefined;
   s.offer = undefined;
+  s.pending = null;
+  s.stay = { openedAt: Date.now() };
+  s.updatedAt = Date.now();
+  touchPersist();
+}
+
+export function appendDialogTurn(s: Session, role: "user" | "assistant", text: string): void {
+  const line = text.trim().slice(0, 400);
+  if (!line) return;
+  s.turns = [...(s.turns ?? []), { role, text: line }].slice(-8);
   s.updatedAt = Date.now();
   touchPersist();
 }

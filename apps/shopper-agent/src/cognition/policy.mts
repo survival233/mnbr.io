@@ -15,6 +15,7 @@ import {
   personaSummary,
   predictiveAsk,
 } from "./state.mts";
+import { HOSPITALITY_PERSONA, llmStayBlock } from "@manebra/dialog";
 import {
   isCityAdviceQuestion,
   parseUsShoppingCity,
@@ -191,6 +192,8 @@ export async function runPolicyTurn(args: {
         entitiesSummary: entitiesSummary(s),
         personaSummary: personaSummary(cog.persona),
         memorySummary: memorySummary(cog.memory),
+        hospitalityPersona: HOSPITALITY_PERSONA,
+        stayBlock: llmStayBlock(s.stay, s.turns),
       }),
       hasMedia ? 12_000 : 8_000,
       "cognitive turn",

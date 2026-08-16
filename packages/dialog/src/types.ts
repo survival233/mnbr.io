@@ -1,6 +1,19 @@
 /** Open question the user must answer. Survives reconnect via session persist. */
 export type DialogPendingSlot = {
-  slot: "shopping_city" | "delivery_city" | "need_by" | "delivery_fee" | "listing" | "traveler" | "pay" | "brief";
+  slot:
+    | "shopping_city"
+    | "delivery_city"
+    | "need_by"
+    | "delivery_fee"
+    | "listing"
+    | "traveler"
+    | "pay"
+    | "brief"
+    | "origin"
+    | "destination"
+    | "departure_date"
+    | "flight"
+    | "carry";
   proposed: string | number | null;
   kind: "date" | "choice" | "money" | "text" | "bool";
   prompt: string;
@@ -21,9 +34,24 @@ export type DialogSession = {
   chosenTravelerId?: string;
   offer?: unknown;
   pending?: DialogPendingSlot | null;
+  stay?: StayMemory;
+  turns?: Array<{ role: "user" | "assistant"; text: string }>;
+  totalCents?: number;
 };
 
 export type TurnAct = "META" | "REPAIR" | "CONTINUE" | "NEW" | "REASK";
+
+export type StayMemory = {
+  lastItem?: string;
+  lastQuoteCents?: number;
+  lastTravelerName?: string;
+  lastTravelerId?: string;
+  lastOfferId?: string;
+  waitingSince?: number;
+  lastQuestion?: string;
+  lastAct?: TurnAct;
+  openedAt?: number;
+};
 
 export type ClassifiedTurn = {
   act: TurnAct;

@@ -304,15 +304,19 @@ export async function runCognitiveTurn(
     entitiesSummary: string;
     personaSummary: string;
     memorySummary: string;
+    hospitalityPersona?: string;
+    stayBlock?: string;
   },
 ): Promise<CognitiveTurnResult> {
   const userParts: ContentPart[] = [];
   const preamble =
+    (args.hospitalityPersona ? `Host voice:\n${args.hospitalityPersona}\n\n` : "") +
     `Journey step: ${args.step}\n` +
     `Pending product confirm: ${args.pendingProduct ?? "none"}\n` +
     `Known entities: ${args.entitiesSummary}\n` +
     `Persona: ${args.personaSummary}\n` +
     `Episodic memory: ${args.memorySummary}\n` +
+    (args.stayBlock ? `${args.stayBlock}\n` : "") +
     `User text: ${args.text || "(none — image only)"}\n`;
   userParts.push({ type: "text", text: preamble });
   const imageParts = args.imageUrls.filter(Boolean).slice(0, 3);

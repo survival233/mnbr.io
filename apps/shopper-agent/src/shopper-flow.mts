@@ -20,7 +20,22 @@ import {
   allSessions,
 } from "./session.mts";
 import { classifyIntent, normalizeSearchQuery } from "./intent.mts";
-import { classifyTurn, filledSlotKeys, persistBeforeAsk, type ClassifiedTurn } from "@manebra/dialog";
+import {
+  classifyTurn,
+  filledSlotKeys,
+  persistBeforeAsk,
+  composeHostReply,
+  HOSPITALITY_PERSONA,
+  SHOPPER_SLOT_SCHEMA,
+  ensureStay,
+  rememberQuestion,
+  rememberItem,
+  rememberQuote,
+  rememberCounterparty,
+  rememberOffer,
+  rememberWait,
+  type ClassifiedTurn,
+} from "@manebra/dialog";
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import { SEED_TRAVELERS } from "./traveler-seeds.mts";
@@ -201,7 +216,19 @@ async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
   console.log(`[shopper-agent] → ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
 }
 
-/** 2–3 short bubbles (Ditto-style). */
+void SHOPPER_SLOT_SCHEMA;
+void HOSPITALITY_PERSONA;
+
+function stayOf(s: Session) {
+  s.stay = ensureStay(s.stay);
+  return s.stay;
+}
+
+async function sayHost(s: Session, act: ClassifiedTurn["act"], next?: string, meta?: ClassifiedTurn["meta"]) {
+  await say(s, ...composeHostReply({ act, meta, stay: stayOf(s), next }));
+}
+
+/** 2–3 short bubbles. */
 async function say(s: Session, ...bubbles: string[]) {
   for (let i = 0; i < bubbles.length; i++) {
     const b = bubbles[i]!;
@@ -275,6 +302,7 @@ function setOffer(s: Session, field: DialogOffer["field"], value: string, prompt
     prompt: prompt ?? s.pending?.prompt ?? "",
     options: lastChoiceOptions(s, field),
   };
+  rememberQuestion(stayOf(s), s.pending.prompt);
   markSessionDirty();
   persistBeforeAsk(persistSessionsNow);
 }
@@ -488,11 +516,14 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
       kind: "bool",
       prompt: matchText,
     };
+    rememberQuestion(stayOf(s), matchText);
     persistSessionsNow();
     await reply(s, matchText, { thinkMs: 1400 });
     return;
   }
   const quote = quoteLines(s);
+  rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
+  if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
   if (s.ranked?.length) {
     await say(s, quote);
     await lockTraveler(s, 0, { quoteAlreadyShown: true });
@@ -524,7 +555,7 @@ async function continueAfterListing(s: Session): Promise<void> {
     s.step = "await_deadline";
     setOffer(s, "deadline", "15th August", "Need it by 15th August? Say yes, or send another date.");
     markSessionDirty();
-    await reply(s, `Need it by 15th August? Say yes, or send another date.`);
+    await sayHost(s, stayOf(s).lastAct ?? "CONTINUE", `Need it by 15th August? Say yes, or send another date.`);
     return;
   }
   if (s.maxFeeCents == null) {
@@ -536,7 +567,11 @@ async function continueAfterListing(s: Session): Promise<void> {
       "What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.",
     );
     markSessionDirty();
-    await reply(s, `What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.`);
+    await sayHost(
+      s,
+      stayOf(s).lastAct ?? "CONTINUE",
+      `What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.`,
+    );
     return;
   }
   if (s.chatId) presenceTyping(s);
@@ -684,7 +719,7 @@ function reaskPrompt(s: Session): string {
 async function reaskOpen(s: Session): Promise<void> {
   hydratePending(s);
   persistSessionsNow();
-  await reply(s, reaskPrompt(s));
+  await sayHost(s, stayOf(s).lastAct ?? "REASK", reaskPrompt(s));
 }
 
 function applyRepairSlots(s: Session, turn: ClassifiedTurn): void {
@@ -708,17 +743,20 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
     resetSession(s);
     s.step = "await_product";
     persistSessionsNow();
-    await reply(s, shopperIntakeLine(s));
+    await sayHost(s, "META", shopperIntakeLine(s), "cancel");
     return;
   }
-  const waiting = s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler";
   if (s.step === "await_traveler_decision") {
-    await reply(s, `Still waiting on ${waiting}. I’ll ping you when they agree.`);
+    void syncWaitingShoppers();
+    const waiting = s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? stayOf(s).lastTravelerName;
+    rememberCounterparty(stayOf(s), waiting);
+    rememberWait(stayOf(s));
+    await sayHost(s, "META", `I’ll ping you when they agree.`, turn.meta);
     return;
   }
   hydratePending(s);
   persistSessionsNow();
-  await reply(s, s.pending?.prompt ? `Still on: ${s.pending.prompt}` : `Still on that last step.`);
+  await sayHost(s, "META", s.pending?.prompt || reaskPrompt(s), turn.meta);
 }
 
 /** Resolve the open question before search/matching. Returns true if this turn is done. */
@@ -886,6 +924,12 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
   const id = s.bidId ?? `req-${sessionKey(s.phone)}-${Date.now()}`;
   s.bidId = id;
   s.step = "await_traveler_decision";
+  rememberItem(stayOf(s), item.productTitle);
+  if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
+  rememberCounterparty(stayOf(s), chosen?.name, s.chosenTravelerId);
+  rememberOffer(stayOf(s), id);
+  rememberWait(stayOf(s));
+  rememberQuestion(stayOf(s), `I’ll send this to ${chosen?.name ?? "a traveler"} heading your way. I’ll ping you when they agree.`);
   clearPending(s);
   try {
     const fee = suggestedTravelerFeeCents(item.priceCents);
@@ -1150,9 +1194,14 @@ async function handleInboundInner(
   const hasImages = imageUrls.length > 0;
   hydratePending(s);
   const turn = classifyTurn(s, { text, hasPhoto: hasImages });
+  stayOf(s).lastAct = turn.act;
+  if (s.searchQuery) rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery);
   console.log(
     `[shopper-agent] turn chat=${s.chatId ?? "none"} requested_slot=${s.pending?.slot ?? "-"} filled=${filledSlotKeys(s).join(",") || "-"} act=${turn.act}`,
   );
+  if (s.step === "await_traveler_decision" || stayOf(s).lastOfferId) {
+    void syncWaitingShoppers();
+  }
 
   const intent = classifyIntent(text, {
     step: s.step,
@@ -1173,10 +1222,14 @@ async function handleInboundInner(
     return;
   }
   if (turn.act === "REASK") {
+    if (stayOf(s).lastItem || s.pending || (s.step !== "idle" && s.step !== "done" && s.step !== "await_product")) {
+      await reaskOpen(s);
+      return;
+    }
     if (!s.pending && (s.step === "idle" || s.step === "done" || s.step === "await_product")) {
       s.step = "await_product";
       persistSessionsNow();
-      await replyPair(s, "Hey — I’m Manebra.", shopperIntakeLine(s));
+      await sayHost(s, "REASK", shopperIntakeLine(s));
       return;
     }
     await reaskOpen(s);
@@ -1262,7 +1315,7 @@ async function handleInboundInner(
   markSessionDirty();
   let inbound = text;
   if (greetingOnly || (!text && !hasImages)) {
-    await replyPair(s, "Hey — I’m Manebra.", shopperIntakeLine(s));
+    await sayHost(s, "NEW", shopperIntakeLine(s));
     return;
   }
   if (hasImages) {
@@ -1385,7 +1438,8 @@ async function handleInboundInner(
       ensureCognition(s).topic = "shopping";
       appendEpisode(ensureCognition(s).memory, "slot", `Product from text: ${query}`, { product: query });
       markSessionDirty();
-      await say(s, `Okay, “${query}” — on it.`, `Which US city should I shop in? New York is usually solid.`);
+      rememberItem(stayOf(s), query);
+      await sayHost(s, "NEW", `Which US city should I shop in for ${query}? New York is usually solid.`);
       return;
     }
     case "await_shopping_city": {

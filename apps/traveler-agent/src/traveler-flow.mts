@@ -6,6 +6,7 @@ import {
   markSessionDirty,
   hasTripProgress,
   allSessions,
+  appendDialogTurn,
   type Session,
 } from "./session.mts";
 import { handleTravelInbound } from "./travel-flow.mts";
@@ -16,6 +17,18 @@ import {
   updateOffer,
 } from "@manebra/db";
 import { isTravelIntent } from "@manebra/flights";
+import {
+  classifyTurn,
+  composeHostReply,
+  HOSPITALITY_PERSONA,
+  TRAVELER_SLOT_SCHEMA,
+  ensureStay,
+  rememberQuestion,
+  rememberItem,
+  rememberOffer,
+  rememberWait,
+  type DialogSession,
+} from "@manebra/dialog";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -28,7 +41,32 @@ function relayIdempotencyKey(s: Session, text: string, attempt = 0): string {
   return attempt > 0 ? `${base}-r${attempt}` : base;
 }
 
+void TRAVELER_SLOT_SCHEMA;
+void HOSPITALITY_PERSONA;
+
+function stayOf(s: Session) {
+  s.stay = ensureStay(s.stay);
+  return s.stay;
+}
+
+function asDialog(s: Session): DialogSession {
+  const trip = s.trip;
+  return {
+    step: s.step,
+    searchQuery: trip?.destination || trip?.origin || stayOf(s).lastItem || undefined,
+    pending: s.pending ?? null,
+    offer: s.offer,
+    stay: stayOf(s),
+    turns: s.turns,
+  };
+}
+
+async function sayHost(s: Session, act: Parameters<typeof composeHostReply>[0]["act"], next?: string, meta?: Parameters<typeof composeHostReply>[0]["meta"]) {
+  await say(s, ...composeHostReply({ act, meta, stay: stayOf(s), next }));
+}
+
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
+  if (text?.trim()) appendDialogTurn(s, "assistant", text);
   if (s.channel === "relay") {
     if (s.chatId) {
       if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
@@ -103,6 +141,9 @@ export async function syncTravelerMarketplace(): Promise<void> {
   const open = await latestOpenOffer();
   if (open && !open.notifiedTraveler) {
     await updateOffer(open.id, { notifiedTraveler: true });
+    rememberItem(stayOf(s), open.item);
+    rememberOffer(stayOf(s), open.id);
+    rememberQuestion(stayOf(s), `Accept or decline?`);
     await say(
       s,
       `New carry request: ${open.item} — about ${carryUsd(open.totalCents)}.`,
@@ -141,6 +182,9 @@ async function tryHandleMarketplaceOffer(
   if (carry.status === "offered") {
     if (yes) {
       await updateOffer(carry.id, { status: "accepted", notifiedShopper: false });
+      rememberItem(stayOf(s), carry.item);
+      rememberOffer(stayOf(s), carry.id);
+      rememberWait(stayOf(s));
       await io.say(s, `Accepted. Waiting for the shopper to fund — no carry until then.`);
       return true;
     }
@@ -198,16 +242,38 @@ export async function handleInbound(args: {
     relayEventId: args.relayEventId,
     relayMessageId: args.relayMessageId,
   });
+  if (text) appendDialogTurn(s, "user", text);
 
   if (await tryHandleMarketplaceOffer(s, text, { reply, say })) return;
 
+  const turn = classifyTurn(asDialog(s), { text });
+  stayOf(s).lastAct = turn.act;
+  const midTrip = hasTripProgress(s) || Boolean(stayOf(s).lastItem || stayOf(s).lastOfferId);
+
+  if (turn.act === "META" && turn.meta === "cancel") {
+    resetSession(s);
+    s.trip = blankTrip();
+    s.step = "await_travel_intent";
+    markSessionDirty();
+    await sayHost(s, "META", "Where are you flying?", "cancel");
+    return;
+  }
+  if (turn.act === "META") {
+    await sayHost(s, "META", stayOf(s).lastQuestion || "Still on your trip.", turn.meta);
+    return;
+  }
+
+  // Coming back or a short reply is the same stay — do not wipe intake.
+  if (turn.act !== "NEW" && midTrip) {
+    await handleTravelInbound(s, text, { reply, say });
+    return;
+  }
+
   const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
   const restart = /^(restart|start over|reset|menu)\b/i.test(text);
-  const midTrip = hasTripProgress(s);
 
-  // Never wipe persistent trip slots on a follow-up. Only reset on greeting/restart/done.
-  if (restart || greetingOnly || s.step === "done" || (s.step === "idle" && !midTrip)) {
-    if (restart || greetingOnly || s.step === "done") {
+  if ((restart || (greetingOnly && !midTrip) || s.step === "done" || (s.step === "idle" && !midTrip)) && turn.act === "NEW") {
+    if (restart || s.step === "done") {
       resetSession(s);
       s.trip = blankTrip();
       s.step = "await_travel_intent";
@@ -219,10 +285,10 @@ export async function handleInbound(args: {
     }
 
     if (greetingOnly || restart || !text) {
-      await say(
+      await sayHost(
         s,
-        "Hey — I’m Manebra Travel.",
-        "Tell me where you’re flying (e.g. JFK → Accra Friday) and I’ll find options, book, then show carry jobs you can earn on.",
+        turn.act,
+        "Where are you flying? Origin, destination, and day — I’ll find options, then carry jobs on that route.",
       );
       if (greetingOnly || restart) {
         const rest = text
@@ -233,7 +299,6 @@ export async function handleInbound(args: {
       }
       return;
     }
-    await reply(s, "Hey — I’m Manebra Travel. On it…", { thinkMs: 300 });
   }
 
   await handleTravelInbound(s, text, { reply, say });
