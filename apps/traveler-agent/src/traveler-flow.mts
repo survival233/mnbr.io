@@ -16,6 +16,7 @@ import {
   latestActiveOffer,
   updateOffer,
 } from "@manebra/db";
+import { settleLocalEscrow } from "@manebra/settlement/server";
 import { isTravelIntent } from "@manebra/flights";
 import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
 import {
@@ -230,7 +231,6 @@ async function tryHandleMarketplaceOffer(
     const entered = code ?? (confirm ? carry.handoverCode : null);
     if (entered && entered === carry.handoverCode) {
       try {
-        const { settleLocalEscrow } = await import("../../agent-cli/src/local-escrow.mts");
         await settleLocalEscrow({ escrowId: carry.escrowId as `0x${string}`, action: "release" });
         await updateOffer(carry.id, { status: "released" });
         await io.reply(s, `Handover confirmed — escrow released. You’re paid (test USDC).`);

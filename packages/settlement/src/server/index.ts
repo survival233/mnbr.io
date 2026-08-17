@@ -9,3 +9,5 @@ export type { AgentWallet, WalletProvider, AgentRole } from "./wallets/types";
 export { localWalletProvider } from "./wallets/local";
 export { cdpWalletProvider } from "./wallets/cdp";
 export { authorizeEscrowFunding, SpendRejectedError } from "./wallets/authorize";
+export { demoLocalChain, agentWallet, fundLocalEscrow, settleLocalEscrow } from "./local-escrow";
+export type { FundLocalResult } from "./local-escrow";

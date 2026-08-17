@@ -14,7 +14,8 @@
     "@manebra/agents": "*",
     "@manebra/flights": "*",
     "@manebra/calendar": "*",
-    "@manebra/db": "*"
+    "@manebra/db": "*",
+    "@manebra/settlement": "*"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

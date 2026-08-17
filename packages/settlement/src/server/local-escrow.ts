@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { createPublicClient, createWalletClient, http, getContract, type Hex, type Address } from "viem";
 import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import { computeFees, generateHandoverCode } from "@manebra/shared";
-import { evaluateSpend, buildFundingAuthorization } from "@manebra/settlement";
+import { evaluateSpend, buildFundingAuthorization } from "../core";
 
 const CHAIN_ID = Number(process.env.CHAIN_ID ?? 84532);
 const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
@@ -24,7 +24,7 @@ export function demoLocalChain(): boolean {
 
 const art = (name: string) => {
   const j = JSON.parse(
-    readFileSync(new URL(`../../../packages/settlement/contracts/out/${name}.sol/${name}.json`, import.meta.url), "utf8"),
+    readFileSync(new URL(`../../contracts/out/${name}.sol/${name}.json`, import.meta.url), "utf8"),
   );
   return { abi: j.abi, bytecode: j.bytecode.object as Hex };
 };

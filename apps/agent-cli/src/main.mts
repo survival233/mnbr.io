@@ -12,7 +12,7 @@ import { mnemonicToAccount } from "viem/accounts";
 import { readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline/promises";
-import { agentWallet, fundLocalEscrow, settleLocalEscrow } from "./local-escrow.mts";
+import { agentWallet, fundLocalEscrow, settleLocalEscrow } from "@manebra/settlement/server";
 
 import {
   computeFees, formatUsd, endOfLocalDay,

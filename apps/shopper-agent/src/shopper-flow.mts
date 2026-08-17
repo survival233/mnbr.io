@@ -43,7 +43,7 @@ import { SEED_TRAVELERS } from "./traveler-seeds.mts";
 import {
   completeHandoverAndRelease,
 } from "./settlement-bridge.mts";
-import { demoLocalChain, fundLocalEscrow, settleLocalEscrow } from "../../agent-cli/src/local-escrow.mts";
+import { demoLocalChain, fundLocalEscrow, settleLocalEscrow } from "@manebra/settlement/server";
 import {
   writeOffer,
   updateOffer,
