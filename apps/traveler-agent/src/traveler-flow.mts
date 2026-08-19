@@ -16,7 +16,7 @@ import {
   latestActiveOffer,
   updateOffer,
 } from "@manebra/db";
-import { settleLocalEscrow } from "@manebra/settlement/server";
+import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
 import { isTravelIntent } from "@manebra/flights";
 import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
 import {

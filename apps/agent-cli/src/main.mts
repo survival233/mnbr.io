@@ -170,7 +170,7 @@ async function main() {
   process.env.HANDOVER_ESCROW_ADDRESS = escrowAddr;
   process.env.RPC_URL = RPC_URL;
   process.env.ATTESTOR_PRIVATE_KEY ??= "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
-  const { agentWallet, fundLocalEscrow, settleLocalEscrow } = await import("@manebra/settlement/server");
+  const { agentWallet, fundLocalEscrow, settleLocalEscrow } = await import("@manebra/settlement/server/local-escrow");
 
   // ── 1. shopping request: live store listings (like smoke:shop) ───────────
   let itemName: string | undefined, shop: string | undefined, city: string | undefined;
