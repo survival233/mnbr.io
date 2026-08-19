@@ -37,7 +37,7 @@ export type DialogOffer = {
 
 /** Open question the shopper must answer. Survives reconnect via session-store. */
 export type PendingSlot = {
-  slot: "shopping_city" | "delivery_city" | "need_by" | "delivery_fee" | "listing" | "traveler" | "pay" | "brief";
+  slot: "product" | "shopping_city" | "delivery_city" | "need_by" | "delivery_fee" | "listing" | "traveler" | "pay" | "brief";
   proposed: string | number | null;
   kind: "date" | "choice" | "money" | "text" | "bool";
   prompt: string;

@@ -35,6 +35,7 @@ import {
   rememberCounterparty,
   rememberOffer,
   rememberWait,
+  parseItem,
   type ClassifiedTurn,
 } from "@manebra/dialog";
 import * as linq from "./linq-client.mts";
@@ -251,6 +252,30 @@ function shopperIntakeLine(s: Session): string {
   return s.channel === "relay"
     ? "What should I shop for you?"
     : "Send a product (text or photo) and I’ll find stock and a traveler heading to your city.";
+}
+
+/** Guest city ask — interpolates a parsed product only, never the raw utterance. */
+function shopCityPrompt(item: string): string {
+  return `Which US city should I shop in for ${item}? New York is usually solid.`;
+}
+
+function namedProduct(raw: string): string | null {
+  const item = parseItem(raw);
+  if (!item) return null;
+  const q = normalizeSearchQuery(item);
+  return parseItem(q) ?? q;
+}
+
+function parkItemAsk(s: Session): string {
+  const prompt = shopperIntakeLine(s);
+  s.step = "await_product";
+  s.searchQuery = undefined;
+  s.offer = undefined;
+  s.pending = { slot: "product", proposed: null, kind: "text", prompt };
+  rememberQuestion(stayOf(s), prompt);
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
+  return prompt;
 }
 
 function parkDestAsk(s: Session, prompt = DEST_ASK) {
@@ -800,7 +825,12 @@ async function runSearchFlow(s: Session, progress?: string): Promise<void> {
 }
 
 async function applyNewQuery(s: Session, query: string): Promise<void> {
-  s.searchQuery = normalizeSearchQuery(query);
+  const item = namedProduct(query);
+  if (!item) {
+    await sayHost(s, "REASK", parkItemAsk(s));
+    return;
+  }
+  s.searchQuery = item;
   s.selected = undefined;
   s.listings = undefined;
   markSessionDirty();
@@ -808,10 +838,10 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
     s.step = "await_shopping_city";
     markSessionDirty();
     setOffer(s, "shoppingCity", "New York");
-    await say(s, `Got it — “${s.searchQuery}”.`, `Which US city should I shop in? New York is usually solid.`);
+    await say(s, `Got it — “${item}”.`, shopCityPrompt(item));
     return;
   }
-  await runSearchFlow(s, `Got it — searching ${s.searchQuery} near ${s.shoppingCity}…`);
+  await runSearchFlow(s, `Got it — searching ${item} near ${s.shoppingCity}…`);
 }
 
 async function selectListing(s: Session, idx: number): Promise<void> {
@@ -870,6 +900,8 @@ function hydratePending(s: Session): void {
     else parkDestAsk(s);
   } else if (s.step === "await_shopping_city") {
     setOffer(s, "shoppingCity", "New York", "Which US city should I shop in? New York is usually solid.");
+  } else if (s.step === "await_product") {
+    if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
     setOffer(s, "listing", "0", s.pending?.prompt);
   } else if (s.step === "await_traveler" && s.ranked?.length) {
@@ -888,6 +920,8 @@ function reaskPrompt(s: Session): string {
           ? DEST_ASK
           : s.step === "await_shopping_city"
             ? "Which US city should I shop in? New York is usually solid."
+            : s.step === "await_product"
+              ? shopperIntakeLine(s)
             : s.step === "await_listing"
               ? `Pick one (1–${s.listings?.length ?? 1} or a store name), or tell me if these aren’t right.`
               : s.step === "await_traveler"
@@ -1288,7 +1322,7 @@ export async function handleInbound(args: {
       await reply(
         s,
         text
-          ? `I couldn’t open that photo — what product should I shop for? (got your note: “${text.slice(0, 80)}”)`
+          ? `I couldn’t open that photo — what product should I shop for?`
           : `I can tell you sent a photo, but I couldn’t open it. What product should I shop for?`,
         { thinkMs: 400 },
       );
@@ -1343,7 +1377,11 @@ async function commitConfirmedProduct(
   product: string,
   slots?: Parameters<typeof applyCognitiveSlots>[1],
 ): Promise<void> {
-  const q = normalizeSearchQuery(product);
+  const q = namedProduct(product);
+  if (!q) {
+    await sayHost(s, "REASK", parkItemAsk(s));
+    return;
+  }
   s.searchQuery = q;
   const cog = ensureCognition(s);
   cog.pending = null;
@@ -1408,14 +1446,20 @@ async function handleInboundInner(
     return;
   }
   if (turn.act === "REASK") {
+    if (
+      (turn.slot === "product" || s.step === "idle" || s.step === "done" || s.step === "await_product") &&
+      !s.searchQuery &&
+      !stayOf(s).lastItem
+    ) {
+      await sayHost(s, "REASK", parkItemAsk(s));
+      return;
+    }
     if (stayOf(s).lastItem || s.pending || (s.step !== "idle" && s.step !== "done" && s.step !== "await_product")) {
       await reaskOpen(s);
       return;
     }
     if (!s.pending && (s.step === "idle" || s.step === "done" || s.step === "await_product")) {
-      s.step = "await_product";
-      persistSessionsNow();
-      await sayHost(s, "REASK", shopperIntakeLine(s));
+      await sayHost(s, "REASK", parkItemAsk(s));
       return;
     }
     await reaskOpen(s);
@@ -1506,6 +1550,11 @@ async function handleInboundInner(
       await continueAfterListing(s);
       return;
     }
+    if (turn.slot === "product" && typeof turn.value === "string") {
+      clearPending(s);
+      await applyNewQuery(s, turn.value);
+      return;
+    }
     await reaskOpen(s);
     return;
   }
@@ -1544,15 +1593,16 @@ async function handleInboundInner(
     if (decision.bubbles.length) await say(s, ...decision.bubbles);
     if (decision.confirmedProduct) {
       await commitConfirmedProduct(s, decision.confirmedProduct, decision.applySlots);
+      if (!s.searchQuery) return;
       if (decision.confirmedUsCity) {
         s.shoppingCity = decision.confirmedUsCity;
         markSessionDirty();
         await runSearchFlow(s);
         return;
       }
-      if ((s.step as Step) === "await_shopping_city" && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
+      if ((s.step as Step) === "await_shopping_city" && s.searchQuery && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
         setOffer(s, "shoppingCity", "New York");
-        await reply(s, `Which US city should I shop in for ${s.searchQuery}? New York is usually strongest.`);
+        await reply(s, shopCityPrompt(s.searchQuery));
       }
       markSessionDirty();
       return;
@@ -1595,10 +1645,11 @@ async function handleInboundInner(
     case "await_product_confirm": {
       // Policy should have handled yes/no; if we fell through, ask again
       const hyp = s.cognition?.pending?.hypothesis;
+      const item = hyp ? parseItem(hyp) : null;
       await reply(
         s,
-        hyp
-          ? `Just to confirm — shop for ${hyp}? (yes / no)`
+        item
+          ? `Just to confirm — shop for ${item}? (yes / no)`
           : `What product should I shop for? Text or a photo works.`,
       );
       return;
@@ -1609,14 +1660,10 @@ async function handleInboundInner(
         return;
       }
       if (isAffirmationOrCloser(text)) {
-        await reply(s, s.pending?.prompt || "What are you looking for? Text or a photo of the item works.");
+        await sayHost(s, "REASK", parkItemAsk(s));
         return;
       }
-      let query = normalizeSearchQuery(inbound);
-      if (!query || /^(photo|image|\[attachment\])$/i.test(query)) {
-        await reply(s, `What are you looking for? Text or a photo of the item works.`);
-        return;
-      }
+      let query = namedProduct(inbound);
       const llm = makeLlm();
       if (llm && process.env.LINQ_LLM_EXTRACT !== "0") {
         try {
@@ -1624,7 +1671,9 @@ async function handleInboundInner(
             extractOrder(llm, inbound),
             new Promise<null>((_, rej) => setTimeout(() => rej(new Error("extract timeout")), 3_000)),
           ]);
-          if (o && (o as any).itemName) query = normalizeSearchQuery((o as any).itemName);
+          if (o && (o as any).itemName) {
+            query = namedProduct(String((o as any).itemName)) ?? query;
+          }
           if (o && (o as any).city) s.deliveryCity = normalizeCity((o as any).city) ?? (o as any).city;
           if (o && (o as any).deadline) s.deadline = parseDate((o as any).deadline) ?? undefined;
           if (o && (o as any).maxFeeUsd) s.maxFeeCents = Math.round((o as any).maxFeeUsd * 100);
@@ -1633,6 +1682,10 @@ async function handleInboundInner(
           console.warn(`[shopper-agent] extractOrder skipped: ${e.message}`);
         }
       }
+      if (!query) {
+        await sayHost(s, "REASK", parkItemAsk(s));
+        return;
+      }
       s.searchQuery = query;
       s.step = "await_shopping_city";
       setOffer(s, "shoppingCity", "New York");
@@ -1640,7 +1693,7 @@ async function handleInboundInner(
       appendEpisode(ensureCognition(s).memory, "slot", `Product from text: ${query}`, { product: query });
       markSessionDirty();
       rememberItem(stayOf(s), query);
-      await sayHost(s, "NEW", `Which US city should I shop in for ${query}? New York is usually solid.`);
+      await sayHost(s, "NEW", shopCityPrompt(query));
       return;
     }
     case "await_shopping_city": {

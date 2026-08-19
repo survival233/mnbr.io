@@ -5,6 +5,7 @@ export type SlotKind = "date" | "choice" | "money" | "text" | "bool";
 export type SlotDef = { id: string; kind: SlotKind };
 
 export const SHOPPER_SLOT_SCHEMA: readonly SlotDef[] = [
+  { id: "product", kind: "text" },
   { id: "shopping_city", kind: "text" },
   { id: "delivery_city", kind: "text" },
   { id: "need_by", kind: "date" },

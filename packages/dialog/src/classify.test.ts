@@ -204,3 +204,33 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     expect(now.act).toBe("CONTINUE");
   });
 });
+
+describe("classifyTurn — item is a product, not the raw sentence", () => {
+  it("vague shop intent is not NEW", () => {
+    const s = sess({ step: "idle" });
+    expect(act(s, "I want to shop").act).not.toBe("NEW");
+    expect(act(s, "hello I want to shop").act).not.toBe("NEW");
+    expect(act(s, "I want to shop").slot).toBe("product");
+  });
+
+  it("extracts the product from a shopping sentence", () => {
+    const s = sess({ step: "idle" });
+    const t = act(s, "get me a PS5");
+    expect(t.act).toBe("NEW");
+    expect(t.query).toBe("PS5");
+  });
+
+  it("extracts a product buried in other words", () => {
+    const s = sess({ step: "idle" });
+    const t = act(s, "I want you to shop me a PS5 from the US");
+    expect(t.act).toBe("NEW");
+    expect(t.query).toMatch(/^PS5$/i);
+  });
+
+  it("photo is NEW without using the raw sentence as the item", () => {
+    const s = sess({ step: "idle" });
+    const t = act(s, "please shop this", true);
+    expect(t.act).toBe("NEW");
+    expect(t.query).not.toBe("please shop this");
+  });
+});

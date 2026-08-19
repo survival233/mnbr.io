@@ -15,7 +15,7 @@ import {
   personaSummary,
   predictiveAsk,
 } from "./state.mts";
-import { HOSPITALITY_PERSONA, llmStayBlock } from "@manebra/dialog";
+import { HOSPITALITY_PERSONA, llmStayBlock, parseItem } from "@manebra/dialog";
 import {
   isCityAdviceQuestion,
   parseUsShoppingCity,
@@ -101,7 +101,14 @@ export async function runPolicyTurn(args: {
 
   // Affirm pending product without needing LLM
   if (cog.pending?.kind === "confirm_product" && /^(y|yes|ok|okay|sure|yeah|yep|yup)\b/i.test(text) && !hasMedia) {
-    const product = cog.pending.hypothesis;
+    const product = parseItem(cog.pending.hypothesis);
+    if (!product) {
+      cog.pending = null;
+      return {
+        bubbles: ["What product should I shop for?"],
+        fallthrough: false,
+      };
+    }
     cog.pending = null;
     cog.persona.beliefs = [...new Set([...cog.persona.beliefs, `wants ${product}`])].slice(-8);
     cog.persona.openQuestions = cog.persona.openQuestions.filter((q) => !/product/i.test(q));
@@ -346,10 +353,11 @@ export async function runPolicyTurn(args: {
   }
 
   if (turn.action === "set_slots") {
-    const product =
+    const rawProduct =
       turn.slots.product ||
       turn.productHypothesis ||
       (cog.pending?.kind === "confirm_product" ? cog.pending.hypothesis : null);
+    const product = rawProduct ? parseItem(rawProduct) : null;
 
     const usCity = turn.slots.usCity ? parseUsShoppingCity(turn.slots.usCity) : null;
     const safeSlots = { ...turn.slots, usCity };

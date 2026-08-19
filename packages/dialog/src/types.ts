@@ -1,6 +1,7 @@
 /** Open question the user must answer. Survives reconnect via session persist. */
 export type DialogPendingSlot = {
   slot:
+    | "product"
     | "shopping_city"
     | "delivery_city"
     | "need_by"

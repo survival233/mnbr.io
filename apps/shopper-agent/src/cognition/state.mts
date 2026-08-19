@@ -1,5 +1,7 @@
 /** Episodic memory, persona (ToM), and conversation cognition types. */
 
+import { parseItem } from "@manebra/dialog";
+
 export type CognitiveTopic =
   | "intake"
   | "shopping"
@@ -156,15 +158,16 @@ export function predictiveAsk(args: {
     return null; // confirm bubble owns this turn
   }
   const warm = args.tone !== "terse";
-  if (!args.product) {
+  const item = args.product ? parseItem(args.product) : null;
+  if (!item) {
     return warm
       ? "What are you looking to buy — or send a photo of the item?"
       : "What product should I shop for?";
   }
   if (!args.shoppingCity) {
     return warm
-      ? `For “${args.product}”, which US city should I shop near? New York is usually solid.`
-      : `US shopping city for ${args.product}?`;
+      ? `For “${item}”, which US city should I shop near? New York is usually solid.`
+      : `US shopping city for ${item}?`;
   }
   if (!args.deliveryCity) {
     return warm ? "Which city should it land in?" : "Delivery city?";

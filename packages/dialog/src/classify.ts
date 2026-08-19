@@ -4,6 +4,7 @@
  */
 import { normalizeCity } from "@manebra/calendar";
 import { parseDate, parseUsdCents, categoryOf } from "./parse";
+import { parseItem } from "./item";
 import { fuzzyMatchIndex } from "./fuzzy";
 import { parseUsShoppingCity } from "./cities";
 import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
@@ -11,6 +12,7 @@ import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "
 export type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
 
 const FORM_STEPS = new Set([
+  "await_product",
   "await_product_confirm",
   "await_shopping_city",
   "await_listing",
@@ -187,33 +189,6 @@ function isMetaText(text: string): ClassifiedTurn["meta"] | null {
   return null;
 }
 
-function leftoverProduct(text: string): string {
-  const want = text.match(
-    /\b(?:get me|shop for|look for|search for|buy me|find me|i want|i need)\s+(.+?)(?:\s+instead)?$/i,
-  );
-  if (want?.[1]) {
-    return want[1].replace(/\b(a|an|the|please|instead)\b/gi, " ").replace(/\s+/g, " ").trim();
-  }
-  return text
-    .replace(/^(actually|instead|please|can you|could you)[,:\s]+/i, "")
-    .replace(/\b(instead|different item)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function productSignal(text: string): boolean {
-  const leftover = leftoverProduct(text);
-  if (leftover.length < 3) return false;
-  if (parseFuzzyDate(leftover) && leftover.split(/\s+/).length <= 3) return false;
-  if (parseUsdCents(leftover) != null && leftover.split(/\s+/).length <= 2) return false;
-  if (parseUsShoppingCity(leftover) || normalizeCity(leftover)) return false;
-  if (replacementItem(text) && leftover.length >= 3) return true;
-  if (categoryOf(leftover)) return true;
-  if (/\b(get me|shop for|look for|search for|buy me|order|i want|i need)\b/i.test(text) && leftover.length >= 3)
-    return true;
-  return leftover.split(/\s+/).length >= 2 && leftover.length >= 8;
-}
-
 function isRecapLeftover(s: DialogSession, text: string): boolean {
   const t = text.trim().toLowerCase();
   if (t.length < 4) return false;
@@ -277,6 +252,10 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
     const city = normalizeCity(t);
     if (city) return { ok: true, value: city };
   }
+  if (pending.slot === "product") {
+    const item = parseItem(t);
+    if (item) return { ok: true, value: item };
+  }
   if (pending.kind === "bool" || pending.slot === "pay" || pending.slot === "brief") {
     if (/^(n|no|nope|nah)\b/i.test(t)) return { ok: true, value: "no" };
   }
@@ -319,14 +298,14 @@ function detectRepair(s: DialogSession, text: string): ClassifiedTurn | null {
 function unmistakableNewItem(s: DialogSession, text: string, hasPhoto: boolean): boolean {
   if (hasPhoto) return true;
   if (isRecapLeftover(s, text)) return false;
-  if (!productSignal(text)) return false;
+  const item = parseItem(text);
+  if (!item) return false;
   const open = isFormOpen(s);
   const pending = requestedSlot(s);
   if (pending && parseAgainstPending(s, text).ok) return false;
   if (!open) return true;
-  if (replacementItem(text) && leftoverProduct(text).length >= 3) return true;
-  const leftover = leftoverProduct(text);
-  return Boolean(categoryOf(leftover) && leftover.split(/\s+/).length >= 2);
+  if (replacementItem(text)) return true;
+  return Boolean(categoryOf(item) && item.split(/\s+/).length >= 2);
 }
 
 /** Invalid / missing model act → re-ask if a question is open; never NEW. */
@@ -350,13 +329,9 @@ export function classifyTurn(
   const meta = text ? isMetaText(text) : null;
   if (meta) return { act: "META", meta };
 
-  if (hasPhoto) return { act: "NEW", query: leftoverProduct(text) || text || "[photo]" };
-  const replaced = leftoverProduct(text);
-  if (
-    replacementItem(text) &&
-    replaced.length >= 3 &&
-    !(pending && parseAgainstPending(s, text).ok)
-  ) {
+  if (hasPhoto) return { act: "NEW", query: parseItem(text) || "[photo]" };
+  const replaced = parseItem(text);
+  if (replacementItem(text) && replaced && !(pending && parseAgainstPending(s, text).ok)) {
     return { act: "NEW", query: replaced };
   }
 
@@ -379,11 +354,11 @@ export function classifyTurn(
     if (isDependent(text) && /^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that one)\b/i.test(text)) {
       return { act: "CONTINUE", slot: pending.slot, query: String(pending.proposed ?? "") };
     }
-    if (newItem) return { act: "NEW", query: leftoverProduct(text) || text };
+    if (newItem && replaced) return { act: "NEW", query: replaced };
     return { act: "REASK" };
   }
 
-  if (newItem) return { act: "NEW", query: leftoverProduct(text) || text };
+  if (newItem && replaced) return { act: "NEW", query: replaced };
 
   if (open) {
     if (isDependent(text)) return { act: "CONTINUE" };
@@ -391,7 +366,9 @@ export function classifyTurn(
   }
 
   if (!text && !hasPhoto) return { act: "REASK" };
-  if (isDependent(text) || /^(hi|hello|hey|start|menu)\b/i.test(text)) return { act: "REASK" };
-  if (text.length >= 2) return { act: "NEW", query: text };
-  return { act: "REASK" };
+  if (isDependent(text) || /^(hi|hello|hey|start|menu)\b/i.test(text)) {
+    return { act: "REASK", slot: "product" };
+  }
+  if (replaced) return { act: "NEW", query: replaced };
+  return { act: "REASK", slot: "product" };
 }
