@@ -44,9 +44,8 @@ loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
 const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
   "./linq-client.mts"
 );
-const { extractRelayInbound, pollEvents, relayConfigured, verifyRelayWebhookSignature } = await import(
-  "./relay-client.mts"
-);
+const { ensureCloudWebhook, extractRelayInbound, pollEvents, relayConfigured, verifyRelayWebhookSignature } =
+  await import("./relay-client.mts");
 const { handleInbound, syncTravelerMarketplace } = await import("./traveler-flow.mts");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
@@ -112,7 +111,10 @@ function ingestRelayEvent(event: any): void {
   if (!rememberEvent(event.event_id ?? event.id)) return;
 
   const inbound = extractRelayInbound(event);
-  if (!inbound) return;
+  if (!inbound) {
+    console.warn("[traveler-agent] relay event dropped: missing inbound fields");
+    return;
+  }
 
   lastInboundAt = Date.now();
   inboundCount += 1;
@@ -251,6 +253,10 @@ const server = createServer(async (req, res) => {
       const headers: Record<string, string | string[] | undefined> = {};
       for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
       if (!verifyRelayWebhookSignature(secret, raw, headers)) {
+        const signed = ["webhook-id", "webhook-timestamp", "webhook-signature"].filter(
+          (k) => headers[k] ?? headers[k.toLowerCase()],
+        );
+        console.warn(`[traveler-agent] relay webhook 401 headers=${signed.join(",") || "none"}`);
         fail(res, 401, "invalid signature");
         return;
       }
@@ -288,6 +294,7 @@ server.listen(PORT, () => {
   console.log(
     `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"}`,
   );
+  void ensureCloudWebhook();
   void startRelayLongPoll();
   const pollMarketplace =
     Boolean(process.env.DATABASE_URL?.trim()) ||

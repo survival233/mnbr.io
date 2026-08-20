@@ -122,7 +122,8 @@ export function verifyRelayWebhookSignature(
   const age = Math.abs(Date.now() / 1000 - Number(timestamp));
   if (!Number.isFinite(age) || age > 300) return false;
 
-  const secretStr = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  const trimmed = secret.trim();
+  const secretStr = trimmed.startsWith("whsec_") ? trimmed.slice(6) : trimmed;
   const keyBytes = Buffer.from(secretStr, "base64");
   const signedContent = `${msgId}.${timestamp}.${rawBody}`;
   const expected = createHmac("sha256", keyBytes).update(signedContent).digest("base64");
@@ -347,6 +348,41 @@ export async function registerWebhook(url: string): Promise<{ id?: string; signi
     id: out?.webhook?.id ?? out?.id,
     signingSecret: out?.signing_secret,
   };
+}
+
+/** On Render, log registered endpoints and re-enable ours if local demo turned it off. */
+export async function ensureCloudWebhook(): Promise<void> {
+  if (process.env.DEMO_RELAY_POLL === "1") return;
+  if (!relayConfigured()) return;
+  const base = (process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
+  if (!base.startsWith("https://")) return;
+  const want = `${base}/webhooks/relay`;
+  try {
+    const out = await api<{ webhooks?: { id: string; url: string; events?: string[]; enabled: boolean }[] }>(
+      "/v1/webhooks",
+      { method: "GET", timeoutMs: 8_000 },
+    );
+    const hooks = out?.webhooks ?? [];
+    console.log(`[relay] webhooks ${hooks.length} want=${want}`);
+    for (const w of hooks) {
+      console.log(`[relay] ${w.id} enabled=${w.enabled} url=${w.url}`);
+    }
+    const mine = hooks.find((w) => w.url.replace(/\/$/, "") === want);
+    if (!mine) {
+      console.error(`[relay] no webhook for ${want} — phone messages will not deliver`);
+      return;
+    }
+    if (!mine.enabled) {
+      await api(`/v1/webhooks/${mine.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: true }),
+        timeoutMs: 8_000,
+      });
+      console.log(`[relay] re-enabled ${mine.id}`);
+    }
+  } catch (e: any) {
+    console.warn(`[relay] webhook check: ${e?.message ?? e}`);
+  }
 }
 
 export async function verifyAgentToken(): Promise<{ id?: string; name?: string }> {

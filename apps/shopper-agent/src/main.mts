@@ -24,6 +24,7 @@ const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature
   "./linq-client.mts"
 );
 const {
+  ensureCloudWebhook,
   extractRelayInbound,
   pollEvents,
   relayConfigured,
@@ -97,7 +98,10 @@ function ingestRelayEvent(event: any): void {
   if (!rememberEvent(event.event_id ?? event.id)) return;
 
   const inbound = extractRelayInbound(event);
-  if (!inbound) return;
+  if (!inbound) {
+    console.warn("[shopper-agent] relay event dropped: missing inbound fields");
+    return;
+  }
 
   lastInboundAt = Date.now();
   inboundCount += 1;
@@ -204,11 +208,15 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "POST" && url.startsWith("/webhooks/relay")) {
     const raw = await readBody(req);
-    const secret = process.env.RELAY_WEBHOOK_SECRET;
+    const secret = process.env.RELAY_WEBHOOK_SECRET?.trim();
     if (secret) {
       const headers: Record<string, string | string[] | undefined> = {};
       for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
       if (!verifyRelayWebhookSignature(secret, raw, headers)) {
+        const signed = ["webhook-id", "webhook-timestamp", "webhook-signature"].filter(
+          (k) => headers[k] ?? headers[k.toLowerCase()],
+        );
+        console.warn(`[shopper-agent] relay webhook 401 headers=${signed.join(",") || "none"}`);
         fail(res, 401, "invalid signature");
         return;
       }
@@ -288,6 +296,7 @@ server.listen(PORT, () => {
   );
   logLlmClient("cognition", makeCognitiveLlm());
   logLlmClient("vision", makeVisionLlm());
+  void ensureCloudWebhook();
   void startRelayLongPoll();
   const pollMarketplace =
     Boolean(process.env.DATABASE_URL?.trim()) ||
