@@ -208,6 +208,7 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "POST" && url.startsWith("/webhooks/relay")) {
     const raw = await readBody(req);
+    console.log(`[shopper-agent] relay POST bytes=${raw.length}`);
     const secret = process.env.RELAY_WEBHOOK_SECRET?.trim();
     if (secret) {
       const headers: Record<string, string | string[] | undefined> = {};

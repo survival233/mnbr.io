@@ -95,7 +95,7 @@ export async function stopTyping(conversationId: string): Promise<void> {
 
 export async function markRead(conversationId: string, messageId: string): Promise<void> {
   try {
-    await api(`/v1/conversations/${conversationId}/read`, {
+    await api(`/v1/conversations/${conversationId}/responding`, {
       method: "POST",
       body: JSON.stringify({ message_id: messageId }),
       timeoutMs: 4_000,
@@ -114,14 +114,14 @@ export function verifyRelayWebhookSignature(
     const v = headers[k] ?? headers[k.toLowerCase()];
     return Array.isArray(v) ? v[0] : v;
   };
-  const msgId = h("webhook-id");
-  const timestamp = h("webhook-timestamp");
-  const signature = h("webhook-signature");
+  const msgId = h("webhook-id") ?? h("svix-id");
+  const timestamp = h("webhook-timestamp") ?? h("svix-timestamp");
+  const signature = h("webhook-signature") ?? h("svix-signature");
   if (!msgId || !timestamp || !signature) return false;
   const age = Math.abs(Date.now() / 1000 - Number(timestamp));
   if (!Number.isFinite(age) || age > 300) return false;
 
-  const trimmed = secret.trim();
+  const trimmed = secret.trim().replace(/^["']|["']$/g, "");
   const secretStr = trimmed.startsWith("whsec_") ? trimmed.slice(6) : trimmed;
   const keyBytes = Buffer.from(secretStr, "base64");
   const signedContent = `${msgId}.${timestamp}.${rawBody}`;
@@ -181,6 +181,9 @@ export async function ensureCloudWebhook(): Promise<void> {
   if (!base.startsWith("https://")) return;
   const want = `${base}/webhooks/relay`;
   try {
+    const me = await api<any>("/v1/agents/me", { method: "GET", timeoutMs: 8_000 });
+    const agent = me?.agent ?? me;
+    console.log(`[relay] agent handle=${agent?.handle ?? "?"} id=${agent?.id ?? "?"}`);
     const out = await api<{ webhooks?: { id: string; url: string; events?: string[]; enabled: boolean }[] }>(
       "/v1/webhooks",
       { method: "GET", timeoutMs: 8_000 },
@@ -188,20 +191,28 @@ export async function ensureCloudWebhook(): Promise<void> {
     const hooks = out?.webhooks ?? [];
     console.log(`[relay] webhooks ${hooks.length} want=${want}`);
     for (const w of hooks) {
-      console.log(`[relay] ${w.id} enabled=${w.enabled} url=${w.url}`);
+      console.log(`[relay] ${w.id} enabled=${w.enabled} url=${w.url} events=${(w.events ?? []).join(",")}`);
     }
-    const mine = hooks.find((w) => w.url.replace(/\/$/, "") === want);
+    const mine = hooks.find((w) => w.url.replace(/\/$/, "") === want) ?? hooks[0];
     if (!mine) {
       console.error(`[relay] no webhook for ${want} — phone messages will not deliver`);
       return;
     }
-    if (!mine.enabled) {
+    const events = mine.events ?? [];
+    const needEvents = !events.includes("message.received");
+    const needEnable = mine.enabled === false;
+    const needUrl = mine.url.replace(/\/$/, "") !== want;
+    if (needEvents || needEnable || needUrl) {
       await api(`/v1/webhooks/${mine.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ enabled: true }),
+        body: JSON.stringify({
+          ...(needUrl ? { url: want } : {}),
+          ...(needEnable ? { enabled: true } : {}),
+          ...(needEvents ? { events: ["message.received"] } : {}),
+        }),
         timeoutMs: 8_000,
       });
-      console.log(`[relay] re-enabled ${mine.id}`);
+      console.log(`[relay] patched ${mine.id} url=${needUrl} enabled=${needEnable} events=${needEvents}`);
     }
   } catch (e: any) {
     console.warn(`[relay] webhook check: ${e?.message ?? e}`);
