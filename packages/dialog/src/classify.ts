@@ -6,7 +6,7 @@ import { normalizeCity } from "@manebra/calendar";
 import { parseDate, parseUsdCents, categoryOf } from "./parse";
 import { parseItem } from "./item";
 import { fuzzyMatchIndex } from "./fuzzy";
-import { parseUsShoppingCity } from "./cities";
+import { parseShoppingCity, parseDeliveryTown } from "./cities";
 import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
 
 export type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
@@ -245,11 +245,11 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
     if (cents != null) return { ok: true, value: cents };
   }
   if (pending.slot === "shopping_city") {
-    const city = parseUsShoppingCity(t);
+    const city = parseShoppingCity(t);
     if (city) return { ok: true, value: city };
   }
   if (pending.slot === "delivery_city") {
-    const city = normalizeCity(t);
+    const city = parseDeliveryTown(t) ?? normalizeCity(t);
     if (city) return { ok: true, value: city };
   }
   if (pending.slot === "product") {
@@ -277,11 +277,11 @@ function detectRepair(s: DialogSession, text: string): ClassifiedTurn | null {
     if (d) return { act: "REPAIR", slot: "need_by", value: d.toISOString() };
   }
   if (s.deliveryCity && open !== "delivery_city") {
-    const city = normalizeCity(probe);
+    const city = parseDeliveryTown(probe) ?? normalizeCity(probe);
     if (city) return { act: "REPAIR", slot: "delivery_city", value: city };
   }
   if (s.shoppingCity && s.searchQuery && open !== "shopping_city") {
-    const city = parseUsShoppingCity(probe);
+    const city = parseShoppingCity(probe);
     if (city) return { act: "REPAIR", slot: "shopping_city", value: city };
   }
   if (s.maxFeeCents != null && open !== "delivery_fee") {

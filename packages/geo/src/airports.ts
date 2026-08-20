@@ -1,4 +1,4 @@
-/** IATA + city + country + metro. Same metro = one arrival city. Nearby cities are not grouped. */
+/** IATA + city + country + metro. Same hub airport = one arrival city. */
 
 export type AirportRow = {
   iata: string;
@@ -59,8 +59,33 @@ export const AIRPORTS: readonly AirportRow[] = [
   { iata: "PVG", city: "Shanghai", country: "CN", metro: "shanghai" },
   { iata: "SYD", city: "Sydney", country: "AU", metro: "sydney" },
   { iata: "GRU", city: "São Paulo", country: "BR", metro: "sao_paulo" },
+  { iata: "EZE", city: "Buenos Aires", country: "AR", metro: "buenos_aires" },
+  { iata: "AEP", city: "Buenos Aires", country: "AR", metro: "buenos_aires" },
+  { iata: "SJO", city: "San José", country: "CR", metro: "san_jose" },
   { iata: "YYZ", city: "Toronto", country: "CA", metro: "toronto" },
 ];
+
+/**
+ * Towns that share a hub airport's catchment. Not a country collapse:
+ * Accra ≠ Kumasi. Add a town here when it is served by that hub.
+ */
+export const CATCHMENTS: Record<string, string> = {
+  tema: "accra",
+  madina: "accra",
+  kasoa: "accra",
+  legon: "accra",
+  "east legon": "accra",
+  spintex: "accra",
+  "airport residential": "accra",
+  brooklyn: "new_york",
+  manhattan: "new_york",
+  queens: "new_york",
+  "east harlem": "new_york",
+  escazu: "san_jose",
+  "escazú": "san_jose",
+  quilmes: "buenos_aires",
+  avellaneda: "buenos_aires",
+};
 
 /** Extra names that are not IATA (airport names, common short forms). */
 export const ALIASES: Record<string, string> = {
@@ -83,4 +108,7 @@ export const ALIASES: Record<string, string> = {
   "hong kong": "hong_kong",
   "sao paulo": "sao_paulo",
   "são paulo": "sao_paulo",
+  "san jose": "san_jose",
+  "san josé": "san_jose",
+  "buenos aires": "buenos_aires",
 };

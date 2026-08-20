@@ -3,7 +3,7 @@
  * Never the full shopping-intent sentence.
  */
 import { parseDate, parseUsdCents } from "./parse";
-import { parseUsShoppingCity } from "./cities";
+import { parseShoppingCity, parseDeliveryTown } from "./cities";
 
 const WEEKDAY =
   /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)$/i;
@@ -87,7 +87,7 @@ function looksLikeProductName(s: string): boolean {
   if (parseUsdCents(s) != null && /^\$?\d/.test(s.trim()) && s.split(/\s+/).length <= 2) {
     return false;
   }
-  if (parseUsShoppingCity(s)) return false;
+  if (parseShoppingCity(s) || parseDeliveryTown(s)) return false;
   return true;
 }
 

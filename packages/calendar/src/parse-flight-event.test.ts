@@ -23,9 +23,13 @@ describe("normalizeCity", () => {
 });
 
 describe("inferDirection", () => {
-  it("detects both corridor directions", () => {
+  it("accepts any distinct origin→destination pair", () => {
     expect(inferDirection("New York", "Accra")).toBe("us_to_gh");
     expect(inferDirection("Accra", "New York")).toBe("gh_to_us");
+    expect(inferDirection("New York", "San José")).toBe("us_to_gh");
+    expect(inferDirection("London", "Buenos Aires")).toBe("us_to_gh");
+    expect(inferDirection("London", "New York")).toBe("gh_to_us");
+    expect(inferDirection("New York", "New York")).toBeNull();
   });
 });
 
@@ -46,7 +50,7 @@ describe("parseFlightEvent", () => {
     expect(r.trip.confidence).toBeGreaterThanOrEqual(0.7);
   });
 
-  it("parses 'Flight to Accra' with default US origin", () => {
+  it("parses 'Flight to Accra' without inventing an origin", () => {
     const r = parseFlightEvent({
       externalEventId: "ek-2",
       title: "Flight to Accra",
@@ -55,7 +59,7 @@ describe("parseFlightEvent", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.trip.destinationCity).toBe("Accra");
-    expect(r.trip.direction).toBe("us_to_gh");
+    expect(r.trip.departureCity).toBe("Unknown");
   });
 
   it("rejects birthday parties", () => {
@@ -68,14 +72,29 @@ describe("parseFlightEvent", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("rejects events outside the corridor", () => {
+  it("accepts a flight that is not a Ghana corridor", () => {
     const r = parseFlightEvent({
       externalEventId: "ek-4",
       title: "Flight BA178 LHR → JFK",
       startsAt: "2026-08-10T10:00:00Z",
     }, NOW);
-    // LHR→JFK: London is not Ghana, both non-Ghana → outside_corridor or us cities only
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.trip.departureCity).toBe("London");
+    expect(r.trip.destinationCity).toBe("New York");
+  });
+
+  it("parses a non-Ghana destination pair", () => {
+    const r = parseFlightEvent({
+      externalEventId: "ek-5",
+      title: "Flight AA900 JFK → EZE",
+      startsAt: "2026-08-18T22:00:00Z",
+    }, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.trip.departureCity).toBe("New York");
+    expect(r.trip.destinationCity).toBe("Buenos Aires");
+    expect(r.trip.direction).toBe("us_to_gh");
   });
 
   it("dedupes by externalEventId", () => {

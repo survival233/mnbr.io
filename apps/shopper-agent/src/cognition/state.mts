@@ -166,8 +166,8 @@ export function predictiveAsk(args: {
   }
   if (!args.shoppingCity) {
     return warm
-      ? `For “${item}”, which US city should I shop near? New York is usually solid.`
-      : `US shopping city for ${item}?`;
+      ? `For “${item}”, which town should I buy from (the traveler’s home)? I can search New York or Atlanta today.`
+      : `Buy-from town for ${item}?`;
   }
   if (!args.deliveryCity) {
     return warm ? "Which city should it land in?" : "Delivery city?";

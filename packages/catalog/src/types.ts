@@ -6,7 +6,7 @@ export interface ProductListing {
   storeSlug: "apple" | "bestbuy" | "walmart" | "target" | "amazon";
   productTitle: string;
   priceCents: number;
-  currency: "USD";
+  currency: string;
   availability: "in_stock" | "pickup_today" | "limited" | "out_of_stock" | "unknown";
   availabilityLabel: string;
   productUrl: string;

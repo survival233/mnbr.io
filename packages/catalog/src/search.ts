@@ -2,8 +2,9 @@ import type { ProductListing, ProductSearchResult } from "./types.js";
 import { searchGoogleShoppingLive, hasSerpApiKey } from "./serp-shopping.js";
 import { cacheListings, getCachedListing } from "./cache.js";
 import { supportedShoppingCities } from "./verified-stores.js";
+import { shopMarketForCity, NoShopMarketError } from "./markets.js";
 
-export { supportedShoppingCities, hasSerpApiKey };
+export { supportedShoppingCities, hasSerpApiKey, shopMarketForCity, NoShopMarketError };
 
 /**
  * Live product search across verified stores (Apple, Best Buy, Walmart, Target, Amazon).

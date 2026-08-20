@@ -14,6 +14,7 @@
     "@manebra/agents": "*",
     "@manebra/flights": "*",
     "@manebra/calendar": "*",
+    "@manebra/geo": "*",
     "@manebra/db": "*",
     "@manebra/settlement": "*"
   },

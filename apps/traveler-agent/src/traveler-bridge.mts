@@ -4,7 +4,8 @@
 import { createHash } from "node:crypto";
 import { suggestedTravelerFeeCents, computeFees } from "@manebra/shared";
 import { cityFromAirport, type FlightBooking } from "@manebra/flights";
-import { inferDirection, normalizeCity, sameDestinationCity } from "@manebra/calendar";
+import { inferDirection, normalizeCity } from "@manebra/calendar";
+import { hubCity, sameMetro } from "@manebra/geo";
 import { upsertLiveTrip, listOpenOffers, updateOffer, getOffer } from "@manebra/db";
 
 export type EarnOffer = {
@@ -64,11 +65,14 @@ export async function persistBookedTrip(args: {
 }): Promise<{ tripId: string | null; earnOffers: EarnOffer[] }> {
   const { booking } = args;
   const depCity =
-    normalizeCity(cityFromAirport(booking.offer.origin)) ?? cityFromAirport(booking.offer.origin);
+    hubCity(cityFromAirport(booking.offer.origin)) ??
+    normalizeCity(cityFromAirport(booking.offer.origin)) ??
+    cityFromAirport(booking.offer.origin);
   const destCity =
+    hubCity(cityFromAirport(booking.offer.destination)) ??
     normalizeCity(cityFromAirport(booking.offer.destination)) ??
     cityFromAirport(booking.offer.destination);
-  const direction = inferDirection(depCity, destCity) ?? "us_to_gh";
+  const direction = inferDirection(depCity, destCity);
 
   try {
     await upsertLiveTrip({
@@ -83,9 +87,9 @@ export async function persistBookedTrip(args: {
     console.warn(`[traveler-bridge] marketplace trip skipped: ${e?.message ?? e}`);
   }
 
-  if (!dbConfigured()) {
+  if (!dbConfigured() || !direction) {
     try {
-      const open = (await listOpenOffers()).filter((o) => sameDestinationCity(o.destinationCity, destCity));
+      const open = (await listOpenOffers()).filter((o) => sameMetro(o.destinationCity, destCity));
       return {
         tripId: null,
         earnOffers: open.slice(0, 3).map((o) => ({
@@ -123,7 +127,7 @@ export async function persistBookedTrip(args: {
 
     let earnOffers: EarnOffer[] = [];
     try {
-      const open = (await listOpenOffers()).filter((o) => sameDestinationCity(o.destinationCity, destCity));
+      const open = (await listOpenOffers()).filter((o) => sameMetro(o.destinationCity, destCity));
       for (const o of open.slice(0, 3)) {
         earnOffers.push({
           proposalId: `mkt-${o.id}`,

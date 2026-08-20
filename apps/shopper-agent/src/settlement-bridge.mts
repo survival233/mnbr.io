@@ -130,7 +130,7 @@ export type FundOrderResult = {
   fundTxHash: string;
 };
 
-async function ensureTravelers(prisma: typeof import("@manebra/db").prisma) {
+async function ensureTravelers(prisma: typeof import("@manebra/db").prisma, destinationCity: string) {
   const day = (n: number) => {
     const d = new Date();
     d.setUTCDate(d.getUTCDate() + n);
@@ -159,7 +159,7 @@ async function ensureTravelers(prisma: typeof import("@manebra/db").prisma) {
       },
     });
     const trip = await prisma.travelerTrip.findFirst({
-      where: { travelerId: t.id, status: "upcoming", destinationCity: "Accra" },
+      where: { travelerId: t.id, status: "upcoming", destinationCity },
     });
     if (!trip) {
       await prisma.travelerTrip.create({
@@ -167,7 +167,7 @@ async function ensureTravelers(prisma: typeof import("@manebra/db").prisma) {
           travelerId: t.id,
           direction: "us_to_gh",
           departureCity: "New York",
-          destinationCity: "Accra",
+          destinationCity,
           departureDate: day(t.daysUntilDep),
           luggageCapacityKg: 23,
           status: "upcoming",
@@ -219,16 +219,16 @@ export async function fundEscrowOrder(input: FundOrderInput): Promise<FundOrderR
   const { prisma } = await import("@manebra/db");
     const { appRouter } = await import("../../api/src/server/routers/_app.js");
 
-  await ensureTravelers(prisma);
+  await ensureTravelers(prisma, input.deliveryCity);
   const shopper = await ensureShopper(prisma, input.phone);
   const traveler = SEED_TRAVELERS.find((t) => t.id === input.travelerId);
   if (!traveler) throw new Error(`Unknown traveler ${input.travelerId}`);
 
   const trip = await prisma.travelerTrip.findFirst({
-    where: { travelerId: traveler.id, status: "upcoming", destinationCity: "Accra" },
+    where: { travelerId: traveler.id, status: "upcoming", destinationCity: input.deliveryCity },
     orderBy: { departureDate: "asc" },
   });
-  if (!trip) throw new Error(`No upcoming Accra trip for ${traveler.name}`);
+  if (!trip) throw new Error(`No upcoming trip to ${input.deliveryCity} for ${traveler.name}`);
 
   const category = (["electronics", "clothing_shoes", "cosmetics_sealed", "books_media", "food_sealed_nonperishable"].includes(
     input.category ?? "",

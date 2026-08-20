@@ -33,6 +33,7 @@ export interface ParsedFlightTrip {
   departureDate: Date; // local calendar day
   returnDate: Date | null;
   direction: "us_to_gh" | "gh_to_us";
+  // Prisma enum leftover; inferDirection accepts any origin→destination pair.
   /** 0–1. Below 0.7 should require traveler confirmation before job alerts. */
   confidence: number;
   /** Human-readable reasons that contributed to the parse. */
@@ -84,7 +85,7 @@ function extractRoute(blob: string): { from: string | null; to: string | null; s
 }
 
 /**
- * Parse one calendar event into a corridor trip, or reject it as not a flight.
+ * Parse one calendar event into a trip, or reject it as not a flight.
  * Past flights are accepted (status set by the caller); matching only uses upcoming.
  */
 export function parseFlightEvent(ev: CalendarEventInput, now: Date = new Date()): ParseResult {
@@ -102,8 +103,13 @@ export function parseFlightEvent(ev: CalendarEventInput, now: Date = new Date())
   const looksLikeFlight = FLIGHTISH.test(blob) || /\b[A-Z]{2}\s?\d{1,4}\b/.test(blob);
   const route = extractRoute(blob);
 
-  let from = normalizeCity(route.from);
-  let to = normalizeCity(route.to);
+  let from: string | null = normalizeCity(route.from);
+  let to: string | null = normalizeCity(route.to);
+
+  // "Flight to Accra" matches the X-to-Y pattern with origin "Flight"
+  if (route.from && /^(flight|fly|flying|depart(?:ure|ing)?|arriv(?:al|ing)?|boarding)$/i.test(route.from.trim())) {
+    from = null;
+  }
 
   // Location field often holds the destination airport alone
   if (!to) {
@@ -114,7 +120,7 @@ export function parseFlightEvent(ev: CalendarEventInput, now: Date = new Date())
     }
   }
 
-  // Title-only destination: "Accra trip" / "Ghana"
+  // Title-only destination: "Accra trip" / city name in title
   if (!to) {
     const titleCity = normalizeCity(title);
     if (titleCity) {
@@ -125,16 +131,15 @@ export function parseFlightEvent(ev: CalendarEventInput, now: Date = new Date())
 
   if (!to) return { ok: false, reason: "no_destination" };
 
-  // Default origin for US→GH corridor when only destination is known
   if (!from) {
-    from = "New York";
-    route.signals.push("default_origin:New York");
+    from = "Unknown";
+    route.signals.push("origin_unknown");
   }
 
   if (from === to) return { ok: false, reason: "same_city" };
 
   const direction = inferDirection(from, to);
-  if (!direction) return { ok: false, reason: "outside_corridor" };
+  if (!direction) return { ok: false, reason: "same_city" };
 
   // Confidence: flight keywords + explicit route > weak title city
   let confidence = 0.45;

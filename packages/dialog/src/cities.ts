@@ -1,4 +1,6 @@
-/** Strict US shopping-city helpers — never treat free chat as a city. */
+/** Buy-from / traveler-home town helpers. Never treat an advice question as a city. */
+
+import { guestTown, hubCity, resolveHub } from "@manebra/geo";
 
 export const US_SHOP_HUBS = [
   "New York",
@@ -72,4 +74,21 @@ export function parseUsShoppingCity(text: string): UsShopHub | null {
     }
   }
   return null;
+}
+
+/** Traveler-home / buy-from town. Known hub or catchment, not free chat. */
+export function parseShoppingCity(text: string): string | null {
+  if (isCityAdviceQuestion(text)) return null;
+  const us = parseUsShoppingCity(text);
+  if (us) return us;
+  return hubCity(text);
+}
+
+/** Shopper's town as they named it (Tema stays Tema; ACC → Accra). Known places only. */
+export function parseDeliveryTown(text: string): string | null {
+  if (isCityAdviceQuestion(text)) return null;
+  const t = text.trim();
+  if (!t || t.length > 60) return null;
+  if (!resolveHub(t)) return null;
+  return guestTown(t) ?? hubCity(t);
 }

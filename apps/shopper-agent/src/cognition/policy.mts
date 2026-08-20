@@ -18,7 +18,7 @@ import {
 import { HOSPITALITY_PERSONA, llmStayBlock, parseItem } from "@manebra/dialog";
 import {
   isCityAdviceQuestion,
-  parseUsShoppingCity,
+  parseShoppingCity,
   recommendUsCityBubble,
 } from "./cities.mts";
 
@@ -55,7 +55,7 @@ function entitiesSummary(s: Session): string {
   return JSON.stringify({
     product: s.searchQuery ?? s.cognition?.pending?.hypothesis ?? null,
     usCity: s.shoppingCity === "New York" ? null : s.shoppingCity,
-    ghCity: s.deliveryCity,
+    deliveryCity: s.deliveryCity,
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
     step: s.step,
@@ -121,7 +121,7 @@ export async function runPolicyTurn(args: {
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
         tone: cog.persona.communication,
-      }) ?? `Which US city should I shop in for ${product}? New York is usually strongest.`;
+      }) ?? `Which town should I buy ${product} from (the traveler’s home)? New York works for the US catalog.`;
     return {
       bubbles: [`Locked in — ${product}.`, ask],
       confirmedProduct: product,
@@ -141,7 +141,7 @@ export async function runPolicyTurn(args: {
 
   // Host-side city advice — never treat "which is best?" as a location
   if (step === "await_shopping_city" && text && isCityAdviceQuestion(text) && !hasMedia) {
-    appendEpisode(cog.memory, "clarify", "Asked which US city is best");
+    appendEpisode(cog.memory, "clarify", "Asked which buy-from town is best");
     return {
       bubbles: recommendUsCityBubble(s.searchQuery),
       fallthrough: false,
@@ -150,9 +150,9 @@ export async function runPolicyTurn(args: {
 
   // Host-side concrete city parse before LLM (fast + reliable)
   if (step === "await_shopping_city" && text && !hasMedia) {
-    const city = parseUsShoppingCity(text);
+    const city = parseShoppingCity(text);
     if (city) {
-      appendEpisode(cog.memory, "slot", `US city ${city}`, { usCity: city });
+      appendEpisode(cog.memory, "slot", `Buy-from town ${city}`, { usCity: city });
       return {
         bubbles: [],
         confirmedUsCity: city,
@@ -176,7 +176,7 @@ export async function runPolicyTurn(args: {
     if (step === "await_shopping_city" && text) {
       return {
         bubbles: [
-          `I need a real US city to search near — New York, Atlanta, Houston… Which one works?`,
+          `I need the traveler’s home town to buy from — New York or Atlanta if you want the US catalog. Which one works?`,
         ],
         fallthrough: false,
       };
@@ -328,7 +328,7 @@ export async function runPolicyTurn(args: {
 
   if (turn.action === "ask_user") {
     // If model tried to stuff a non-city into usCity, ignore it
-    const slotCity = turn.slots.usCity ? parseUsShoppingCity(turn.slots.usCity) : null;
+    const slotCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
     const ask =
       turn.askUser ??
       (step === "await_shopping_city"
@@ -359,7 +359,7 @@ export async function runPolicyTurn(args: {
       (cog.pending?.kind === "confirm_product" ? cog.pending.hypothesis : null);
     const product = rawProduct ? parseItem(rawProduct) : null;
 
-    const usCity = turn.slots.usCity ? parseUsShoppingCity(turn.slots.usCity) : null;
+    const usCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
     const safeSlots = { ...turn.slots, usCity };
 
     if (step === "await_shopping_city" && usCity) {
@@ -380,7 +380,7 @@ export async function runPolicyTurn(args: {
           predictiveAsk({
             product,
             shoppingCity: usCity ?? undefined,
-            deliveryCity: turn.slots.ghCity ?? s.deliveryCity,
+            deliveryCity: turn.slots.deliveryCity ?? s.deliveryCity,
             tone: cog.persona.communication,
           });
         return {
@@ -412,7 +412,7 @@ export async function runPolicyTurn(args: {
       bubbles: turn.askUser
         ? [turn.askUser]
         : [
-            `I need a US shopping city — New York or Atlanta are usually best. Which should I use?`,
+            `I need the traveler’s home town — New York or Atlanta if you want the US catalog. Which should I use?`,
           ],
       fallthrough: false,
       monologueLog: cog.lastMonologue,

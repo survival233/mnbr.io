@@ -215,12 +215,12 @@ function normalizeExtracted(o: any): ExtractedOrder {
 export async function extractOrder(cfg: LlmConfig, text: string): Promise<ExtractedOrder> {
   const today = new Date().toISOString().slice(0, 10);
   const system =
-    `You are the order-intake parser for a cross-border shopping platform (items bought in the US, ` +
-    `hand-delivered to Ghana by travelers). Today is ${today}. ` +
+    `You are the order-intake parser for a cross-border shopping platform (items bought in the traveler's home town, ` +
+    `hand-delivered by that traveler to the shopper's town). Today is ${today}. ` +
     `Extract ONLY what the user actually stated from their message into this exact JSON shape:\n` +
     `{"itemName": string|null, "shop": string|null, "city": string|null, "deadline": "YYYY-MM-DD"|null, ` +
     `"itemCostUsd": number|null, "maxFeeUsd": number|null, "category": string|null}\n` +
-    `Rules: city is the delivery city in Ghana (if they only say "Ghana", use null). ` +
+    `Rules: city is the delivery city (any city they named). ` +
     `deadline: resolve relative dates against today; if the year is omitted use the next future occurrence. ` +
     `itemCostUsd is the item's purchase price; maxFeeUsd is the maximum delivery/traveler fee they will pay — never confuse the two. ` +
     `category must be one of ${JSON.stringify(CATEGORIES)} judged from the item, or null if unclear. ` +
@@ -250,7 +250,7 @@ export interface CognitiveTurnResult {
   slots: {
     product?: string | null;
     usCity?: string | null;
-    ghCity?: string | null;
+    deliveryCity?: string | null;
     deadline?: string | null;
     maxFeeUsd?: number | null;
     category?: string | null;
@@ -267,7 +267,7 @@ export interface CognitiveTurnResult {
   episodeSummaryLine: string;
 }
 
-const COGNITIVE_SYSTEM = `You are the cognitive core for Manebra, a US→Ghana hand-delivery shopping agent.
+const COGNITIVE_SYSTEM = `You are the cognitive core for Manebra, a shopping agent: items bought in the traveler's home town, hand-delivered to the shopper's town.
 You MUST reply with ONE JSON object only (no markdown) matching this shape:
 {
   "monologue": {"observation": string, "hypothesis": string, "uncertainty": string, "next_move": string},
@@ -276,7 +276,7 @@ You MUST reply with ONE JSON object only (no markdown) matching this shape:
   "confidence": number,
   "confirmQuestion": string|null,
   "askUser": string|null,
-  "slots": {"product": string|null, "usCity": string|null, "ghCity": string|null, "deadline": string|null, "maxFeeUsd": number|null, "category": string|null},
+  "slots": {"product": string|null, "usCity": string|null, "deliveryCity": string|null, "deadline": string|null, "maxFeeUsd": number|null, "category": string|null},
   "personaUpdates": {"goals": string[]|null, "constraints": string[]|null, "beliefs": string[]|null, "openQuestions": string[]|null, "communication": "terse"|"warm"|"formal"|null},
   "conflict": {"kind": string, "message": string}|null,
   "proactiveAsk": string|null,
@@ -286,8 +286,8 @@ You MUST reply with ONE JSON object only (no markdown) matching this shape:
 Rules:
 - If the user sent an image of a product, identify it concretely (brand, model, color, size if visible). If confident, action=set_slots with product filled. If unsure, action=ask_user with one clarifying question. Never search the word "image".
 - Never invent a product if the image/text is unclear — action=ask_user.
-- ghCity = Ghana delivery city; usCity = US shopping city (must be a real US city name like New York, Atlanta — never put questions into slots).
-- If the user asks which city is best / for advice, action=ask_user and put a short recommendation in askUser (suggest New York or Atlanta), do NOT set usCity to their question text.
+- deliveryCity = shopper's town (any town they named). usCity = town to buy from = the traveler's home (any city they named — never put questions into slots).
+- If the user asks which city is best / for advice, action=ask_user and put a short recommendation in askUser (suggest New York or Atlanta for the current store catalog), do NOT set usCity to their question text.
 - If user affirms a pending product confirm, action=set_slots with product filled.
 - If user changes product mid-flow, set conflict and propose/ask accordingly.
 - proactiveAsk = one natural next question for a missing slot (never payment).
@@ -354,7 +354,7 @@ export async function runCognitiveTurn(
     slots: {
       product: o.slots?.product ?? null,
       usCity: o.slots?.usCity ?? null,
-      ghCity: o.slots?.ghCity ?? null,
+      deliveryCity: o.slots?.deliveryCity ?? o.slots?.ghCity ?? null,
       deadline: o.slots?.deadline ?? null,
       maxFeeUsd: typeof o.slots?.maxFeeUsd === "number" ? o.slots.maxFeeUsd : null,
       category: o.slots?.category ?? null,

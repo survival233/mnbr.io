@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents } from "@manebra/shared";
-import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
-import { resolveMetro, sameMetro } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey } from "@manebra/catalog";
+import { normalizeCity } from "@manebra/calendar";
+import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
+import { searchProducts, hasSerpApiKey, NoShopMarketError } from "@manebra/catalog";
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
 import {
@@ -49,12 +49,11 @@ import {
   writeOffer,
   updateOffer,
   getOffer,
-  listLiveTrips,
   listUpcomingTrips,
 } from "@manebra/db";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
-import { parseUsShoppingCity, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
+import { parseShoppingCity, parseDeliveryTown, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
 type TravelerSeed = {
   id: string;
   name: string;
@@ -66,6 +65,7 @@ type TravelerSeed = {
     id: string;
     travelerId: string;
     direction: "us_to_gh";
+    originCity?: string;
     destinationCity: string;
     departureDate: Date;
     status: "upcoming";
@@ -80,9 +80,15 @@ type TravelerSeed = {
   };
 };
 
-function seedTravelers(): TravelerSeed[] {
+function stampHub(city: string): string {
+  return hubCity(city) ?? resolveMetro(city)?.city ?? city;
+}
+
+function seedTravelers(destinationCity: string, originCity?: string): TravelerSeed[] {
   const now = new Date();
   const day = (n: number) => new Date(now.getTime() + n * 86400_000);
+  const dest = stampHub(destinationCity);
+  const origin = originCity ? stampHub(originCity) : undefined;
   return SEED_TRAVELERS.map((t) => ({
     id: t.id,
     name: t.name,
@@ -94,7 +100,8 @@ function seedTravelers(): TravelerSeed[] {
       id: `trip-${t.id}`,
       travelerId: t.id,
       direction: "us_to_gh" as const,
-      destinationCity: "Accra",
+      originCity: origin,
+      destinationCity: dest,
       departureDate: day(t.daysUntilDep),
       status: "upcoming" as const,
     },
@@ -256,7 +263,7 @@ function shopperIntakeLine(s: Session): string {
 
 /** Guest city ask — interpolates a parsed product only, never the raw utterance. */
 function shopCityPrompt(item: string): string {
-  return `Which US city should I shop in for ${item}? New York is usually solid.`;
+  return `Which town should I buy ${item} from (the traveler’s home)? I can search stores in New York or Atlanta today.`;
 }
 
 function namedProduct(raw: string): string | null {
@@ -289,9 +296,13 @@ function parkDestAsk(s: Session, prompt = DEST_ASK) {
 
 function commitDeliveryCity(s: Session, raw: string): void {
   const t = raw.trim();
-  s.deliveryCity = resolveMetro(t)?.city ?? normalizeCity(t) ?? t;
+  s.deliveryCity = parseDeliveryTown(t) ?? guestTownSafe(t);
   s.offer = undefined;
   markSessionDirty();
+}
+
+function guestTownSafe(raw: string): string {
+  return hubCity(raw) ?? resolveMetro(raw)?.city ?? normalizeCity(raw) ?? raw;
 }
 
 function isYes(text: string): boolean {
@@ -423,18 +434,28 @@ function upcomingOnOrAfter(d: Date, now: Date): boolean {
   return d.getTime() > now.getTime();
 }
 
-function eligibleLiveTrip(t: { destinationCity: string; departureDate: Date; optedIn?: boolean; status?: string }, city: string, now: Date): boolean {
+function eligibleLiveTrip(
+  t: { destinationCity: string; originCity?: string; departureDate: Date; optedIn?: boolean; status?: string },
+  dest: string,
+  now: Date,
+  origin?: string,
+): boolean {
   if (t.optedIn === false) return false;
   if (t.status && t.status !== "upcoming") return false;
   if (!upcomingOnOrAfter(t.departureDate, now)) return false;
-  return sameDestinationCity(t.destinationCity, city);
+  if (!sameMetro(t.destinationCity, dest)) return false;
+  if (origin && t.originCity && !sameMetro(t.originCity, origin)) return false;
+  return true;
 }
 
-async function loadLiveTravelers(city: string, deadline: Date): Promise<TravelerSeed[] | null> {
+async function loadLiveTravelers(city: string, deadline: Date, origin?: string): Promise<TravelerSeed[] | null> {
   const now = new Date();
-  const dest = normalizeCity(city) ?? city;
+  const dest = stampHub(city);
+  const home = origin ? stampHub(origin) : undefined;
   try {
-    const mkt = (await listLiveTrips(dest)).filter((t) => eligibleLiveTrip(t, dest, now));
+    const mkt = (await listUpcomingTrips()).filter((t) =>
+      eligibleLiveTrip({ ...t, originCity: t.originCity }, dest, now, home),
+    );
     if (mkt.length) {
       return mkt.map((t) => ({
         id: t.travelerId,
@@ -447,6 +468,7 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
           id: t.id,
           travelerId: t.travelerId,
           direction: "us_to_gh" as const,
+          originCity: t.originCity ? stampHub(t.originCity) : undefined,
           destinationCity: dest,
           departureDate: t.departureDate,
           status: "upcoming" as const,
@@ -470,15 +492,15 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
     const trips = await prisma.travelerTrip.findMany({
       where: {
         status: "upcoming",
-        direction: "us_to_gh",
-        destinationCity: dest,
         departureDate: { gt: now },
       },
       include: { traveler: true },
-      take: 20,
+      take: 40,
       orderBy: { departureDate: "asc" },
     });
-    const live = trips.filter((t) => eligibleLiveTrip(t, dest, now));
+    const live = trips.filter((t) =>
+      eligibleLiveTrip({ ...t, originCity: t.departureCity }, dest, now, home),
+    );
     if (!live.length) return null;
     return live.map((t) => ({
       id: t.travelerId,
@@ -491,6 +513,7 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
         id: t.id,
         travelerId: t.travelerId,
         direction: "us_to_gh" as const,
+        originCity: stampHub(t.departureCity),
         destinationCity: dest,
         departureDate: t.departureDate,
         status: "upcoming" as const,
@@ -510,20 +533,17 @@ async function loadLiveTravelers(city: string, deadline: Date): Promise<Traveler
   }
 }
 
-/** Live opted-in upcoming trips whose arrival metro matches. Seeds only if none. Origin unconstrained. */
-async function upcomingToDest(city: string): Promise<TravelerSeed[]> {
+/** Live opted-in upcoming trips whose arrival hub matches the shopper's town. Seeds only if none. */
+async function upcomingToDest(city: string, origin?: string): Promise<TravelerSeed[]> {
   const now = new Date();
   if (!resolveMetro(city)) return [];
-  const dest = resolveMetro(city)!.city;
+  const dest = stampHub(city);
+  const home = origin ? stampHub(origin) : undefined;
   let live: TravelerSeed[] = [];
   try {
     live = (await listUpcomingTrips())
-      .filter(
-        (t) =>
-          t.optedIn &&
-          t.status === "upcoming" &&
-          upcomingOnOrAfter(t.departureDate, now) &&
-          sameMetro(t.destinationCity, city),
+      .filter((t) =>
+        eligibleLiveTrip({ ...t, originCity: t.originCity }, dest, now, home),
       )
       .map((t) => ({
         id: t.travelerId,
@@ -536,6 +556,7 @@ async function upcomingToDest(city: string): Promise<TravelerSeed[]> {
           id: t.id,
           travelerId: t.travelerId,
           direction: "us_to_gh" as const,
+          originCity: t.originCity ? stampHub(t.originCity) : undefined,
           destinationCity: dest,
           departureDate: t.departureDate,
           status: "upcoming" as const,
@@ -552,9 +573,9 @@ async function upcomingToDest(city: string): Promise<TravelerSeed[]> {
   } catch (e: any) {
     console.warn(`[shopper-agent] upcoming trips unavailable: ${e?.message ?? e}`);
   }
-  const pool = live.length ? live : seedTravelers();
+  const pool = live.length ? live : seedTravelers(dest, home);
   return pool
-    .filter((t) => upcomingOnOrAfter(t.trip.departureDate, now) && sameMetro(t.trip.destinationCity, city))
+    .filter((t) => eligibleLiveTrip(t.trip, dest, now, home))
     .sort((a, b) => a.trip.departureDate.getTime() - b.trip.departureDate.getTime());
 }
 
@@ -574,7 +595,7 @@ async function commitStretch(s: Session): Promise<boolean> {
   const fromLabel = parseDepartLabel(alt.departs);
   if (fromLabel) return commitNeedBy(s, fromLabel);
   const dest = s.deliveryCity ?? "";
-  const trips = dest ? await upcomingToDest(dest) : [];
+  const trips = dest ? await upcomingToDest(dest, s.shoppingCity) : [];
   const t = trips.find((x) => x.id === alt.id);
   if (!t) return false;
   return commitNeedBy(s, t.trip.departureDate);
@@ -589,10 +610,10 @@ function dateAskPrompt(dest: string, proposed: string | null): string {
 
 async function askNeedBy(s: Session, act?: ClassifiedTurn["act"]): Promise<void> {
   s.step = "await_deadline";
-  const dest = s.deliveryCity ? (resolveMetro(s.deliveryCity)?.city ?? s.deliveryCity) : "";
-  const trips = dest ? await upcomingToDest(s.deliveryCity ?? dest) : [];
+  const dest = s.deliveryCity ?? "";
+  const trips = dest ? await upcomingToDest(s.deliveryCity ?? dest, s.shoppingCity) : [];
   const proposed = trips[0] ? guestDate(trips[0].trip.departureDate) : null;
-  const prompt = dateAskPrompt(dest || "your city", proposed);
+  const prompt = dateAskPrompt(s.deliveryCity || dest || "your city", proposed);
   if (proposed) {
     setOffer(s, "deadline", proposed, prompt);
     const seen = new Set<string>();
@@ -620,11 +641,12 @@ async function runMatching(s: Session): Promise<string> {
   const city = s.deliveryCity!;
   const deadline = endOfLocalDay(s.deadline!);
   const category = s.category ?? categoryOf(selected.productTitle) ?? "electronics";
-  const dest = normalizeCity(city) ?? city;
-  const live = await loadLiveTravelers(city, deadline);
+  const dest = stampHub(city);
+  const home = s.shoppingCity ? stampHub(s.shoppingCity) : undefined;
+  const live = await loadLiveTravelers(city, deadline, home);
   const now = new Date();
-  const pool = live ?? seedTravelers();
-  const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now));
+  const pool = live ?? seedTravelers(dest, home);
+  const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now, home));
   const itemRequest = {
     id: "item-linq",
     direction: "us_to_gh" as const,
@@ -792,6 +814,9 @@ async function searchAndPromptListings(s: Session): Promise<string> {
     console.warn(`[shopper-agent] search failed: ${e?.message ?? e}`);
     s.step = "await_product";
     markSessionDirty();
+    if (e instanceof NoShopMarketError) {
+      return `I don’t have a store catalog for ${e.city} yet — I can search New York or Atlanta today. Which town should I buy from?`;
+    }
     return `Search hiccupped on me. What should I look for instead?`;
   }
   if (!s.listings?.length) {
@@ -899,7 +924,7 @@ function hydratePending(s: Session): void {
     if (s.deliveryCity) setOffer(s, "deliveryCity", s.deliveryCity, DEST_ASK);
     else parkDestAsk(s);
   } else if (s.step === "await_shopping_city") {
-    setOffer(s, "shoppingCity", "New York", "Which US city should I shop in? New York is usually solid.");
+    setOffer(s, "shoppingCity", "New York", "Which town should I buy from (the traveler’s home)? New York works if you want the US catalog.");
   } else if (s.step === "await_product") {
     if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
@@ -919,7 +944,7 @@ function reaskPrompt(s: Session): string {
         : s.step === "await_delivery_city"
           ? DEST_ASK
           : s.step === "await_shopping_city"
-            ? "Which US city should I shop in? New York is usually solid."
+            ? "Which town should I buy from (the traveler’s home)? New York works if you want the US catalog."
             : s.step === "await_product"
               ? shopperIntakeLine(s)
             : s.step === "await_listing"
@@ -1354,6 +1379,7 @@ function applyCognitiveSlots(
   slots: {
     product?: string | null;
     usCity?: string | null;
+    deliveryCity?: string | null;
     ghCity?: string | null;
     deadline?: string | null;
     maxFeeUsd?: number | null;
@@ -1361,10 +1387,11 @@ function applyCognitiveSlots(
   },
 ) {
   if (slots.usCity) {
-    const us = parseUsShoppingCity(slots.usCity);
-    if (us) s.shoppingCity = us;
+    const buyFrom = parseShoppingCity(slots.usCity);
+    if (buyFrom) s.shoppingCity = buyFrom;
   }
-  if (slots.ghCity) s.deliveryCity = normalizeCity(slots.ghCity) ?? slots.ghCity;
+  const dest = slots.deliveryCity ?? slots.ghCity;
+  if (dest) s.deliveryCity = parseDeliveryTown(dest) ?? dest;
   if (slots.deadline) s.deadline = parseDate(slots.deadline) ?? undefined;
   if (typeof slots.maxFeeUsd === "number" && slots.maxFeeUsd > 0) {
     s.maxFeeCents = Math.round(slots.maxFeeUsd * 100);
@@ -1674,7 +1701,7 @@ async function handleInboundInner(
           if (o && (o as any).itemName) {
             query = namedProduct(String((o as any).itemName)) ?? query;
           }
-          if (o && (o as any).city) s.deliveryCity = normalizeCity((o as any).city) ?? (o as any).city;
+          if (o && (o as any).city) s.deliveryCity = parseDeliveryTown((o as any).city) ?? (o as any).city;
           if (o && (o as any).deadline) s.deadline = parseDate((o as any).deadline) ?? undefined;
           if (o && (o as any).maxFeeUsd) s.maxFeeCents = Math.round((o as any).maxFeeUsd * 100);
           if (o && (o as any).category) s.category = (o as any).category;
@@ -1705,18 +1732,18 @@ async function handleInboundInner(
       }
       if (/^(thanks|thank you|cool|great)\.?$/i.test(text)) {
         setOffer(s, "shoppingCity", s.offer?.field === "shoppingCity" ? s.offer.value : "New York");
-        await reply(s, `Still on this — which US city should I search near? New York is usually strongest.`);
+        await reply(s, `Still on this — which town should I buy from (the traveler’s home)? New York works for the US catalog.`);
         return;
       }
       if (isCityAdviceQuestion(text)) {
         await say(s, ...recommendUsCityBubble(s.searchQuery));
         return;
       }
-      const city = parseUsShoppingCity(text);
+      const city = parseShoppingCity(text);
       if (!city) {
         await reply(
           s,
-          `I need a real US shopping city — try New York, Atlanta, Houston, or LA.`,
+          `I need the traveler’s home town — try New York or Atlanta if you want the US store catalog, or another known city.`,
         );
         return;
       }

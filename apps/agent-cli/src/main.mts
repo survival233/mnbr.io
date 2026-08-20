@@ -135,7 +135,7 @@ async function main() {
   const usdc = getContract({ address: usdcAddr, abi: A.MockUSDC.abi, client: { public: pub, wallet: operator } });
   okk(`escrow contract live at ${escrowAddr.slice(0, 10)}…  treasury ${treasury.slice(0, 10)}…`);
 
-  // seeded marketplace: three verified travelers with upcoming trips to Accra
+  // seeded marketplace: three verified travelers (destination filled when the shopper names a city)
   const now = new Date();
   const day = (n: number) => new Date(now.getTime() + n * 86400_000);
   const travelers = [
@@ -144,10 +144,10 @@ async function main() {
     { id: "t-new",  name: "Nana (new)", trustScore: 100, avgRating: null, totalDeliveries: 1, minFeeCents: 1200, dep: day(9) },
   ].map((t) => ({
     ...t,
-    trip: { id: `trip-${t.id}`, travelerId: t.id, direction: "us_to_gh" as const, destinationCity: "Accra", departureDate: t.dep, status: "upcoming" as const },
+    trip: { id: `trip-${t.id}`, travelerId: t.id, direction: "us_to_gh" as const, destinationCity: "", departureDate: t.dep, status: "upcoming" as const },
     profile: { id: t.id, isVerified: true, accountStatus: "active" as const, trustScore: t.trustScore, avgRating: t.avgRating, totalDeliveries: t.totalDeliveries },
   }));
-  okk(`marketplace seeded: ${travelers.length} verified travelers with upcoming US→Accra trips`);
+  okk(`marketplace seeded: ${travelers.length} verified travelers with upcoming trips`);
   for (const t of travelers) sub(`${t.name} departs ${t.trip.departureDate.toDateString()}`);
   hr();
 
@@ -251,14 +251,18 @@ async function main() {
   category ??= selected.category;
   okk(`selected ${shop} — ${itemName} at ${formatUsd(itemCostCents)}`);
 
-  city ??= await ask("Deliver to which city in Ghana?", "Accra");
+  if (!city) {
+    if (AUTO) { bad("delivery city required"); process.exit(1); }
+    city = await ask("Deliver to which city?");
+  }
   {
     const normalized = normalizeCity(city);
     if (normalized && normalized !== city) {
-      okk(`delivery city normalized: ${city} → ${normalized} (Greater Accra corridor)`);
+      okk(`delivery city normalized: ${city} → ${normalized}`);
     }
     city = normalized ?? city;
   }
+  for (const t of travelers) t.trip.destinationCity = city;
   while (!deadline) {
     const raw = await ask('Deliver by when? (e.g. "15th August")', "15th August");
     deadline = parseDate(raw);
@@ -272,7 +276,7 @@ async function main() {
     (await ask("Category? (electronics / clothing_shoes / cosmetics_sealed / books_media / food_sealed_nonperishable)", "electronics"));
   hr();
   tag("order", `${C.b}"${itemName}"${C.x} from ${shop}`);
-  sub(`category: ${category}   shop in: ${shoppingCity}   deliver to: ${city}, Ghana   by: ${deadline.toDateString()}`);
+  sub(`category: ${category}   shop in: ${shoppingCity}   deliver to: ${city}   by: ${deadline.toDateString()}`);
   sub(`item price: ${formatUsd(itemCostCents)}   your max delivery fee: ${formatUsd(maxFeeCents)}`);
   if (productUrl) sub(`product: ${productUrl}`);
   hr();
@@ -280,7 +284,7 @@ async function main() {
   // ── 2. compliance gates (kernel) ─────────────────────────────────────────
   tag("compliance", "checking the item against platform rules…");
   const allowed = { us_to_gh: ["electronics", "clothing_shoes", "cosmetics_sealed", "books_media", "food_sealed_nonperishable"] };
-  if (!allowed.us_to_gh.includes(category)) { bad(`category '${category}' is not allowed US→GH — request rejected`); process.exit(1); }
+  if (!allowed.us_to_gh.includes(category)) { bad(`category '${category}' is not allowed — request rejected`); process.exit(1); }
   okk(`category '${category}' allowed for us_to_gh (per-direction allowlist)`);
   okk("item auto-approved for listing (review queue would catch flagged categories)");
   const itemRequest = {

@@ -22,6 +22,7 @@ describe("parseItem — product only, never the utterance", () => {
 
   it("does not treat a city or date as an item", () => {
     expect(parseItem("New York")).toBeNull();
+    expect(parseItem("Tema")).toBeNull();
     expect(parseItem("tomorrow")).toBeNull();
   });
 });

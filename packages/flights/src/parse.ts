@@ -1,4 +1,5 @@
 import { normalizeCity } from "@manebra/calendar";
+import { hubCity } from "@manebra/geo";
 import type { FlightSearchQuery } from "./types.js";
 
 const CITY_AIRPORTS: Record<string, string> = {
@@ -15,18 +16,25 @@ const CITY_AIRPORTS: Record<string, string> = {
   Kumasi: "KMS",
   Tamale: "TML",
   London: "LHR",
+  "San José": "SJO",
+  "Buenos Aires": "EZE",
 };
 
 const ALIASES: Record<string, string> = {
   nyc: "JFK",
   "new york city": "JFK",
   manhattan: "JFK",
-  ghana: "ACC",
   accra: "ACC",
   jfk: "JFK",
   lga: "LGA",
   ewr: "EWR",
   acc: "ACC",
+  sjo: "SJO",
+  eze: "EZE",
+  aep: "AEP",
+  "san jose": "SJO",
+  "san josé": "SJO",
+  "buenos aires": "EZE",
 };
 
 export function toAirportCode(raw: string): string | null {
@@ -38,7 +46,7 @@ export function toAirportCode(raw: string): string | null {
   if (city && CITY_AIRPORTS[city]) return CITY_AIRPORTS[city]!;
   // "New York JFK" / "JFK New York"
   const KNOWN = new Set([
-    "JFK", "LGA", "EWR", "ACC", "ATL", "ORD", "IAH", "LAX", "DFW", "BOS", "IAD", "DCA", "KMS", "TML", "LHR",
+    "JFK", "LGA", "EWR", "ACC", "ATL", "ORD", "IAH", "LAX", "DFW", "BOS", "IAD", "DCA", "KMS", "TML", "LHR", "SJO", "EZE", "AEP",
   ]);
   const codeTok = t.match(/\b([a-z]{3})\b/i);
   if (codeTok) {
@@ -253,22 +261,5 @@ export function isTravelIntent(text: string): boolean {
 }
 
 export function cityFromAirport(code: string): string {
-  const m: Record<string, string> = {
-    JFK: "New York",
-    LGA: "New York",
-    EWR: "Newark",
-    IAD: "Washington",
-    DCA: "Washington",
-    ATL: "Atlanta",
-    ORD: "Chicago",
-    IAH: "Houston",
-    LAX: "Los Angeles",
-    DFW: "Dallas",
-    BOS: "Boston",
-    ACC: "Accra",
-    KMS: "Kumasi",
-    TML: "Tamale",
-    LHR: "London",
-  };
-  return m[code.toUpperCase()] ?? code;
+  return hubCity(code) ?? code;
 }

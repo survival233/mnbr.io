@@ -1,4 +1,4 @@
-import { AIRPORTS, ALIASES, type AirportRow } from "./airports";
+import { AIRPORTS, ALIASES, CATCHMENTS, type AirportRow } from "./airports";
 
 export type Metro = {
   id: string;
@@ -40,29 +40,64 @@ function metroOf(row: AirportRow): Metro {
   return { id: row.metro, city: row.city, country: row.country };
 }
 
-/**
- * Resolve free text or a stored trip city to a metro.
- * IATA, city, and airport aliases share a metro. Unknown proper names get their own metro.
- * Nearby cities are not collapsed.
- */
-export function resolveMetro(raw?: string | null): Metro | null {
-  if (!raw?.trim()) return null;
-  const t = clean(raw);
-  if (!t) return null;
-
+function lookupKnown(t: string): Metro | null {
   if (/^[a-z]{3}$/.test(t) && BY_IATA.has(t)) return metroOf(BY_IATA.get(t)!);
 
-  const alias = ALIASES[t];
-  if (alias && BY_METRO.has(alias)) return metroOf(BY_METRO.get(alias)!);
+  const named = ALIASES[t] ?? CATCHMENTS[t];
+  if (named && BY_METRO.has(named)) return metroOf(BY_METRO.get(named)!);
 
   if (BY_CITY.has(t)) return metroOf(BY_CITY.get(t)!);
   if (BY_METRO.has(slug(t))) return metroOf(BY_METRO.get(slug(t))!);
 
   for (const tok of t.split(/[\s\-–—/|]+/)) {
     if (tok.length === 3 && BY_IATA.has(tok)) return metroOf(BY_IATA.get(tok)!);
-    if (ALIASES[tok] && BY_METRO.has(ALIASES[tok]!)) return metroOf(BY_METRO.get(ALIASES[tok]!)!);
+    const tokNamed = ALIASES[tok] ?? CATCHMENTS[tok];
+    if (tokNamed && BY_METRO.has(tokNamed)) return metroOf(BY_METRO.get(tokNamed)!);
     if (BY_CITY.has(tok)) return metroOf(BY_CITY.get(tok)!);
   }
+  return null;
+}
+
+/**
+ * IATA, hub city, airport alias, or catchment town → metro.
+ * Unknown proper names are not hubs (use resolveMetro for those).
+ */
+export function resolveHub(raw?: string | null): Metro | null {
+  if (!raw?.trim()) return null;
+  const t = clean(raw);
+  if (!t) return null;
+  return lookupKnown(t);
+}
+
+/** Canonical hub city for matching stamps (Tema → Accra, ACC → Accra). */
+export function hubCity(raw?: string | null): string | null {
+  return resolveHub(raw)?.city ?? null;
+}
+
+/** Guest-facing town: catchment names stay (Tema), hubs use the airport city (Accra). */
+export function guestTown(raw?: string | null): string | null {
+  if (!raw?.trim()) return null;
+  const t = clean(raw);
+  if (!t) return null;
+  if (CATCHMENTS[t]) return titleCity(raw);
+  const known = lookupKnown(t);
+  if (known) return known.city;
+  if (/^[a-z][a-z\s'-]{1,40}$/.test(t)) return titleCity(raw);
+  return null;
+}
+
+/**
+ * Resolve free text or a stored trip city to a metro.
+ * Known hubs and catchment towns share a metro. Unknown proper names get their own.
+ * A different hub city is never collapsed (Accra ≠ Kumasi).
+ */
+export function resolveMetro(raw?: string | null): Metro | null {
+  if (!raw?.trim()) return null;
+  const t = clean(raw);
+  if (!t) return null;
+
+  const known = lookupKnown(t);
+  if (known) return known;
 
   if (/^[a-z][a-z\s'-]{1,40}$/.test(t)) {
     const id = slug(t);
@@ -72,7 +107,7 @@ export function resolveMetro(raw?: string | null): Metro | null {
   return null;
 }
 
-/** Arrival match: same metro only. Accra ≠ Kumasi. JFK = New York. */
+/** Same hub or catchment. Accra = Tema. Accra ≠ Kumasi. JFK = New York. */
 export function sameMetro(a?: string | null, b?: string | null): boolean {
   const ma = resolveMetro(a);
   const mb = resolveMetro(b);

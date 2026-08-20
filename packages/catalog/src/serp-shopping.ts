@@ -6,6 +6,7 @@
 import type { ProductListing } from "./types.js";
 import { matchVerifiedStore } from "./verified-stores.js";
 import { listingIdFor } from "./cache.js";
+import { shopMarketForCity, NoShopMarketError } from "./markets.js";
 
 export function hasSerpApiKey(): boolean {
   return Boolean(process.env.SERPAPI_API_KEY?.trim());
@@ -71,14 +72,17 @@ export async function searchGoogleShoppingLive(args: {
     );
   }
 
+  const market = shopMarketForCity(args.shoppingCity);
+  if (!market) throw new NoShopMarketError(args.shoppingCity);
+
   const params = new URLSearchParams({
     engine: "google_shopping",
     q: args.query,
     api_key: apiKey,
     hl: "en",
-    gl: "us",
+    gl: market.gl,
     num: "40",
-    location: `${args.shoppingCity}, United States`,
+    location: `${args.shoppingCity}, ${market.locationCountry}`,
   });
 
   const res = await fetch(`https://serpapi.com/search.json?${params}`);
@@ -107,7 +111,7 @@ export async function searchGoogleShoppingLive(args: {
       storeSlug: store.slug,
       productTitle: item.title,
       priceCents,
-      currency: "USD",
+      currency: market.currency,
       availability: avail.availability,
       availabilityLabel: avail.availabilityLabel,
       productUrl: url,

@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@manebra/shared": "*",
-    "@manebra/calendar": "*"
+    "@manebra/calendar": "*",
+    "@manebra/geo": "*"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

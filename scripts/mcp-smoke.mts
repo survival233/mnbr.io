@@ -25,7 +25,7 @@ const call = async (name: string, args: Record<string, unknown> = {}) => {
 const tools = await client.listTools();
 console.log(`connected — ${tools.tools.length} tools exposed`);
 
-const seed = await call("setup_marketplace");
+const seed = await call("setup_marketplace", { destinationCity: "Accra" });
 const item = await call("create_item_request", {
   shopperId: seed.shopperId, itemName: "iPhone 16 Pro", priceUsd: 999,
   city: "Accra", category: "electronics",

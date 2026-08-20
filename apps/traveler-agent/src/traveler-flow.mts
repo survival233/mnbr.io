@@ -18,7 +18,7 @@ import {
 } from "@manebra/db";
 import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
 import { isTravelIntent } from "@manebra/flights";
-import { normalizeCity, sameDestinationCity } from "@manebra/calendar";
+import { hubCity, sameMetro } from "@manebra/geo";
 import {
   classifyTurn,
   composeHostReply,
@@ -132,13 +132,13 @@ function carryUsd(cents: number): string {
 function travelerDestination(s: Session): string | null {
   const raw = s.trip?.destination ?? s.travelDestination;
   if (!raw?.trim()) return null;
-  return normalizeCity(raw) ?? raw.trim();
+  return hubCity(raw) ?? raw.trim();
 }
 
 function offerFitsThisTraveler(s: Session, offer: { destinationCity?: string | null }): boolean {
   const dest = travelerDestination(s);
   if (!dest || !offer.destinationCity) return false;
-  return sameDestinationCity(offer.destinationCity, dest);
+  return sameMetro(offer.destinationCity, dest);
 }
 
 function requestInvite(s: Session, offer: { item: string; travelerFeeCents: number; totalCents: number; needBy: Date | null; destinationCity?: string | null }): string[] {

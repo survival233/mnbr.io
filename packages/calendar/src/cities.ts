@@ -1,7 +1,6 @@
 /**
- * City + airport normalization for the US↔Ghana corridor.
- * Matching uses exact destinationCity strings today; without this, "ACC",
- * "Kotoka", and "Accra" would never match each other.
+ * City + airport normalization. Known IATA/aliases collapse to one name;
+ * any other proper name is kept as-is so origin→destination is not a corridor.
  */
 
 export type CorridorCity =
@@ -17,7 +16,9 @@ export type CorridorCity =
   | "Los Angeles"
   | "Dallas"
   | "Boston"
-  | "London";
+  | "London"
+  | "San José"
+  | "Buenos Aires";
 
 const ALIASES: Record<string, CorridorCity> = {
   // Ghana
@@ -71,6 +72,12 @@ const ALIASES: Record<string, CorridorCity> = {
   london: "London",
   lhr: "London",
   heathrow: "London",
+  sjo: "San José",
+  "san jose": "San José",
+  "san josé": "San José",
+  eze: "Buenos Aires",
+  aep: "Buenos Aires",
+  "buenos aires": "Buenos Aires",
 };
 
 const GHANA: ReadonlySet<string> = new Set(["Accra", "Kumasi", "Tamale"]);
@@ -113,15 +120,19 @@ export function isUsCity(city: string): boolean {
   return US.has(city);
 }
 
-/** Infer TripDirection from origin/destination. Returns null if ambiguous. */
+/**
+ * Lane for Prisma TripDirection (enum is still us_to_gh | gh_to_us).
+ * Any distinct origin→destination is a trip. Inbound to a US hub is gh_to_us;
+ * every other pair is us_to_gh. Not a Ghana check.
+ */
 export function inferDirection(
   departureCity: string,
   destinationCity: string,
 ): "us_to_gh" | "gh_to_us" | null {
-  if (isUsCity(departureCity) && isGhanaCity(destinationCity)) return "us_to_gh";
-  if (isGhanaCity(departureCity) && isUsCity(destinationCity)) return "gh_to_us";
-  // transit via London still lands in the corridor if one end is Ghana
-  if (isGhanaCity(destinationCity) && !isGhanaCity(departureCity)) return "us_to_gh";
-  if (isGhanaCity(departureCity) && !isGhanaCity(destinationCity)) return "gh_to_us";
-  return null;
+  const from = (normalizeCity(departureCity) ?? departureCity).trim();
+  const to = (normalizeCity(destinationCity) ?? destinationCity).trim();
+  if (!from || !to) return null;
+  if (from.toLowerCase() === to.toLowerCase()) return null;
+  if (isUsCity(to) && !isUsCity(from)) return "gh_to_us";
+  return "us_to_gh";
 }

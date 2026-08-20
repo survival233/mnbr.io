@@ -11,6 +11,7 @@ import {
   type FlightOption,
 } from "@manebra/flights";
 import { normalizeCity } from "@manebra/calendar";
+import { hubCity } from "@manebra/geo";
 import { upsertLiveTrip } from "@manebra/db";
 import type { Session } from "./session.mts";
 import {
@@ -65,7 +66,13 @@ function parkAsk(s: Session, slot: DialogPendingSlot["slot"], prompt: string, pr
 
 function tripCity(raw?: string): string | null {
   if (!raw) return null;
-  return normalizeCity(raw) ?? normalizeCity(cityFromAirport(raw)) ?? (raw.trim() || null);
+  return (
+    hubCity(raw) ??
+    hubCity(cityFromAirport(raw)) ??
+    normalizeCity(raw) ??
+    normalizeCity(cityFromAirport(raw)) ??
+    (raw.trim() || null)
+  );
 }
 
 function tripDate(raw?: string): Date {

@@ -151,8 +151,14 @@ server.registerTool("platform_status", {
 }));
 
 server.registerTool("setup_marketplace", {
-  description: "Seed (or reset) a demo marketplace: one verified shopper and three verified travelers with upcoming US→Ghana trips. Returns their ids — use them in the other tools.",
-}, async () => {
+  description: "Seed (or reset) a demo marketplace: one verified shopper and three verified travelers with upcoming trips to destinationCity. Returns their ids — use them in the other tools.",
+  inputSchema: {
+    destinationCity: z.string().min(1),
+    departureCity: z.string().min(1).optional(),
+  },
+}, async (a) => {
+  const dest = a.destinationCity;
+  const origin = a.departureCity ?? "New York";
   const emails = ["mcp-shopper@manebra.test", "mcp-ama@manebra.test", "mcp-kofi@manebra.test", "mcp-nana@manebra.test"];
   const old = await prisma.user.findMany({ where: { email: { in: emails } } });
   const oldIds = old.map((u) => u.id);
@@ -177,7 +183,7 @@ server.registerTool("setup_marketplace", {
   const trips: Awaited<ReturnType<typeof prisma.travelerTrip.create>>[] = [];
   for (const t of travelers) {
     trips.push(await prisma.travelerTrip.create({
-      data: { travelerId: t.u.id, direction: "us_to_gh", departureCity: "New York", destinationCity: "Accra", departureDate: day(t.dep), luggageCapacityKg: 23, status: "upcoming" },
+      data: { travelerId: t.u.id, direction: "us_to_gh", departureCity: origin, destinationCity: dest, departureDate: day(t.dep), luggageCapacityKg: 23, status: "upcoming" },
     }));
   }
   return json({
@@ -204,7 +210,7 @@ server.registerTool("create_from_listing", {
     shopperId: z.string().uuid(),
     listingId: z.string(),
     shoppingCity: z.string().default("New York"),
-    destinationCity: z.string().default("Accra"),
+    destinationCity: z.string().min(1),
     neededByIso: z.string(),
     quantity: z.number().int().min(1).max(10).default(1),
     notes: z.string().optional(),
@@ -229,7 +235,7 @@ server.registerTool("create_shopping_request", {
     priceUsd: z.number().positive(),
     productUrl: z.string().optional(),
     shoppingCity: z.string().default("New York"),
-    destinationCity: z.string().default("Accra"),
+    destinationCity: z.string().min(1),
     neededByIso: z.string().describe("YYYY-MM-DD"),
     quantity: z.number().int().min(1).max(10).default(1),
     notes: z.string().optional(),
@@ -264,12 +270,12 @@ server.registerTool("decline_job", {
 }, async (a) => json(await caller(a.travelerId).matches.decline({ proposalId: a.proposalId })));
 
 server.registerTool("create_item_request", {
-  description: "Shopper lists an item to be bought in the US and hand-delivered to Ghana. Amounts in USD.",
+  description: "Shopper lists an item to be bought in the US and hand-delivered to the destination city. Amounts in USD.",
   inputSchema: {
     shopperId: z.string().uuid(),
     itemName: z.string(),
     priceUsd: z.number().positive(),
-    city: z.string().default("Accra"),
+    city: z.string().min(1),
     category: z.enum(["electronics", "clothing_shoes", "cosmetics_sealed", "books_media", "food_sealed_nonperishable"]),
     deadlineIso: z.string().describe("delivery deadline, YYYY-MM-DD"),
     shopUrl: z.string().optional(),
