@@ -173,7 +173,34 @@ export async function registerWebhook(url: string): Promise<{ id?: string; signi
   };
 }
 
-/** On Render, log registered endpoints and re-enable ours if local demo turned it off. */
+let runtimeSigningSecret: string | undefined;
+
+function rememberSigningSecret(secret?: string) {
+  const s = secret?.trim();
+  if (!s) return;
+  runtimeSigningSecret = s;
+  process.env.RELAY_WEBHOOK_SECRET = s;
+}
+
+/** Env secret plus the one Relay returned at boot (create / rotate). */
+export function relayWebhookSecrets(): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of [runtimeSigningSecret, process.env.RELAY_WEBHOOK_SECRET?.trim()]) {
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+async function rotateSigningSecret(id: string): Promise<void> {
+  const out = await api<any>(`/v1/webhooks/${id}/rotate-secret`, { method: "POST", timeoutMs: 8_000 });
+  rememberSigningSecret(out?.signing_secret);
+  console.log(`[relay] rotated signing secret for ${id}`);
+}
+
+/** On Render, register our HTTPS receiver with the agent token. Phone chat has no webhook UI. */
 export async function ensureCloudWebhook(): Promise<void> {
   if (process.env.DEMO_RELAY_POLL === "1") return;
   if (!relayConfigured()) return;
@@ -193,9 +220,11 @@ export async function ensureCloudWebhook(): Promise<void> {
     for (const w of hooks) {
       console.log(`[relay] ${w.id} enabled=${w.enabled} url=${w.url} events=${(w.events ?? []).join(",")}`);
     }
-    const mine = hooks.find((w) => w.url.replace(/\/$/, "") === want) ?? hooks[0];
+    let mine = hooks.find((w) => w.url.replace(/\/$/, "") === want) ?? hooks[0];
     if (!mine) {
-      console.error(`[relay] no webhook for ${want} — phone messages will not deliver`);
+      const created = await registerWebhook(want);
+      rememberSigningSecret(created.signingSecret);
+      console.log(`[relay] created webhook ${created.id ?? "?"} for ${want}`);
       return;
     }
     const events = mine.events ?? [];
@@ -214,6 +243,8 @@ export async function ensureCloudWebhook(): Promise<void> {
       });
       console.log(`[relay] patched ${mine.id} url=${needUrl} enabled=${needEnable} events=${needEvents}`);
     }
+    // List never returns the secret; rotate so this process can verify inbound.
+    await rotateSigningSecret(mine.id);
   } catch (e: any) {
     console.warn(`[relay] webhook check: ${e?.message ?? e}`);
   }

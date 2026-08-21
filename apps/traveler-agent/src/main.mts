@@ -44,8 +44,14 @@ loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
 const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
   "./linq-client.mts"
 );
-const { ensureCloudWebhook, extractRelayInbound, pollEvents, relayConfigured, verifyRelayWebhookSignature } =
-  await import("./relay-client.mts");
+const {
+  ensureCloudWebhook,
+  extractRelayInbound,
+  pollEvents,
+  relayConfigured,
+  relayWebhookSecrets,
+  verifyRelayWebhookSignature,
+} = await import("./relay-client.mts");
 const { handleInbound, syncTravelerMarketplace } = await import("./traveler-flow.mts");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
@@ -249,11 +255,11 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.startsWith("/webhooks/relay")) {
     const raw = await readBody(req);
     console.log(`[traveler-agent] relay POST bytes=${raw.length}`);
-    const secret = process.env.RELAY_WEBHOOK_SECRET?.trim();
-    if (secret) {
+    const secrets = relayWebhookSecrets();
+    if (secrets.length) {
       const headers: Record<string, string | string[] | undefined> = {};
       for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
-      if (!verifyRelayWebhookSignature(secret, raw, headers)) {
+      if (!secrets.some((secret) => verifyRelayWebhookSignature(secret, raw, headers))) {
         const signed = ["webhook-id", "webhook-timestamp", "webhook-signature"].filter(
           (k) => headers[k] ?? headers[k.toLowerCase()],
         );
