@@ -6,10 +6,69 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  */
 const BASE = process.env.RELAY_API_URL ?? "https://api.relayapp.im";
 
+function cleanToken(value?: string): string {
+  return (value ?? "").trim().replace(/^["']|["']$/g, "");
+}
+
+const TOKEN_KEYS = ["RELAY_TRAVELER_AGENT_TOKEN", "RELAY_AGENT_TOKEN"] as const;
+
+let resolvedToken: string | undefined;
+
+function tokenCandidates(): { key: string; value: string }[] {
+  const seen = new Set<string>();
+  const out: { key: string; value: string }[] = [];
+  for (const key of TOKEN_KEYS) {
+    const value = cleanToken(process.env[key]);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push({ key, value });
+  }
+  return out;
+}
+
 function token(): string {
-  const t = process.env.RELAY_AGENT_TOKEN?.trim();
-  if (!t) throw new Error("RELAY_AGENT_TOKEN is required");
-  return t;
+  if (resolvedToken) return resolvedToken;
+  const first = tokenCandidates()[0];
+  if (!first) throw new Error("RELAY_AGENT_TOKEN is required");
+  return first.value;
+}
+
+/** Prefer RELAY_TRAVELER_AGENT_TOKEN; fall back if RELAY_AGENT_TOKEN is stale. */
+export async function resolveAgentToken(): Promise<void> {
+  const candidates = tokenCandidates();
+  if (candidates.length === 0) return;
+  for (const c of candidates) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8_000);
+    try {
+      const res = await fetch(`${BASE}/v1/agents/me`, {
+        signal: ctrl.signal,
+        headers: { authorization: `Bearer ${c.value}` },
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        console.warn(`[relay] token key=${c.key} → ${res.status}`);
+        continue;
+      }
+      resolvedToken = c.value;
+      let handle = "?";
+      let id = "?";
+      try {
+        const body = JSON.parse(text);
+        const agent = body?.agent ?? body;
+        handle = agent?.handle ?? "?";
+        id = agent?.id ?? "?";
+      } catch {
+        /* ignore */
+      }
+      console.log(`[relay] token key=${c.key} handle=${handle} id=${id}`);
+      return;
+    } catch (e: any) {
+      console.warn(`[relay] token key=${c.key} failed: ${e?.message ?? e}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function api<T>(
@@ -45,7 +104,11 @@ async function api<T>(
 }
 
 export function relayConfigured(): boolean {
-  return Boolean(process.env.RELAY_AGENT_TOKEN?.trim());
+  return tokenCandidates().length > 0;
+}
+
+export function relayTokenKeyNames(): string[] {
+  return tokenCandidates().map((c) => c.key);
 }
 
 export async function sendText(args: {
@@ -169,7 +232,7 @@ export async function registerWebhook(url: string): Promise<{ id?: string; signi
   });
   return {
     id: out?.webhook?.id ?? out?.id,
-    signingSecret: out?.signing_secret,
+    signingSecret: out?.signing_secret ?? out?.signingSecret ?? out?.webhook?.signing_secret,
   };
 }
 
@@ -196,7 +259,7 @@ export function relayWebhookSecrets(): string[] {
 
 async function rotateSigningSecret(id: string): Promise<void> {
   const out = await api<any>(`/v1/webhooks/${id}/rotate-secret`, { method: "POST", timeoutMs: 8_000 });
-  rememberSigningSecret(out?.signing_secret);
+  rememberSigningSecret(out?.signing_secret ?? out?.signingSecret);
   console.log(`[relay] rotated signing secret for ${id}`);
 }
 
@@ -206,6 +269,14 @@ export async function ensureCloudWebhook(): Promise<void> {
   if (!relayConfigured()) return;
   const base = (process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
   if (!base.startsWith("https://")) return;
+  await resolveAgentToken();
+  if (!resolvedToken) {
+    console.warn("[relay] no valid agent token — phone messages will not deliver");
+    return;
+  }
+  // Rolling deploy starts the new box before the old one dies; wait so we
+  // register/rotate on the instance that will actually receive traffic.
+  await new Promise((r) => setTimeout(r, 15_000));
   const want = `${base}/webhooks/relay`;
   try {
     const me = await api<any>("/v1/agents/me", { method: "GET", timeoutMs: 8_000 });
@@ -224,7 +295,7 @@ export async function ensureCloudWebhook(): Promise<void> {
     if (!mine) {
       const created = await registerWebhook(want);
       rememberSigningSecret(created.signingSecret);
-      console.log(`[relay] created webhook ${created.id ?? "?"} for ${want}`);
+      console.log(`[relay] created webhook ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`);
       return;
     }
     const events = mine.events ?? [];

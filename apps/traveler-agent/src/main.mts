@@ -49,6 +49,7 @@ const {
   extractRelayInbound,
   pollEvents,
   relayConfigured,
+  relayTokenKeyNames,
   relayWebhookSecrets,
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
@@ -299,7 +300,7 @@ server.listen(PORT, () => {
   if (!linqOff) console.log(`[traveler-agent] webhook POST /webhooks/linq?version=2026-02-03`);
   console.log(`[traveler-agent] webhook POST /webhooks/relay (optional)`);
   console.log(
-    `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"}`,
+    `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"} keys=${relayTokenKeyNames().join(",") || "none"}`,
   );
   void ensureCloudWebhook();
   void startRelayLongPoll();
