@@ -193,7 +193,12 @@ async function tryHandleMarketplaceOffer(
   const open = await latestOpenOffer();
   const active = await latestActiveOffer();
   const listed = open && offerFitsThisTraveler(s, open) ? open : null;
-  const inFlight = active && active.status !== "offered" ? active : null;
+  const inFlight =
+    active &&
+    active.status !== "offered" &&
+    (offerFitsThisTraveler(s, active) || stayOf(s).lastOfferId === active.id)
+      ? active
+      : null;
   const carry = listed ?? inFlight;
   if (!carry) return false;
 
@@ -263,7 +268,17 @@ export async function handleInbound(args: {
   });
   if (text) appendDialogTurn(s, "user", text);
 
-  if (await tryHandleMarketplaceOffer(s, text, { reply, say })) return;
+  const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
+  const restart = /^(restart|start over|reset|menu)\b/i.test(text);
+  // Flights first. Leftover accepted offers must not swallow “hi”.
+  if (greetingOnly || restart) {
+    resetSession(s);
+    s.trip = blankTrip();
+    s.step = "await_travel_intent";
+    markSessionDirty();
+  } else if (!isTravelIntent(text)) {
+    if (await tryHandleMarketplaceOffer(s, text, { reply, say })) return;
+  }
 
   const turn = classifyTurn(asDialog(s), { text });
   stayOf(s).lastAct = turn.act;
@@ -287,9 +302,6 @@ export async function handleInbound(args: {
     await handleTravelInbound(s, text, { reply, say });
     return;
   }
-
-  const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
-  const restart = /^(restart|start over|reset|menu)\b/i.test(text);
 
   if ((restart || (greetingOnly && !midTrip) || s.step === "done" || (s.step === "idle" && !midTrip)) && turn.act === "NEW") {
     if (restart || s.step === "done") {

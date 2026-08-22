@@ -310,6 +310,14 @@ server.listen(PORT, () => {
     process.env.DEMO_LOCAL_CHAIN === "1" ||
     process.env.DEMO_LOCAL_CHAIN === "true";
   if (pollMarketplace) {
+    void import("@manebra/db")
+      .then(({ expireStaleMarketplaceOffers }) => expireStaleMarketplaceOffers())
+      .then((n) => {
+        if (n) console.log(`[traveler-agent] expired ${n} stale marketplace offer(s)`);
+      })
+      .catch((e: any) => {
+        console.warn(`[traveler-agent] expire stale offers: ${e?.message ?? e}`);
+      });
     setInterval(() => {
       void syncTravelerMarketplace().catch((e: any) => {
         console.warn(`[traveler-agent] marketplace sync: ${e?.message ?? e}`);

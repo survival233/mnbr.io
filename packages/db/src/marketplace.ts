@@ -424,6 +424,30 @@ export async function latestActiveOffer(): Promise<StoredOffer | null> {
   return rows.map(rowToOffer).find((o) => !isStaleDemoItem(o.item)) ?? null;
 }
 
+/** Close leftover offered/accepted rows that never funded (demo leftovers). */
+export async function expireStaleMarketplaceOffers(maxAgeMs = 72 * 3600_000): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    let n = 0;
+    for (const o of store.offers) {
+      if ((o.status === "offered" || o.status === "accepted") && o.updatedAt < cutoff) {
+        o.status = "declined";
+        n += 1;
+      }
+    }
+    if (n) saveFile(store);
+    return n;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const res = await prisma.marketplaceOffer.updateMany({
+    where: { status: { in: ["offered", "accepted"] }, updatedAt: { lt: cutoff } },
+    data: { status: "declined" },
+  });
+  return res.count;
+}
+
 export async function upsertLiveTrip(input: {
   travelerId: string;
   travelerName: string;

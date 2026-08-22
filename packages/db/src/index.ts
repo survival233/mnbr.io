@@ -7,6 +7,7 @@ export {
   listOpenOffers,
   latestOpenOffer,
   latestActiveOffer,
+  expireStaleMarketplaceOffers,
   upsertLiveTrip,
   listLiveTrips,
   listUpcomingTrips,
