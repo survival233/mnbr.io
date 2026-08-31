@@ -65,6 +65,8 @@ export type Session = {
   ranked?: RankedTraveler[];
   extendCandidate?: RankedTraveler;
   chosenTravelerId?: string;
+  /** Travelers already offered this request (decline / timeout). Do not re-offer. */
+  triedTravelerIds?: string[];
   /** Suggested slot shown in the last agent turn (dialog state, not chat log). */
   offer?: DialogOffer;
   /** Canonical open question. Prefer this over offer when resolving a turn. */
@@ -170,6 +172,7 @@ export function resetSession(s: Session) {
   s.ranked = undefined;
   s.extendCandidate = undefined;
   s.chosenTravelerId = undefined;
+  s.triedTravelerIds = undefined;
   s.offer = undefined;
   s.pending = null;
   s.bidId = undefined;
