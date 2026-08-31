@@ -35,6 +35,7 @@ import {
   rememberQuote,
   rememberOffer,
   rememberWait,
+  rememberCounterparty,
   parseItem,
   EARNINGS_ASK,
   SHOP_PLACE_ASK,
@@ -54,7 +55,6 @@ import {
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import { extractHttpUrl, listingFromProductUrl } from "./product-url.mts";
-import { SEED_TRAVELERS } from "./traveler-seeds.mts";
 import {
   completeHandoverAndRelease,
 } from "./settlement-bridge.mts";
@@ -66,6 +66,16 @@ import {
   listUpcomingTrips,
   getConnectedCard,
 } from "@manebra/db";
+import {
+  canConfirmHeadingYourWay,
+  keepLookingCopy,
+  nextUntriedIndex,
+  noMatchCopy,
+  offerTimedOut,
+  requestExpiredCopy,
+  requestPastDeadline,
+  shopperStillWaiting,
+} from "./match-policy.mts";
 import { agentcardConfigured } from "@repo/agentcard";
 import { PaySheet } from "@repo/agentcard/PaySheet";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
@@ -101,38 +111,6 @@ type TravelerSeed = {
 
 function stampHub(city: string): string {
   return hubCity(city) ?? resolveMetro(city)?.city ?? city;
-}
-
-function seedTravelers(destinationCity: string, originCity?: string): TravelerSeed[] {
-  const now = new Date();
-  const day = (n: number) => new Date(now.getTime() + n * 86400_000);
-  const dest = stampHub(destinationCity);
-  const origin = originCity ? stampHub(originCity) : undefined;
-  return SEED_TRAVELERS.map((t) => ({
-    id: t.id,
-    name: t.name,
-    trustScore: t.trustScore,
-    avgRating: t.avgRating,
-    totalDeliveries: t.totalDeliveries,
-    minFeeCents: t.minFeeCents,
-    trip: {
-      id: `trip-${t.id}`,
-      travelerId: t.id,
-      direction: "us_to_gh" as const,
-      originCity: origin,
-      destinationCity: dest,
-      departureDate: day(t.daysUntilDep),
-      status: "upcoming" as const,
-    },
-    profile: {
-      id: t.id,
-      isVerified: true,
-      accountStatus: "active" as const,
-      trustScore: t.trustScore,
-      avgRating: t.avgRating,
-      totalDeliveries: t.totalDeliveries,
-    },
-  }));
 }
 
 const ALLOWED = {
@@ -554,7 +532,7 @@ function eligibleLiveTrip(
   return true;
 }
 
-async function loadLiveTravelers(city: string, deadline: Date, origin?: string): Promise<TravelerSeed[] | null> {
+async function loadLiveTravelers(city: string, deadline: Date, origin?: string): Promise<TravelerSeed[]> {
   const now = new Date();
   const dest = stampHub(city);
   const home = origin ? stampHub(origin) : undefined;
@@ -592,7 +570,7 @@ async function loadLiveTravelers(city: string, deadline: Date, origin?: string):
   } catch (e: any) {
     console.warn(`[shopper-agent] marketplace trips unavailable: ${e?.message ?? e}`);
   }
-  if (!process.env.DATABASE_URL?.trim()) return null;
+  if (!process.env.DATABASE_URL?.trim()) return [];
   try {
     const { prisma } = await import("@manebra/db");
     const trips = await prisma.travelerTrip.findMany({
@@ -607,7 +585,7 @@ async function loadLiveTravelers(city: string, deadline: Date, origin?: string):
     const live = trips.filter((t) =>
       eligibleLiveTrip({ ...t, originCity: t.departureCity }, dest, now, home),
     );
-    if (!live.length) return null;
+    if (!live.length) return [];
     return live.map((t) => ({
       id: t.travelerId,
       name: t.traveler.fullName,
@@ -635,7 +613,7 @@ async function loadLiveTravelers(city: string, deadline: Date, origin?: string):
     }));
   } catch (e: any) {
     console.warn(`[shopper-agent] live travelers unavailable: ${e?.message ?? e}`);
-    return null;
+    return [];
   }
 }
 
@@ -679,8 +657,7 @@ async function upcomingToDest(city: string, origin?: string): Promise<TravelerSe
   } catch (e: any) {
     console.warn(`[shopper-agent] upcoming trips unavailable: ${e?.message ?? e}`);
   }
-  const pool = live;
-  return pool
+  return live
     .filter((t) => eligibleLiveTrip(t.trip, dest, now, home))
     .sort((a, b) => a.trip.departureDate.getTime() - b.trip.departureDate.getTime());
 }
@@ -709,7 +686,7 @@ async function commitStretch(s: Session): Promise<boolean> {
 
 function dateAskPrompt(dest: string, proposed: string | null): string {
   if (proposed) {
-    return `When do you need it by at most? Next traveler to ${dest} is ${proposed} — say yes, or send another date.`;
+    return `When do you need it by at most? There’s a trip to ${dest} on ${proposed} — say yes, or send another date.`;
   }
   return "When do you need it by at most? Send a date.";
 }
@@ -750,10 +727,8 @@ async function runMatching(s: Session): Promise<string> {
   const dest = stampHub(city);
   const live = await loadLiveTravelers(city, deadline);
   const now = new Date();
-
-  const pool = live ?? [];
-  const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now));
-
+  const tried = new Set(s.triedTravelerIds ?? []);
+  const travelers = (live ?? []).filter((t) => eligibleLiveTrip(t.trip, dest, now) && !tried.has(t.id));
   const itemRequest = {
     id: "item-linq",
     direction: "us_to_gh" as const,
@@ -796,8 +771,8 @@ async function runMatching(s: Session): Promise<string> {
     markSessionDirty();
     return (
       `Hmm — nobody’s flying before ${deadline.toDateString()}.\n` +
-      `Someone leaves ${next.t.trip.departureDate.toDateString()} though.\n` +
-      `Want me to stretch your deadline to meet them? Just say yes or no.`
+      `There’s a trip on ${next.t.trip.departureDate.toDateString()} though.\n` +
+      `Want me to stretch your deadline to meet it? Just say yes or no.`
     );
   }
 
@@ -886,10 +861,14 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
   const quote = quoteLines(s);
   rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
   if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
-  const city = s.deliveryCity ?? "your city";
-  const follow = s.ranked?.length ? shopperWait(city) : shopperNobody(city);
-  await say(s, `${quote}\n\n${follow}`);
-  await parkWaitingOnTraveler(s);
+  const city = handoverCity(s);
+  if (s.ranked?.length) {
+    await say(s, quote, shopperWait(city));
+    await lockTraveler(s, 0, { quoteAlreadyShown: true, silent: true });
+    return;
+  }
+  await parkOpenRequest(s);
+  await say(s, quote, shopperNobody(city));
 }
 
 async function continueAfterListing(s: Session): Promise<void> {
@@ -1151,9 +1130,7 @@ function reaskPrompt(s: Session): string {
               : s.step === "await_traveler"
                 ? `Pick a traveler — a name or number from 1 to ${s.ranked?.length ?? 1}.`
                 : s.step === "await_traveler_decision"
-
                   ? shopperWait(s.deliveryCity ?? "your city")
-
                   : s.step === "await_pay_confirm"
                     ? `Say yes when you’re ready to lock ${formatUsd(s.totalCents ?? 0)} test USDC.`
                     : s.pending?.prompt || "Say yes to the suggestion, or send the value.")
@@ -1184,6 +1161,7 @@ function applyRepairSlots(s: Session, turn: ClassifiedTurn): void {
 
 async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
   if (turn.meta === "cancel") {
+    await abandonOpenRequest(s);
     resetSession(s);
     s.step = "await_product";
     persistSessionsNow();
@@ -1193,7 +1171,7 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
   if (s.step === "await_traveler_decision") {
     void syncWaitingShoppers();
     rememberWait(stayOf(s));
-    await sayHost(s, "META", shopperWait(s.deliveryCity ?? "your city"), turn.meta);
+    await sayHost(s, "META", shopperWait(handoverCity(s)), turn.meta);
     return;
   }
   hydratePending(s);
@@ -1335,42 +1313,94 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
   return false;
 }
 
-async function lockTraveler(s: Session, idx: number, opts?: { quoteAlreadyShown?: boolean }): Promise<void> {
+function handoverCity(s: Session): string {
+  return s.deliveryCity ?? "your city";
+}
+
+function markTried(s: Session, id: string | undefined): void {
+  if (!id) return;
+  const next = [...(s.triedTravelerIds ?? [])];
+  if (!next.includes(id)) next.push(id);
+  s.triedTravelerIds = next;
+  markSessionDirty();
+}
+
+async function closeOffer(id: string | undefined, status: "declined" | "cancelled" | "expired"): Promise<void> {
+  if (!id) return;
+  try {
+    const o = await getOffer(id);
+    if (!o) return;
+    if (o.status === "offered" || o.status === "accepted") {
+      await updateOffer(id, { status, notifiedShopper: true });
+    }
+  } catch (e: any) {
+    console.warn(`[shopper-agent] close offer skipped: ${e?.message ?? e}`);
+  }
+}
+
+async function abandonOpenRequest(s: Session): Promise<void> {
+  await closeOffer(s.bidId, "cancelled");
+}
+
+async function parkOpenRequest(s: Session): Promise<void> {
+  s.step = "await_traveler_decision";
+  s.chosenTravelerId = undefined;
+  clearPending(s);
+  rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
+  if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
+  rememberWait(stayOf(s));
+  rememberQuestion(stayOf(s), noMatchCopy(handoverCity(s)));
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
+}
+
+async function lockTraveler(
+  s: Session,
+  idx: number,
+  opts?: { quoteAlreadyShown?: boolean; silent?: boolean },
+): Promise<void> {
   const ranked = s.ranked ?? [];
   const chosen = ranked[idx];
-  if (chosen) s.chosenTravelerId = chosen.id;
-  void opts;
-  await parkWaitingOnTraveler(s);
+  if (!chosen) return;
+  if (s.bidId && s.chosenTravelerId && s.chosenTravelerId !== chosen.id) {
+    await closeOffer(s.bidId, "expired");
+    s.bidId = undefined;
+  }
+  s.chosenTravelerId = chosen.id;
+  persistRecapTotal(s);
+  markSessionDirty();
+  if (!opts?.quoteAlreadyShown && !opts?.silent) {
+    await say(s, quoteLines(s));
+  }
+  await parkWaitingOnTraveler(s, { silent: Boolean(opts?.silent) });
 }
 
 function acceptedNoFundCopy(city: string): string {
   return `Someone heading to ${city} took it. Funding isn’t available on this host yet — I’ll keep the request as accepted.`;
 }
 
-function nextRanked(s: Session): { id: string; name: string; departs: string } | null {
-  const ranked = s.ranked ?? [];
-  const i = ranked.findIndex((t) => t.id === s.chosenTravelerId);
-  return ranked[i + 1] ?? ranked.find((t) => t.id !== s.chosenTravelerId) ?? null;
-}
-
-async function parkWaitingOnTraveler(s: Session): Promise<void> {
+async function parkWaitingOnTraveler(s: Session, opts?: { silent?: boolean }): Promise<void> {
+  const chosen = (s.ranked ?? []).find((t) => t.id === s.chosenTravelerId);
   const item = s.selected!;
+  const city = handoverCity(s);
   const amounts = persistRecapTotal(s);
-  const id = s.bidId ?? `req-${sessionKey(s.phone)}-${Date.now()}`;
+  const id = `req-${sessionKey(s.phone)}-${Date.now()}`;
   s.bidId = id;
   s.step = "await_traveler_decision";
-  s.chosenTravelerId = s.chosenTravelerId ?? "open";
   rememberItem(stayOf(s), item.productTitle);
   rememberQuote(stayOf(s), amounts.totalCents);
   rememberOffer(stayOf(s), id);
   rememberWait(stayOf(s));
-  rememberQuestion(stayOf(s), shopperWait(s.deliveryCity ?? "your city"));
+  rememberQuestion(stayOf(s), shopperWait(city));
   clearPending(s);
+  persistBeforeAsk(persistSessionsNow);
   try {
+    const nextIdx = nextUntriedIndex(s.ranked ?? [], [...(s.triedTravelerIds ?? []), s.chosenTravelerId ?? ""]);
+    const next = nextIdx != null ? (s.ranked ?? [])[nextIdx] : undefined;
     await writeOffer({
       id,
-      travelerId: "open",
-      travelerName: "Traveler",
+      travelerId: s.chosenTravelerId ?? "open",
+      travelerName: chosen?.name ?? "Traveler",
       item: item.productTitle.slice(0, 80),
       itemCostCents: amounts.itemCents,
       travelerFeeCents: amounts.earningsCents,
@@ -1386,11 +1416,60 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
       notifiedShopper: false,
       notifiedTraveler: false,
       notifiedTravelerFunded: false,
-      nextTravelerId: null,
+      nextTravelerId: next?.id ?? null,
       nextTravelerName: item.storeName,
     });
   } catch (e: any) {
     console.warn(`[shopper-agent] marketplace offer skipped: ${e?.message ?? e}`);
+  }
+  if (!opts?.silent) {
+    await say(s, shopperWait(city));
+  }
+}
+
+async function advanceAfterTravelerMiss(s: Session, reason: "declined" | "expired"): Promise<void> {
+  markTried(s, s.chosenTravelerId);
+  await closeOffer(s.bidId, reason);
+  s.bidId = undefined;
+  s.chosenTravelerId = undefined;
+  const idx = nextUntriedIndex(s.ranked ?? [], s.triedTravelerIds ?? []);
+  if (idx != null) {
+    await lockTraveler(s, idx, { quoteAlreadyShown: true, silent: true });
+    return;
+  }
+  await parkOpenRequest(s);
+  await say(s, keepLookingCopy(handoverCity(s)));
+}
+
+async function tryRematchWaiting(s: Session): Promise<void> {
+  if (!s.selected || !s.deliveryCity || !s.deadline) return;
+  await runMatching(s);
+  const idx = nextUntriedIndex(s.ranked ?? [], s.triedTravelerIds ?? []);
+  if (idx == null) return;
+  await lockTraveler(s, idx, { quoteAlreadyShown: true, silent: true });
+}
+
+async function notifyShopperAccepted(s: Session, travelerName: string, totalCents: number): Promise<void> {
+  const city = handoverCity(s);
+  rememberCounterparty(stayOf(s), travelerName, s.chosenTravelerId);
+  await say(s, shopperAccepted(city, totalCents));
+  if (agentcardConfigured()) {
+    const opened = await openPaySheetAfterAccept(s, totalCents);
+    if (opened) return;
+  }
+  if (demoLocalChain()) {
+    s.step = "await_pay_confirm";
+    setOffer(
+      s,
+      "pay",
+      "yes",
+      `Lock ${formatUsd(totalCents)} test USDC in escrow for this request?`,
+    );
+    await say(s, `Fund ${formatUsd(totalCents)} USDC to lock it.`);
+  } else {
+    console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
+    clearPending(s);
+    await say(s, acceptedNoFundCopy(city));
   }
 }
 
@@ -1439,41 +1518,56 @@ export async function syncWaitingShoppers(): Promise<void> {
     if ((s.step === "await_pay_confirm" || s.step === "await_traveler_decision") && s.bidId) {
       if (await maybeCompleteAgentCardFund(s)) continue;
     }
-    if (s.step !== "await_traveler_decision" || !s.bidId) continue;
+    if (s.step !== "await_traveler_decision") continue;
+
+    if (requestPastDeadline(s.deadline ? endOfLocalDay(s.deadline) : undefined)) {
+      await closeOffer(s.bidId, "expired");
+      s.step = "done";
+      s.bidId = undefined;
+      s.chosenTravelerId = undefined;
+      clearPending(s);
+      markSessionDirty();
+      await say(s, requestExpiredCopy(handoverCity(s)));
+      continue;
+    }
+
+    if (!s.bidId) {
+      await tryRematchWaiting(s);
+      continue;
+    }
+
     const carry = await getOffer(s.bidId);
-    if (!carry || carry.notifiedShopper) continue;
+    if (!carry) {
+      await tryRematchWaiting(s);
+      continue;
+    }
+
+    if (carry.status === "offered" && offerTimedOut(carry.createdAt)) {
+      await advanceAfterTravelerMiss(s, "expired");
+      continue;
+    }
+
     if (carry.status === "accepted") {
+      if (
+        !canConfirmHeadingYourWay({
+          offerStatus: carry.status,
+          shopperWaiting: shopperStillWaiting(s.step, s.bidId, carry.id),
+        })
+      ) {
+        await closeOffer(carry.id, "cancelled");
+        continue;
+      }
+      if (carry.notifiedShopper) continue;
       await updateOffer(carry.id, { notifiedShopper: true });
-      if (carry.travelerId && carry.travelerId !== "open") s.chosenTravelerId = carry.travelerId;
-      const city = s.deliveryCity ?? carry.destinationCity ?? "your city";
-      await say(s, shopperAccepted(city, carry.totalCents));
-      if (agentcardConfigured()) {
-        const opened = await openPaySheetAfterAccept(s, carry.totalCents);
-        if (opened) continue;
-      }
-      if (demoLocalChain()) {
-        s.step = "await_pay_confirm";
-        setOffer(
-          s,
-          "pay",
-          "yes",
-          `Lock ${formatUsd(carry.totalCents)} test USDC in escrow for this request?`,
-        );
-        await say(s, `Fund ${formatUsd(carry.totalCents)} USDC to lock it.`);
-      } else {
-        console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
-        clearPending(s);
-        await say(s, acceptedNoFundCopy(city));
-      }
-    } else if (carry.status === "declined") {
-      await updateOffer(carry.id, {
-        status: "offered",
-        notifiedTraveler: false,
-        notifiedShopper: false,
-        travelerId: "open",
-        travelerName: "Traveler",
-      });
-      await say(s, shopperNobody(s.deliveryCity ?? carry.destinationCity ?? "your city"));
+      await notifyShopperAccepted(s, carry.travelerName, carry.totalCents);
+      continue;
+    }
+
+    if (carry.status === "declined" || carry.status === "expired") {
+      if (carry.notifiedShopper) continue;
+      await updateOffer(carry.id, { notifiedShopper: true });
+      await advanceAfterTravelerMiss(s, carry.status === "expired" ? "expired" : "declined");
+      continue;
     }
   }
 }
@@ -1851,6 +1945,7 @@ async function handleInboundInner(
   }
 
   // NEW only — search / cognition-as-new-item lives below this line.
+  await abandonOpenRequest(s);
   resetSession(s);
   s.step = "await_product";
   markSessionDirty();
@@ -2169,7 +2264,7 @@ async function handleInboundInner(
         await parkWaitingOnTraveler(s);
         return;
       }
-      await reply(s, shopperWait(s.deliveryCity ?? "your city"));
+      await reply(s, shopperWait(handoverCity(s)));
       return;
     }
     case "await_traveler_decision": {
@@ -2205,12 +2300,11 @@ async function handleInboundInner(
         return;
       }
       if (s.offer?.field === "traveler") {
-        await reply(s, shopperNobody(s.deliveryCity ?? "your city"));
+        await reply(s, shopperNobody(handoverCity(s)));
         return;
       }
 
-      await reply(s, shopperWait(s.deliveryCity ?? "your city"));
-
+      await reply(s, shopperWait(handoverCity(s)));
       return;
     }
     case "await_pay_confirm": {
