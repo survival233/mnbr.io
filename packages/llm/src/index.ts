@@ -151,6 +151,59 @@ export async function chatJson(cfg: LlmConfig, system: string, user: string): Pr
   }
 }
 
+export type LlmToolSpec = {
+  name: string;
+  description?: string;
+  /** JSON Schema for the tool's arguments, passed through verbatim. */
+  parameters: Record<string, unknown>;
+};
+
+/**
+ * Multi-step tool loop (OpenAI tools protocol). The caller supplies the live
+ * toolset and an executor; the model may chain several calls before answering.
+ * Tool results are fed back verbatim — the caller must redact anything
+ * sensitive before logging them elsewhere.
+ */
+export async function chatToolLoop(
+  cfg: LlmConfig,
+  args: {
+    system: string;
+    user: string;
+    tools: LlmToolSpec[];
+    callTool: (name: string, input: Record<string, unknown>) => Promise<string>;
+    maxSteps?: number;
+  },
+): Promise<string> {
+  const messages: any[] = [
+    { role: "system", content: args.system },
+    { role: "user", content: args.user },
+  ];
+  const tools = args.tools.map((t) => ({
+    type: "function",
+    function: { name: t.name, description: t.description ?? "", parameters: t.parameters },
+  }));
+  const maxSteps = args.maxSteps ?? 8;
+  for (let step = 0; step < maxSteps; step++) {
+    const data = await chatCompletions(cfg, { model: cfg.model, temperature: 0, messages, tools });
+    const msg = data.choices?.[0]?.message;
+    if (!msg) throw new Error("model returned no message");
+    messages.push(msg);
+    const calls: any[] = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    if (!calls.length) return String(msg.content ?? "");
+    for (const call of calls) {
+      let out: string;
+      try {
+        const input = call.function?.arguments ? JSON.parse(call.function.arguments) : {};
+        out = await args.callTool(String(call.function?.name ?? ""), input);
+      } catch (e: any) {
+        out = `ERROR: ${sanitizeLlmError(String(e?.message ?? e))}`;
+      }
+      messages.push({ role: "tool", tool_call_id: call.id, content: out.slice(0, 12_000) });
+    }
+  }
+  return "I ran out of tool steps — ask again and I’ll pick up where I left off.";
+}
+
 export type ContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } };

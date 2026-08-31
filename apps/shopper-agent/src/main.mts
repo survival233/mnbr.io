@@ -5,8 +5,8 @@ const linqOff =
   process.env.LINQ_DISABLED === "1" || process.env.DEMO_RELAY_POLL === "1";
 const skipFromFiles = new Set(["DEMO_TRANSPORT", "LINQ_TO_PHONE", "LINQ_FROM_PHONE", "LINQ_CHAT_ID"]);
 
-// Load env before app modules read process.env
-for (const rel of ["./../.env", "./../../agent-cli/.env"]) {
+// Load env before app modules read process.env (own → agent-cli → repo root)
+for (const rel of ["./../.env", "./../../agent-cli/.env", "./../../../.env"]) {
   try {
     const p = new URL(rel, import.meta.url);
     for (const line of readFileSync(p, "utf8").split("\n")) {
@@ -34,6 +34,7 @@ const {
 } = await import("./relay-client.mts");
 const { handleInbound, syncWaitingShoppers } = await import("./shopper-flow.mts");
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
+const { handleAgentcardOAuth, isAgentcardOAuthRequest, oauthConfigured } = await import("@repo/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
@@ -192,6 +193,14 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // "Connect with AgentCard" — /api/agentcard/callback is the registered redirect_uri
+  if (req.method === "GET" && isAgentcardOAuthRequest(url)) {
+    const result = await handleAgentcardOAuth(url);
+    res.writeHead(result.status, result.headers);
+    res.end(result.body);
+    return;
+  }
+
   if (req.method === "GET" && (url === "/" || url === "/health")) {
     const stats = sessionStats();
     ok(res, {
@@ -205,6 +214,7 @@ const server = createServer(async (req, res) => {
       sessions: stats.count,
       inboundCount,
       relay: relayConfigured() ? "configured" : "off",
+      agentcardOauth: oauthConfigured() ? "configured" : "off",
       vision: process.env.OPENAI_API_KEY ? "openai" : "off",
       cognition:
         process.env.OPENAI_API_KEY

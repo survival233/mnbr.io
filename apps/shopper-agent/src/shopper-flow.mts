@@ -54,6 +54,7 @@ import {
 } from "@manebra/db";
 import { agentcardConfigured } from "@repo/agentcard";
 import { PaySheet } from "@repo/agentcard/PaySheet";
+import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
 import { parseShoppingCity, parseDeliveryTown, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
@@ -1524,6 +1525,19 @@ async function handleInboundInner(
   imageUrls: string[],
 ): Promise<void> {
   const hasImages = imageUrls.length > 0;
+
+  // AgentCard virtual cards — separate brain (MCP tool loop). Never hijack the
+  // pay-sheet step, where "card" talk belongs to the funding flow.
+  if (
+    text &&
+    !hasImages &&
+    wantsCardTools(text) &&
+    !(s.step === "await_pay_confirm" && s.paySheetSent)
+  ) {
+    await handleCardTurn(s.phone, text, (t) => reply(s, t));
+    return;
+  }
+
   hydratePending(s);
   const turn = classifyTurn(s, { text, hasPhoto: hasImages });
   stayOf(s).lastAct = turn.act;
