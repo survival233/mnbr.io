@@ -10,6 +10,22 @@ const WEEKDAY =
 
 const FILLER = /^(ok|okay|yes|no|hi|hey|yo|hmm+|huh|uh|um|idk|maybe|please)$/i;
 
+const PRODUCT_URL_RE = /https?:\/\/[^\s<>"']+/i;
+
+/** First http(s) product URL in the utterance, or null. */
+export function extractProductUrl(text: string): string | null {
+  const m = (text ?? "").match(PRODUCT_URL_RE);
+  if (!m) return null;
+  try {
+    const u = new URL(m[0].replace(/[),.;]+$/g, ""));
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (!u.hostname.includes(".")) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 /** Peel a request shell (subject + intent verb + beneficiary + determiner). */
 const INTENT_PREFIX =
   /^(?:(?:please|kindly|hey|hi|hello|yo|actually|instead)[,!\s]+)*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:i(?:'m|'d| am| would)?\s+(?:(?:want|need|like)\s+(?:you\s+to\s+|to\s+)?)?)?(?:(?:help(?:\s+me)?\s+(?:to\s+)?)?)?(?:get|shop|buy|find|look(?:ing)?(?:\s+for)?|search(?:ing)?(?:\s+for)?|order|pick\s+up|grab)(?:\s+for)?\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|some|one)\s+)?/i;
@@ -95,6 +111,7 @@ function looksLikeProductName(s: string): boolean {
 export function parseItem(text: string): string | null {
   const raw = (text ?? "").trim().replace(/\s+/g, " ");
   if (!raw) return null;
+  if (extractProductUrl(raw)) return null;
   const leftover = peelShell(raw);
   if (!looksLikeProductName(leftover)) return null;
   return leftover.slice(0, 80).trim();

@@ -11,9 +11,9 @@ export type { PendingParse } from "./classify";
 export type { ClassifiedTurn, DialogPendingSlot, DialogSession, StayMemory, TurnAct } from "./types";
 export { persistBeforeAsk } from "./persist";
 export { parseDate, parseUsdCents, categoryOf } from "./parse";
-export { parseItem } from "./item";
+export { parseItem, extractProductUrl } from "./item";
 export { fuzzyMatchIndex } from "./fuzzy";
-export { parseUsShoppingCity, parseShoppingCity, parseDeliveryTown, isCityAdviceQuestion, US_SHOP_HUBS } from "./cities";
+export { parseUsShoppingCity, parseShoppingCity, parseDeliveryTown, parseTripDestination, parseTripOrigin, isDestinationShaped, guestCityName, isCityAdviceQuestion, US_SHOP_HUBS } from "./cities";
 export type { UsShopHub } from "./cities";
 export { HOSPITALITY_PERSONA } from "./persona";
 export {

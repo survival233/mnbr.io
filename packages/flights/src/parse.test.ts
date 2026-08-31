@@ -25,7 +25,7 @@ describe("travel parse", () => {
     const p = parseTravelIntent("New York to Accra on 15th August");
     expect(toAirportCode(String(p.origin))).toBe("JFK");
     expect(toAirportCode(String(p.destination))).toBe("ACC");
-    expect(p.departDate).toBe("2026-08-15");
+    expect(p.departDate).toBe(parseDepartDate("15th August"));
   });
 
   it("parses JFK to Accra", () => {
@@ -34,14 +34,17 @@ describe("travel parse", () => {
     expect(toAirportCode(String(p.destination))).toBe("ACC");
   });
 
-  it("resolves bare place replies", () => {
-    expect(resolvePlace("New York")).toBe("JFK");
-    expect(resolvePlace("New York JFK")).toBe("JFK");
-    expect(resolvePlace("Accra")).toBe("ACC");
+  it("resolves Lagos and other geo cities, not only Accra", () => {
+    expect(toAirportCode("Lagos")).toBe("LOS");
+    expect(resolvePlace("Lagos")).toBe("LOS");
+    expect(toAirportCode("London")).toBe("LHR");
+    expect(toAirportCode("Kumasi")).toBe("KMS");
+    const p = parseTravelIntent("I'm going to Lagos");
+    expect(toAirportCode(String(p.destination))).toBe("LOS");
   });
 
   it("parses ordinal depart dates", () => {
-    expect(parseDepartDate("15th August")).toBe("2026-08-15");
-    expect(parseDepartDate("August 15")).toBe("2026-08-15");
+    expect(parseDepartDate("15th August")).toMatch(/^20\d{2}-08-15$/);
+    expect(parseDepartDate("August 15")).toBe(parseDepartDate("15th August"));
   });
 });

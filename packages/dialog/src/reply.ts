@@ -1,4 +1,5 @@
 import { waitingMs } from "./memory";
+import { guestCityName } from "./cities";
 import type { ClassifiedTurn, StayMemory, TurnAct } from "./types";
 
 export type HostBeats = { lead?: string; follow?: string };
@@ -25,7 +26,12 @@ export function composeHostReply(args: {
 }): string[] {
   const stay = args.stay;
   const now = args.now ?? Date.now();
-  const item = stay.lastItem;
+  const itemRaw = stay.lastItem;
+  const item = itemRaw
+    ? /^[A-Za-z]{3}$/.test(itemRaw.trim())
+      ? guestCityName(itemRaw) ?? itemRaw
+      : itemRaw
+    : undefined;
   const who = stay.lastTravelerName;
   const follow = args.next?.trim() || undefined;
 
@@ -34,16 +40,14 @@ export function composeHostReply(args: {
     lead = "Alright — we’ll leave that.";
   } else if (args.act === "META") {
     lead = item
-      ? `Still on ${item}${who ? ` — waiting on ${who}` : ""}${waitBit(stay, now)}.`
-      : `Still on this${waitBit(stay, now)}.`;
+      ? `${item}${who ? ` — waiting on ${who}` : ""}${waitBit(stay, now)}.`
+      : `This is still open${waitBit(stay, now)}.`;
   } else if (args.act === "REPAIR") {
-    lead = item ? `Updated — still ${item}.` : "Updated.";
+    lead = item ? `Updated — ${item}.` : "Updated.";
   } else if (args.act === "REASK") {
     lead = stay.waitingSince && item
-      ? `Still on ${item}${who ? ` with ${who}` : ""}${waitBit(stay, now)}.`
-      : item
-        ? `Still on ${item}.`
-        : undefined;
+      ? `${item}${who ? ` with ${who}` : ""}${waitBit(stay, now)}.`
+      : undefined;
   } else if (args.act === "CONTINUE") {
     lead = "Got it.";
   }

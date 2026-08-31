@@ -164,13 +164,8 @@ export function predictiveAsk(args: {
       ? "What are you looking to buy — or send a photo of the item?"
       : "What product should I shop for?";
   }
-  if (!args.shoppingCity) {
-    return warm
-      ? `For “${item}”, which town should I buy from (the traveler’s home)? I can search New York or Atlanta today.`
-      : `Buy-from town for ${item}?`;
-  }
   if (!args.deliveryCity) {
-    return warm ? "Which city should it land in?" : "Delivery city?";
+    return warm ? "Which city should it land in?" : "Which city should it land in?";
   }
   if (!args.deadline) {
     return warm ? "When do you need it by at most?" : "When do you need it by at most?";

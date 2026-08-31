@@ -19,7 +19,6 @@ import { HOSPITALITY_PERSONA, llmStayBlock, parseItem } from "@manebra/dialog";
 import {
   isCityAdviceQuestion,
   parseShoppingCity,
-  recommendUsCityBubble,
 } from "./cities.mts";
 
 export type PolicyDecision = {
@@ -54,7 +53,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 function entitiesSummary(s: Session): string {
   return JSON.stringify({
     product: s.searchQuery ?? s.cognition?.pending?.hypothesis ?? null,
-    usCity: s.shoppingCity === "New York" ? null : s.shoppingCity,
+    usCity: s.shoppingCity ?? null,
     deliveryCity: s.deliveryCity,
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
@@ -116,12 +115,12 @@ export async function runPolicyTurn(args: {
     const ask =
       predictiveAsk({
         product,
-        shoppingCity: undefined,
+        shoppingCity: "national",
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
         tone: cog.persona.communication,
-      }) ?? `Which town should I buy ${product} from (the traveler’s home)? New York works for the US catalog.`;
+      }) ?? "Which city should it land in?";
     return {
       bubbles: [`Locked in — ${product}.`, ask],
       confirmedProduct: product,
@@ -139,25 +138,20 @@ export async function runPolicyTurn(args: {
     };
   }
 
-  // Host-side city advice — never treat "which is best?" as a location
+  // Leftover shopping-city step: catalog is national — host searches.
   if (step === "await_shopping_city" && text && isCityAdviceQuestion(text) && !hasMedia) {
-    appendEpisode(cog.memory, "clarify", "Asked which buy-from town is best");
-    return {
-      bubbles: recommendUsCityBubble(s.searchQuery),
-      fallthrough: false,
-    };
+    appendEpisode(cog.memory, "clarify", "Catalog is national — no shop-in-city");
+    return { bubbles: [], fallthrough: true };
   }
 
-  // Host-side concrete city parse before LLM (fast + reliable)
   if (step === "await_shopping_city" && text && !hasMedia) {
-    const city = parseShoppingCity(text);
-    if (city) {
-      appendEpisode(cog.memory, "slot", `Buy-from town ${city}`, { usCity: city });
+    const dest = parseShoppingCity(text);
+    if (dest) {
+      appendEpisode(cog.memory, "slot", `Handover city ${dest}`, { deliveryCity: dest });
       return {
         bubbles: [],
-        confirmedUsCity: city,
-        applySlots: { usCity: city },
-        fallthrough: false,
+        applySlots: { deliveryCity: dest },
+        fallthrough: true,
       };
     }
   }
@@ -174,12 +168,7 @@ export async function runPolicyTurn(args: {
       };
     }
     if (step === "await_shopping_city" && text) {
-      return {
-        bubbles: [
-          `I need the traveler’s home town to buy from — New York or Atlanta if you want the US catalog. Which one works?`,
-        ],
-        fallthrough: false,
-      };
+      return { bubbles: [], fallthrough: true };
     }
     return { bubbles: [], fallthrough: true };
   }
@@ -221,10 +210,7 @@ export async function runPolicyTurn(args: {
       };
     }
     if (step === "await_shopping_city") {
-      return {
-        bubbles: recommendUsCityBubble(s.searchQuery),
-        fallthrough: false,
-      };
+      return { bubbles: [], fallthrough: true };
     }
     // Do not blindly fall through on mid-conversation clarifies
     if (text.includes("?") || /^(which|what|why|how|should)\b/i.test(text)) {
@@ -232,7 +218,7 @@ export async function runPolicyTurn(args: {
         bubbles: [
           predictiveAsk({
             product: s.searchQuery,
-            shoppingCity: s.shoppingCity === "New York" ? undefined : s.shoppingCity,
+            shoppingCity: s.shoppingCity || "national",
             deliveryCity: s.deliveryCity,
             deadline: s.deadline,
             maxFeeCents: s.maxFeeCents,
@@ -331,12 +317,9 @@ export async function runPolicyTurn(args: {
     const slotCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
     const ask =
       turn.askUser ??
-      (step === "await_shopping_city"
-        ? recommendUsCityBubble(s.searchQuery).join(" ")
-        : null) ??
       predictiveAsk({
         product: s.searchQuery,
-        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity,
+        shoppingCity: "national",
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
@@ -365,9 +348,8 @@ export async function runPolicyTurn(args: {
     if (step === "await_shopping_city" && usCity) {
       return {
         bubbles: turn.askUser ? [turn.askUser] : [],
-        confirmedUsCity: usCity,
-        applySlots: safeSlots,
-        fallthrough: false,
+        applySlots: { ...safeSlots, deliveryCity: usCity, usCity: null },
+        fallthrough: true,
         monologueLog: cog.lastMonologue,
       };
     }
@@ -407,16 +389,7 @@ export async function runPolicyTurn(args: {
   }
 
   if (step === "await_shopping_city") {
-    // Never fall through to treat free text as a city
-    return {
-      bubbles: turn.askUser
-        ? [turn.askUser]
-        : [
-            `I need the traveler’s home town — New York or Atlanta if you want the US catalog. Which should I use?`,
-          ],
-      fallthrough: false,
-      monologueLog: cog.lastMonologue,
-    };
+    return { bubbles: [], fallthrough: true, monologueLog: cog.lastMonologue };
   }
 
   return {

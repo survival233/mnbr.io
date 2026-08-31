@@ -17,8 +17,15 @@ export const SHOP_MARKETS: readonly ShopMarket[] = [
   { id: "us", gl: "us", locationCountry: "United States", currency: "USD", countries: ["US"] },
 ];
 
-export function shopMarketForCity(city: string): ShopMarket | undefined {
-  const hub = resolveHub(city);
+/** National approved-merchant catalog (Amazon, Walmart, Target, Apple, …). */
+export function nationalShopMarket(): ShopMarket {
+  return SHOP_MARKETS[0]!;
+}
+
+export function shopMarketForCity(city?: string): ShopMarket | undefined {
+  const t = city?.trim();
+  if (!t) return nationalShopMarket();
+  const hub = resolveHub(t);
   if (!hub?.country) return undefined;
   return SHOP_MARKETS.find((m) => m.countries.includes(hub.country));
 }

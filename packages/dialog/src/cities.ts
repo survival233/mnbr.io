@@ -1,6 +1,6 @@
 /** Buy-from / traveler-home town helpers. Never treat an advice question as a city. */
 
-import { guestTown, hubCity, resolveHub } from "@manebra/geo";
+import { destinationMetro, guestTown, hubCity, originMetro, placeMetro, resolveHub } from "@manebra/geo";
 
 export const US_SHOP_HUBS = [
   "New York",
@@ -84,11 +84,40 @@ export function parseShoppingCity(text: string): string | null {
   return hubCity(text);
 }
 
-/** Shopper's town as they named it (Tema stays Tema; ACC → Accra). Known places only. */
+/** Shopper's town as they named it (Tema stays Tema; ACC → Accra). Any geo metro. */
 export function parseDeliveryTown(text: string): string | null {
   if (isCityAdviceQuestion(text)) return null;
   const t = text.trim();
   if (!t || t.length > 60) return null;
-  if (!resolveHub(t)) return null;
-  return guestTown(t) ?? hubCity(t);
+  const m = destinationMetro(t) ?? placeMetro(t) ?? resolveHub(t);
+  if (!m) return null;
+  return guestTown(t) ?? m.city;
+}
+
+/** Guest city name for a trip destination. Never an IATA code. */
+export function parseTripDestination(text: string): string | null {
+  if (isCityAdviceQuestion(text)) return null;
+  return destinationMetro(text)?.city ?? null;
+}
+
+/** Guest city name for a trip origin. Never an IATA code. */
+export function parseTripOrigin(text: string): string | null {
+  if (isCityAdviceQuestion(text)) return null;
+  return originMetro(text)?.city ?? null;
+}
+
+/** True when the utterance names where they are going, not a bare origin fill. */
+export function isDestinationShaped(text: string): boolean {
+  return (
+    /\b(?:going|flying|heading|headed|traveling|travelling|off|trip|flight|fly)\s+to\b/i.test(text) ||
+    /\bbe\s+(?:in|at)\b/i.test(text)
+  );
+}
+
+/** Human city for guest copy. IATA (ACC, LOS) becomes Accra / Lagos. */
+export function guestCityName(raw?: string | null): string | null {
+  if (!raw?.trim()) return null;
+  const t = raw.trim();
+  if (/^[A-Za-z]{3}$/.test(t)) return guestTown(t) ?? hubCity(t) ?? null;
+  return guestTown(t) ?? destinationMetro(t)?.city ?? hubCity(t) ?? t;
 }

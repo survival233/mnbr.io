@@ -339,8 +339,8 @@ You MUST reply with ONE JSON object only (no markdown) matching this shape:
 Rules:
 - If the user sent an image of a product, identify it concretely (brand, model, color, size if visible). If confident, action=set_slots with product filled. If unsure, action=ask_user with one clarifying question. Never search the word "image".
 - Never invent a product if the image/text is unclear — action=ask_user.
-- deliveryCity = shopper's town (any town they named). usCity = town to buy from = the traveler's home (any city they named — never put questions into slots).
-- If the user asks which city is best / for advice, action=ask_user and put a short recommendation in askUser (suggest New York or Atlanta for the current store catalog), do NOT set usCity to their question text.
+- deliveryCity = shopper's town (any town they named) — used for matching travelers, not catalog geo. usCity is unused; catalog search is national approved merchants (Amazon, Walmart, Target, Apple). Do not ask which city to shop in. Do not set usCity to New York.
+- If the user asks which city is best / for advice, action=ask_user and explain handover city is for matching travelers. Do NOT set usCity.
 - If user affirms a pending product confirm, action=set_slots with product filled.
 - If user changes product mid-flow, set conflict and propose/ask accordingly.
 - proactiveAsk = one natural next question for a missing slot (never payment).

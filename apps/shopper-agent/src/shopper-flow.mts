@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, formatSkuCardList, listingFromProductUrl, productNameFromUrl, type ProductListing } from "@manebra/catalog";
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
 import {
@@ -36,6 +36,7 @@ import {
   rememberOffer,
   rememberWait,
   parseItem,
+  extractProductUrl,
   type ClassifiedTurn,
 } from "@manebra/dialog";
 import * as linq from "./linq-client.mts";
@@ -57,7 +58,7 @@ import { PaySheet } from "@repo/agentcard/PaySheet";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
-import { parseShoppingCity, parseDeliveryTown, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
+import { parseShoppingCity, parseDeliveryTown } from "./cognition/cities.mts";
 type TravelerSeed = {
   id: string;
   name: string;
@@ -262,12 +263,7 @@ const DEST_ASK = "Which city should it land in?";
 function shopperIntakeLine(s: Session): string {
   return s.channel === "relay"
     ? "What should I shop for you?"
-    : "Send a product (text or photo) and I’ll find stock and a traveler heading to your city.";
-}
-
-/** Guest city ask — interpolates a parsed product only, never the raw utterance. */
-function shopCityPrompt(item: string): string {
-  return `Which town should I buy ${item} from (the traveler’s home)? I can search stores in New York or Atlanta today.`;
+    : "Send a product (text, a store link, or photo) and I’ll find stock and a traveler heading to your city.";
 }
 
 function namedProduct(raw: string): string | null {
@@ -599,7 +595,7 @@ async function commitStretch(s: Session): Promise<boolean> {
   const fromLabel = parseDepartLabel(alt.departs);
   if (fromLabel) return commitNeedBy(s, fromLabel);
   const dest = s.deliveryCity ?? "";
-  const trips = dest ? await upcomingToDest(dest, s.shoppingCity) : [];
+  const trips = dest ? await upcomingToDest(dest) : [];
   const t = trips.find((x) => x.id === alt.id);
   if (!t) return false;
   return commitNeedBy(s, t.trip.departureDate);
@@ -615,7 +611,7 @@ function dateAskPrompt(dest: string, proposed: string | null): string {
 async function askNeedBy(s: Session, act?: ClassifiedTurn["act"]): Promise<void> {
   s.step = "await_deadline";
   const dest = s.deliveryCity ?? "";
-  const trips = dest ? await upcomingToDest(s.deliveryCity ?? dest, s.shoppingCity) : [];
+  const trips = dest ? await upcomingToDest(s.deliveryCity ?? dest) : [];
   const proposed = trips[0] ? guestDate(trips[0].trip.departureDate) : null;
   const prompt = dateAskPrompt(s.deliveryCity || dest || "your city", proposed);
   if (proposed) {
@@ -646,11 +642,10 @@ async function runMatching(s: Session): Promise<string> {
   const deadline = endOfLocalDay(s.deadline!);
   const category = s.category ?? categoryOf(selected.productTitle) ?? "electronics";
   const dest = stampHub(city);
-  const home = s.shoppingCity ? stampHub(s.shoppingCity) : undefined;
-  const live = await loadLiveTravelers(city, deadline, home);
+  const live = await loadLiveTravelers(city, deadline);
   const now = new Date();
-  const pool = live ?? seedTravelers(dest, home);
-  const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now, home));
+  const pool = live ?? seedTravelers(dest);
+  const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now));
   const itemRequest = {
     id: "item-linq",
     direction: "us_to_gh" as const,
@@ -809,7 +804,7 @@ async function searchAndPromptListings(s: Session): Promise<string> {
   const q = s.searchQuery!;
   try {
     const results = await withTimeout(
-      searchProducts({ query: q, shoppingCity: s.shoppingCity }),
+      searchProducts({ query: q, shoppingCity: s.shoppingCity || undefined }),
       SERP_TIMEOUT_MS,
       "SerpAPI search",
     );
@@ -819,7 +814,7 @@ async function searchAndPromptListings(s: Session): Promise<string> {
     s.step = "await_product";
     markSessionDirty();
     if (e instanceof NoShopMarketError) {
-      return `I don’t have a store catalog for ${e.city} yet — I can search New York or Atlanta today. Which town should I buy from?`;
+      return `Store search hiccupped on that market. Want to try a different product name?`;
     }
     return `Search hiccupped on me. What should I look for instead?`;
   }
@@ -831,11 +826,9 @@ async function searchAndPromptListings(s: Session): Promise<string> {
   s.step = "await_listing";
   setOffer(s, "listing", "0");
   markSessionDirty();
-  const lines = s.listings.map(
-    (l, i) => `${i + 1}. ${l.storeName} · ${formatUsd(l.priceCents)}\n   ${l.productTitle.slice(0, 70)}`,
-  );
+  const cards = formatSkuCardList(s.listings);
   return (
-    `Found a few near ${s.shoppingCity}:\n\n${lines.join("\n\n")}\n\n` +
+    `Found a few good ones — any of these catch your eye?\n\n${cards}\n\n` +
     `Pick one (1–${s.listings.length} or a store name), or tell me if these aren’t right / what to search instead.`
   );
 }
@@ -847,13 +840,59 @@ async function runSearchFlow(s: Session, progress?: string): Promise<void> {
   markSessionDirty();
   if (progress) await reply(s, progress, { thinkMs: 700 });
   else {
-    await reply(s, `One sec — checking verified stores near ${s.shoppingCity}…`, { thinkMs: 700 });
+    await reply(s, `One sec — checking verified stores…`, { thinkMs: 700 });
   }
   if (s.chatId) presenceTyping(s);
   await reply(s, await searchAndPromptListings(s), { thinkMs: 1200 });
 }
 
+async function presentUrlCard(s: Session, listing: ProductListing): Promise<void> {
+  s.listings = [listing];
+  s.searchQuery = listing.productTitle;
+  s.selected = undefined;
+  s.step = "await_listing";
+  setOffer(s, "listing", "0");
+  rememberItem(stayOf(s), listing.productTitle);
+  markSessionDirty();
+  const cards = formatSkuCardList([listing]);
+  await say(
+    s,
+    `Got the listing.`,
+    `${cards}\n\nSay yes if that’s the one, or send another link / product name.`,
+  );
+}
+
+async function intakeProductUrl(s: Session, url: string): Promise<void> {
+  await reply(s, `One sec — pulling that listing…`, { thinkMs: 500 });
+  const listing = await listingFromProductUrl(url);
+  if (listing && listing.productTitle && listing.imageUrl) {
+    if (listing.priceCents > 0) {
+      await presentUrlCard(s, listing);
+      return;
+    }
+    const q = namedProduct(listing.productTitle) ?? listing.productTitle;
+    s.searchQuery = q;
+    rememberItem(stayOf(s), q);
+    await runSearchFlow(s, `Got the page — searching ${q} in verified stores…`);
+    return;
+  }
+  const fallback = productNameFromUrl(url);
+  const item = fallback ? namedProduct(fallback) ?? fallback : null;
+  if (!item) {
+    await sayHost(s, "REASK", parkItemAsk(s));
+    return;
+  }
+  s.searchQuery = item;
+  rememberItem(stayOf(s), item);
+  await runSearchFlow(s, `Couldn’t read that page — searching ${item}…`);
+}
+
 async function applyNewQuery(s: Session, query: string): Promise<void> {
+  const url = extractProductUrl(query);
+  if (url) {
+    await intakeProductUrl(s, url);
+    return;
+  }
   const item = namedProduct(query);
   if (!item) {
     await sayHost(s, "REASK", parkItemAsk(s));
@@ -863,14 +902,8 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
   s.selected = undefined;
   s.listings = undefined;
   markSessionDirty();
-  if (!s.shoppingCity) {
-    s.step = "await_shopping_city";
-    markSessionDirty();
-    setOffer(s, "shoppingCity", "New York");
-    await say(s, `Got it — “${item}”.`, shopCityPrompt(item));
-    return;
-  }
-  await runSearchFlow(s, `Got it — searching ${item} near ${s.shoppingCity}…`);
+  rememberItem(stayOf(s), item);
+  await runSearchFlow(s, `Got it — searching ${item}…`);
 }
 
 async function selectListing(s: Session, idx: number): Promise<void> {
@@ -927,8 +960,6 @@ function hydratePending(s: Session): void {
   } else if (s.step === "await_delivery_city") {
     if (s.deliveryCity) setOffer(s, "deliveryCity", s.deliveryCity, DEST_ASK);
     else parkDestAsk(s);
-  } else if (s.step === "await_shopping_city") {
-    setOffer(s, "shoppingCity", "New York", "Which town should I buy from (the traveler’s home)? New York works if you want the US catalog.");
   } else if (s.step === "await_product") {
     if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
@@ -948,7 +979,7 @@ function reaskPrompt(s: Session): string {
         : s.step === "await_delivery_city"
           ? DEST_ASK
           : s.step === "await_shopping_city"
-            ? "Which town should I buy from (the traveler’s home)? New York works if you want the US catalog."
+            ? DEST_ASK
             : s.step === "await_product"
               ? shopperIntakeLine(s)
             : s.step === "await_listing"
@@ -956,10 +987,10 @@ function reaskPrompt(s: Session): string {
               : s.step === "await_traveler"
                 ? `Pick a traveler — a name or number from 1 to ${s.ranked?.length ?? 1}.`
                 : s.step === "await_traveler_decision"
-                  ? `Still waiting on ${s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler"}. I’ll ping you when they agree.`
+                  ? `Waiting on ${s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler"}. I’ll ping you when they agree.`
                   : s.step === "await_pay_confirm"
                     ? `Say yes when you’re ready to lock ${formatUsd(s.totalCents ?? 0)} test USDC.`
-                    : "Still on that last question — say yes to the suggestion, or send the value.")
+                    : s.pending?.prompt || "Say yes to the suggestion, or send the value.")
   );
 }
 
@@ -1016,7 +1047,7 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
   const greeting = /^(hi|hello|hey|start|menu)\b[,!.\s]*$/i.test(text);
   if (greeting) {
     const prompt = s.pending?.prompt?.trim();
-    await reply(s, prompt || "Still on that last question — say yes to the suggestion, or send the value.");
+    await reply(s, prompt || s.pending?.prompt || "Say yes to the suggestion, or send the value.");
     return true;
   }
 
@@ -1446,8 +1477,8 @@ export async function handleInbound(args: {
         s,
         prompt ||
           (s.ranked?.length && s.selected
-            ? `Still on that order — say yes to see the total and wait on ${s.ranked[0]!.name}.`
-            : `Still on that last step — say yes to continue.`),
+            ? `Say yes to see the total and wait on ${s.ranked[0]!.name}.`
+            : `Say yes to continue.`),
         { thinkMs: 400 },
       );
     } catch (sendErr: any) {
@@ -1498,16 +1529,8 @@ async function commitConfirmedProduct(
   appendEpisode(cog.memory, "slot", `Product locked: ${q}`, { product: q });
   if (slots) applyCognitiveSlots(s, slots);
   markSessionDirty();
-
-  // If US city was filled (and not just the default placeholder path), search;
-  // otherwise ask for shopping city — New York stays the suggested default.
-  const cityFromSlots = Boolean(slots?.usCity?.trim());
-  if (cityFromSlots) {
-    await runSearchFlow(s, `Searching “${q}” near ${s.shoppingCity}…`);
-    return;
-  }
-  s.step = "await_shopping_city";
-  markSessionDirty();
+  rememberItem(stayOf(s), q);
+  await runSearchFlow(s, `Searching “${q}”…`);
 }
 
 async function handleInboundInner(
@@ -1719,24 +1742,18 @@ async function handleInboundInner(
     if (decision.bubbles.length) await say(s, ...decision.bubbles);
     if (decision.confirmedProduct) {
       await commitConfirmedProduct(s, decision.confirmedProduct, decision.applySlots);
-      if (!s.searchQuery) return;
-      if (decision.confirmedUsCity) {
+      return;
+    }
+    if (decision.confirmedUsCity) {
+      if (s.searchQuery) {
         s.shoppingCity = decision.confirmedUsCity;
         markSessionDirty();
         await runSearchFlow(s);
         return;
       }
-      if ((s.step as Step) === "await_shopping_city" && s.searchQuery && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
-        setOffer(s, "shoppingCity", "New York");
-        await reply(s, shopCityPrompt(s.searchQuery));
-      }
-      markSessionDirty();
-      return;
-    }
-    if (decision.confirmedUsCity) {
-      s.shoppingCity = decision.confirmedUsCity;
-      markSessionDirty();
-      await runSearchFlow(s);
+      parkDestAsk(s);
+      commitDeliveryCity(s, decision.confirmedUsCity);
+      await sayHost(s, stayOf(s).lastAct ?? "CONTINUE", DEST_ASK);
       return;
     }
     if (!decision.fallthrough) {
@@ -1789,6 +1806,11 @@ async function handleInboundInner(
         await sayHost(s, "REASK", parkItemAsk(s));
         return;
       }
+      const inboundUrl = extractProductUrl(inbound) ?? extractProductUrl(text);
+      if (inboundUrl) {
+        await intakeProductUrl(s, inboundUrl);
+        return;
+      }
       let query = namedProduct(inbound);
       const llm = makeLlm();
       if (llm && process.env.LINQ_LLM_EXTRACT !== "0") {
@@ -1813,42 +1835,22 @@ async function handleInboundInner(
         return;
       }
       s.searchQuery = query;
-      s.step = "await_shopping_city";
-      setOffer(s, "shoppingCity", "New York");
       ensureCognition(s).topic = "shopping";
       appendEpisode(ensureCognition(s).memory, "slot", `Product from text: ${query}`, { product: query });
       markSessionDirty();
       rememberItem(stayOf(s), query);
-      await sayHost(s, "NEW", shopCityPrompt(query));
+      await runSearchFlow(s, `Got it — searching ${query}…`);
       return;
     }
     case "await_shopping_city": {
-      if (intent.kind === "reject_results") {
-        s.step = "await_product";
-        markSessionDirty();
-        await reply(s, `No problem — what should I look for instead?`);
+      // Catalog is national. Leftover sessions on this step search and move on.
+      if (s.searchQuery) {
+        await runSearchFlow(s);
         return;
       }
-      if (/^(thanks|thank you|cool|great)\.?$/i.test(text)) {
-        setOffer(s, "shoppingCity", s.offer?.field === "shoppingCity" ? s.offer.value : "New York");
-        await reply(s, `Still on this — which town should I buy from (the traveler’s home)? New York works for the US catalog.`);
-        return;
-      }
-      if (isCityAdviceQuestion(text)) {
-        await say(s, ...recommendUsCityBubble(s.searchQuery));
-        return;
-      }
-      const city = parseShoppingCity(text);
-      if (!city) {
-        await reply(
-          s,
-          `I need the traveler’s home town — try New York or Atlanta if you want the US store catalog, or another known city.`,
-        );
-        return;
-      }
-      s.shoppingCity = city;
+      s.step = "await_product";
       markSessionDirty();
-      await runSearchFlow(s);
+      await sayHost(s, "REASK", parkItemAsk(s));
       return;
     }
     case "await_listing": {
@@ -2056,7 +2058,7 @@ async function handleInboundInner(
         await reply(s, next ? `They couldn’t take it. Want me to try ${next.name}?` : `They couldn’t take it. Want a different traveler?`);
         return;
       }
-      await reply(s, `Still waiting on ${waitingName}. I’ll ping you when they agree.`);
+      await reply(s, `Waiting on ${waitingName}. I’ll ping you when they agree.`);
       return;
     }
     case "await_pay_confirm": {

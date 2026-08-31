@@ -55,7 +55,7 @@ export type Session = {
   relayMessageId?: string;
   step: Step;
   searchQuery?: string;
-  shoppingCity: string;
+  shoppingCity?: string;
   deliveryCity?: string;
   deadline?: Date;
   maxFeeCents?: number;
@@ -131,7 +131,6 @@ export function getOrCreateSession(
       chatId,
       channel: opts?.channel ?? "linq",
       step: "idle",
-      shoppingCity: "New York",
       pending: null,
       stay: { openedAt: Date.now() },
       updatedAt: Date.now(),
@@ -161,7 +160,7 @@ export function getOrCreateSession(
 export function resetSession(s: Session) {
   s.step = "idle";
   s.searchQuery = undefined;
-  s.shoppingCity = "New York";
+  s.shoppingCity = undefined;
   s.deliveryCity = undefined;
   s.deadline = undefined;
   s.maxFeeCents = undefined;

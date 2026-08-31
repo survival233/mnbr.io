@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseItem } from "./item";
+import { parseItem, extractProductUrl } from "./item";
 
 describe("parseItem — product only, never the utterance", () => {
   it("returns null for shop intent without a named product", () => {
@@ -24,5 +24,10 @@ describe("parseItem — product only, never the utterance", () => {
     expect(parseItem("New York")).toBeNull();
     expect(parseItem("Tema")).toBeNull();
     expect(parseItem("tomorrow")).toBeNull();
+  });
+
+  it("does not fill item with a pasted product URL", () => {
+    expect(parseItem("https://www.ebay.com/itm/usb-c-charger")).toBeNull();
+    expect(extractProductUrl("https://www.ebay.com/itm/usb-c-charger")).toMatch(/^https:\/\//);
   });
 });
