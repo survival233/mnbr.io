@@ -41,6 +41,52 @@ loadEnvFile("./../.env");
 loadEnvFile("./../../shopper-agent/.env", SHARED_FROM_SIBLINGS);
 loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
 
+/** Render web services scan this port on 0.0.0.0. Bind it before loading traveler-flow. */
+const PORT = Number(process.env.PORT ?? process.env.TRAVELER_AGENT_PORT ?? "8791");
+const HOST = "0.0.0.0";
+const startedAt = Date.now();
+
+function ok(res: ServerResponse, body: unknown = { ok: true }, status = 200) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function fail(res: ServerResponse, code: number, msg: string) {
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: msg }));
+}
+
+type RequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+
+let dispatch: RequestHandler = async (req, res) => {
+  const url = req.url ?? "/";
+  if (req.method === "GET" && (url === "/" || url === "/health")) {
+    ok(res, {
+      service: "manebra-traveler-agent",
+      status: "starting",
+      startedAt: new Date(startedAt).toISOString(),
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    });
+    return;
+  }
+  fail(res, 503, "starting");
+};
+
+const server = createServer((req, res) => {
+  void dispatch(req, res).catch((e: any) => {
+    console.error(`[traveler-agent] request error: ${e?.message ?? e}`);
+    if (!res.headersSent) fail(res, 500, "internal error");
+  });
+});
+
+await new Promise<void>((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(PORT, HOST, () => {
+    console.log(`[traveler-agent] listening on ${HOST}:${PORT}`);
+    resolve();
+  });
+});
+
 const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
   "./linq-client.mts"
 );
@@ -61,9 +107,7 @@ const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await
 
 initSessionStore();
 
-const PORT = Number(process.env.TRAVELER_AGENT_PORT ?? process.env.PORT ?? "8791");
 const seen = new Set<string>();
-const startedAt = Date.now();
 let lastInboundAt: number | null = null;
 let inboundCount = 0;
 let lastChannel: string | null = null;
@@ -91,16 +135,6 @@ async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   return Buffer.concat(chunks).toString("utf8");
-}
-
-function ok(res: ServerResponse, body: unknown = { ok: true }, status = 200) {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-function fail(res: ServerResponse, code: number, msg: string) {
-  res.writeHead(code, { "content-type": "application/json" });
-  res.end(JSON.stringify({ error: msg }));
 }
 
 function rememberEvent(eventId: string | undefined): boolean {
@@ -188,7 +222,7 @@ async function startRelayLongPoll() {
   void loop();
 }
 
-const server = createServer(async (req, res) => {
+dispatch = async (req, res) => {
   const url = req.url ?? "/";
   const hdrs = req.headers as Record<string, string | string[] | undefined>;
 
@@ -294,7 +328,7 @@ const server = createServer(async (req, res) => {
   }
 
   fail(res, 404, "not found");
-});
+};
 
 function gracefulExit(code = 0) {
   try {
@@ -305,36 +339,33 @@ function gracefulExit(code = 0) {
   process.exit(code);
 }
 
-server.listen(PORT, () => {
-  console.log(`[traveler-agent] listening on :${PORT}`);
-  if (!linqOff) console.log(`[traveler-agent] webhook POST /webhooks/linq?version=2026-02-03`);
-  console.log(`[traveler-agent] webhook POST /webhooks/relay (optional)`);
-  console.log(
-    `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"} keys=${relayTokenKeyNames().join(",") || "none"}`,
-  );
-  void ensureCloudWebhook();
-  void startRelayLongPoll();
-  const pollMarketplace =
-    Boolean(process.env.DATABASE_URL?.trim()) ||
-    process.env.PAYMENT_MODE === "demo" ||
-    process.env.DEMO_LOCAL_CHAIN === "1" ||
-    process.env.DEMO_LOCAL_CHAIN === "true";
-  if (pollMarketplace) {
-    void import("@manebra/db")
-      .then(({ expireStaleMarketplaceOffers }) => expireStaleMarketplaceOffers())
-      .then((n) => {
-        if (n) console.log(`[traveler-agent] expired ${n} stale marketplace offer(s)`);
-      })
-      .catch((e: any) => {
-        console.warn(`[traveler-agent] expire stale offers: ${e?.message ?? e}`);
-      });
-    setInterval(() => {
-      void syncTravelerMarketplace().catch((e: any) => {
-        console.warn(`[traveler-agent] marketplace sync: ${e?.message ?? e}`);
-      });
-    }, 2000);
-  }
-});
+if (!linqOff) console.log(`[traveler-agent] webhook POST /webhooks/linq?version=2026-02-03`);
+console.log(`[traveler-agent] webhook POST /webhooks/relay (optional)`);
+console.log(
+  `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"} keys=${relayTokenKeyNames().join(",") || "none"}`,
+);
+void ensureCloudWebhook();
+void startRelayLongPoll();
+const pollMarketplace =
+  Boolean(process.env.DATABASE_URL?.trim()) ||
+  process.env.PAYMENT_MODE === "demo" ||
+  process.env.DEMO_LOCAL_CHAIN === "1" ||
+  process.env.DEMO_LOCAL_CHAIN === "true";
+if (pollMarketplace) {
+  void import("@manebra/db")
+    .then(({ expireStaleMarketplaceOffers }) => expireStaleMarketplaceOffers())
+    .then((n) => {
+      if (n) console.log(`[traveler-agent] expired ${n} stale marketplace offer(s)`);
+    })
+    .catch((e: any) => {
+      console.warn(`[traveler-agent] expire stale offers: ${e?.message ?? e}`);
+    });
+  setInterval(() => {
+    void syncTravelerMarketplace().catch((e: any) => {
+      console.warn(`[traveler-agent] marketplace sync: ${e?.message ?? e}`);
+    });
+  }, 2000);
+}
 
 process.on("SIGINT", () => {
   console.log("[traveler-agent] shutting down…");
