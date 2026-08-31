@@ -15,10 +15,10 @@ import {
   personaSummary,
   predictiveAsk,
 } from "./state.mts";
-import { HOSPITALITY_PERSONA, llmStayBlock, parseItem } from "@manebra/dialog";
+import { HOSPITALITY_PERSONA, llmStayBlock, parseItem, parseShopPlace, SHOP_PLACE_ASK } from "@manebra/dialog";
 import {
   isCityAdviceQuestion,
-  parseShoppingCity,
+  recommendUsCityBubble,
 } from "./cities.mts";
 
 export type PolicyDecision = {
@@ -53,7 +53,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 function entitiesSummary(s: Session): string {
   return JSON.stringify({
     product: s.searchQuery ?? s.cognition?.pending?.hypothesis ?? null,
-    usCity: s.shoppingCity ?? null,
+    usCity: s.shoppingCity?.trim() ? s.shoppingCity : null,
     deliveryCity: s.deliveryCity,
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
@@ -112,17 +112,8 @@ export async function runPolicyTurn(args: {
     cog.persona.beliefs = [...new Set([...cog.persona.beliefs, `wants ${product}`])].slice(-8);
     cog.persona.openQuestions = cog.persona.openQuestions.filter((q) => !/product/i.test(q));
     appendEpisode(cog.memory, "affirm", `Confirmed product ${product}`, { product });
-    const ask =
-      predictiveAsk({
-        product,
-        shoppingCity: "national",
-        deliveryCity: s.deliveryCity,
-        deadline: s.deadline,
-        maxFeeCents: s.maxFeeCents,
-        tone: cog.persona.communication,
-      }) ?? "Which city should it land in?";
     return {
-      bubbles: [`Locked in — ${product}.`, ask],
+      bubbles: [`Locked in — ${product}.`],
       confirmedProduct: product,
       fallthrough: false,
     };
@@ -140,18 +131,19 @@ export async function runPolicyTurn(args: {
 
   // Leftover shopping-city step: catalog is national — host searches.
   if (step === "await_shopping_city" && text && isCityAdviceQuestion(text) && !hasMedia) {
-    appendEpisode(cog.memory, "clarify", "Catalog is national — no shop-in-city");
-    return { bubbles: [], fallthrough: true };
+    appendEpisode(cog.memory, "clarify", "Asked which shop-from place");
+    return { bubbles: recommendUsCityBubble(), fallthrough: false };
   }
 
   if (step === "await_shopping_city" && text && !hasMedia) {
-    const dest = parseShoppingCity(text);
-    if (dest) {
-      appendEpisode(cog.memory, "slot", `Handover city ${dest}`, { deliveryCity: dest });
+    const city = parseShopPlace(text);
+    if (city) {
+      appendEpisode(cog.memory, "slot", `Buy-from place ${city}`, { usCity: city });
       return {
         bubbles: [],
-        applySlots: { deliveryCity: dest },
-        fallthrough: true,
+        confirmedUsCity: city,
+        applySlots: { usCity: city },
+        fallthrough: false,
       };
     }
   }
@@ -168,7 +160,10 @@ export async function runPolicyTurn(args: {
       };
     }
     if (step === "await_shopping_city" && text) {
-      return { bubbles: [], fallthrough: true };
+      return {
+        bubbles: [SHOP_PLACE_ASK],
+        fallthrough: false,
+      };
     }
     return { bubbles: [], fallthrough: true };
   }
@@ -218,7 +213,7 @@ export async function runPolicyTurn(args: {
         bubbles: [
           predictiveAsk({
             product: s.searchQuery,
-            shoppingCity: s.shoppingCity || "national",
+            shoppingCity: s.shoppingCity?.trim() || undefined,
             deliveryCity: s.deliveryCity,
             deadline: s.deadline,
             maxFeeCents: s.maxFeeCents,
@@ -314,12 +309,12 @@ export async function runPolicyTurn(args: {
 
   if (turn.action === "ask_user") {
     // If model tried to stuff a non-city into usCity, ignore it
-    const slotCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
+    const slotCity = turn.slots.usCity ? parseShopPlace(turn.slots.usCity) : null;
     const ask =
       turn.askUser ??
       predictiveAsk({
         product: s.searchQuery,
-        shoppingCity: "national",
+        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity?.trim() || undefined,
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
@@ -342,14 +337,15 @@ export async function runPolicyTurn(args: {
       (cog.pending?.kind === "confirm_product" ? cog.pending.hypothesis : null);
     const product = rawProduct ? parseItem(rawProduct) : null;
 
-    const usCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
+    const usCity = turn.slots.usCity ? parseShopPlace(turn.slots.usCity) : null;
     const safeSlots = { ...turn.slots, usCity };
 
     if (step === "await_shopping_city" && usCity) {
       return {
         bubbles: turn.askUser ? [turn.askUser] : [],
-        applySlots: { ...safeSlots, deliveryCity: usCity, usCity: null },
-        fallthrough: true,
+        confirmedUsCity: usCity,
+        applySlots: safeSlots,
+        fallthrough: false,
         monologueLog: cog.lastMonologue,
       };
     }
@@ -389,7 +385,11 @@ export async function runPolicyTurn(args: {
   }
 
   if (step === "await_shopping_city") {
-    return { bubbles: [], fallthrough: true, monologueLog: cog.lastMonologue };
+    return {
+      bubbles: turn.askUser ? [turn.askUser] : [SHOP_PLACE_ASK],
+      fallthrough: false,
+      monologueLog: cog.lastMonologue,
+    };
   }
 
   return {

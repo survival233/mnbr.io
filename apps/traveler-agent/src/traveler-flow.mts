@@ -12,8 +12,9 @@ import {
 import { handleTravelInbound } from "./travel-flow.mts";
 import { blankTrip } from "./trip-state.mts";
 import {
-  latestOpenOffer,
-  latestActiveOffer,
+  getOpenOfferForTraveler,
+  getActiveOfferForTraveler,
+  acceptOfferIfOpen,
   updateOffer,
   getTravelerCard,
 } from "@manebra/db";
@@ -31,9 +32,11 @@ import {
   rememberItem,
   rememberOffer,
   rememberWait,
+  travelerAsk,
   guestCityName,
   type DialogSession,
 } from "@manebra/dialog";
+import { offerBelongsToTraveler } from "./offer-fit.mts";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -128,72 +131,74 @@ async function say(s: Session, ...bubbles: string[]) {
   }
 }
 
-function carryUsd(cents: number): string {
-  return `$${(cents / 100).toFixed(0)}`;
-}
-
 function travelerDestination(s: Session): string | null {
   const raw = s.trip?.destination ?? s.travelDestination;
   if (!raw?.trim()) return null;
   return guestCityName(raw) ?? hubCity(raw) ?? raw.trim();
 }
 
-function offerFitsThisTraveler(s: Session, offer: { destinationCity?: string | null }): boolean {
+function offerFitsThisTraveler(
+  s: Session,
+  offer: { travelerId?: string | null; destinationCity?: string | null },
+): boolean {
+  if (!offerBelongsToTraveler(offer, s.phone)) return false;
   const dest = travelerDestination(s);
-  if (!dest || !offer.destinationCity) return false;
-  return sameMetro(offer.destinationCity, dest);
+  if (dest && offer.destinationCity && !sameMetro(offer.destinationCity, dest)) return false;
+  return true;
 }
 
-function requestInvite(s: Session, offer: { item: string; travelerFeeCents: number; totalCents: number; needBy: Date | null; destinationCity?: string | null }): string[] {
+function requestInvite(s: Session, offer: {
+  item: string;
+  itemCostCents?: number;
+  travelerFeeCents: number;
+  totalCents: number;
+  needBy: Date | null;
+  destinationCity?: string | null;
+  nextTravelerName?: string | null;
+}): string[] {
   const dest = offer.destinationCity ?? travelerDestination(s) ?? "your city";
-  const when = s.trip?.departure_date ? ` on ${s.trip.departure_date}` : "";
-  const need = offer.needBy ? ` by ${new Date(offer.needBy).toLocaleDateString()}` : "";
-  const earn = offer.travelerFeeCents || offer.totalCents;
-  return [
-    `You’re headed to ${dest}${when}.`,
-    `A shopper needs ${offer.item}${need}. Traveler earnings about ${carryUsd(earn)}.`,
-    `Shop & Deliver — accept or decline?`,
-  ];
+  const merchant = offer.nextTravelerName?.trim() || "the store";
+  return travelerAsk({
+    city: dest,
+    title: offer.item,
+    merchant,
+    itemCents: offer.itemCostCents ?? 0,
+    earningsCents: offer.travelerFeeCents || 0,
+  });
 }
 
-function latestTravelerSession(): Session | null {
-  const withChat = allSessions().filter((s) => s.chatId);
-  if (!withChat.length) return null;
-  return withChat.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
-}
-
-/** Ping Traveler when a shopper request appears or funds land (shared marketplace store). */
+/** Ping matching travelers when a shopper request appears or funds land. */
 export async function syncTravelerMarketplace(): Promise<void> {
-  const s = latestTravelerSession();
-  if (!s?.chatId) return;
+  for (const s of allSessions()) {
+    if (!s.chatId) continue;
+    const open = await getOpenOfferForTraveler(s.phone);
+    if (open && !open.notifiedTraveler && offerFitsThisTraveler(s, open)) {
+      await updateOffer(open.id, { notifiedTraveler: true });
+      rememberItem(stayOf(s), open.item);
+      rememberOffer(stayOf(s), open.id);
+      rememberQuestion(stayOf(s), "Want it?");
+      await say(s, ...requestInvite(s, open));
+      continue;
+    }
 
-  const open = await latestOpenOffer();
-  if (open && !open.notifiedTraveler && offerFitsThisTraveler(s, open)) {
-    await updateOffer(open.id, { notifiedTraveler: true });
-    rememberItem(stayOf(s), open.item);
-    rememberOffer(stayOf(s), open.id);
-    rememberQuestion(stayOf(s), `Shop & Deliver — accept or decline?`);
-    await say(s, ...requestInvite(s, open));
-    return;
-  }
-
-  const carry = await latestActiveOffer();
-  if (carry?.status === "funded" && !carry.notifiedTravelerFunded) {
-    await updateOffer(carry.id, { notifiedTravelerFunded: true });
-    const onFile = await getTravelerCard(s.phone);
-    await say(
-      s,
-      `Shopper funded — ${carry.item} is locked in escrow.`,
-      onFile
-        ? `Shop with your card on file. When you meet, enter their 6-digit handover code.`
-        : `When you meet, enter their 6-digit handover code.`,
-    );
-    if (agentcardConfigured() && !onFile) {
-      try {
-        const link = await createWalletLink(s.phone);
-        await say(s, `Add a test card (4242…) so you can shop with yours.`, link.url);
-      } catch (e: any) {
-        console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
+    const carry = await getActiveOfferForTraveler(s.phone);
+    if (carry?.status === "funded" && !carry.notifiedTravelerFunded) {
+      await updateOffer(carry.id, { notifiedTravelerFunded: true });
+      const onFile = await getTravelerCard(s.phone);
+      await say(
+        s,
+        `Shopper funded — ${carry.item} is locked in escrow.`,
+        onFile
+          ? `Shop with your card on file. When you meet, enter their 6-digit handover code.`
+          : `When you meet, enter their 6-digit handover code.`,
+      );
+      if (agentcardConfigured() && !onFile) {
+        try {
+          const link = await createWalletLink(s.phone);
+          await say(s, `Add a test card (4242…) so you can shop with yours.`, link.url);
+        } catch (e: any) {
+          console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
+        }
       }
     }
   }
@@ -204,8 +209,8 @@ async function tryHandleMarketplaceOffer(
   text: string,
   io: { reply: typeof reply; say: typeof say },
 ): Promise<boolean> {
-  const open = await latestOpenOffer();
-  const active = await latestActiveOffer();
+  const open = await getOpenOfferForTraveler(s.phone);
+  const active = await getActiveOfferForTraveler(s.phone);
   const listed = open && offerFitsThisTraveler(s, open) ? open : null;
   const inFlight =
     active &&
@@ -224,9 +229,13 @@ async function tryHandleMarketplaceOffer(
 
   if (carry.status === "offered") {
     if (yes) {
-      await updateOffer(carry.id, { status: "accepted", notifiedShopper: false });
-      rememberItem(stayOf(s), carry.item);
-      rememberOffer(stayOf(s), carry.id);
+      const accepted = await acceptOfferIfOpen(carry.id);
+      if (!accepted) {
+        await io.say(s, `That request is no longer open.`);
+        return true;
+      }
+      rememberItem(stayOf(s), accepted.item);
+      rememberOffer(stayOf(s), accepted.id);
       rememberWait(stayOf(s));
       await io.say(s, `Accepted. Waiting for the shopper to fund — no Shop & Deliver until then.`);
       if (agentcardConfigured()) {
@@ -248,7 +257,7 @@ async function tryHandleMarketplaceOffer(
     }
     if (no) {
       await updateOffer(carry.id, { status: "declined", notifiedShopper: false });
-      await io.say(s, `Declined. I’ll let the shopper know.`);
+      await io.say(s, `Declined. I’ll look for another Shop & Deliver.`);
       return true;
     }
     if (flights || isTravelIntent(text)) return false;

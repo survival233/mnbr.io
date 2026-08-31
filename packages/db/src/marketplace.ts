@@ -14,7 +14,14 @@ async function getPrisma(): Promise<Prisma> {
   return prisma;
 }
 
-export type OfferStatus = "offered" | "accepted" | "declined" | "funded" | "released";
+export type OfferStatus =
+  | "offered"
+  | "accepted"
+  | "declined"
+  | "cancelled"
+  | "expired"
+  | "funded"
+  | "released";
 
 export type StoredOffer = {
   id: string;
@@ -406,11 +413,19 @@ export async function latestOpenOffer(): Promise<StoredOffer | null> {
   return open[0] ?? null;
 }
 
+export async function getOpenOfferForTraveler(travelerId: string): Promise<StoredOffer | null> {
+  const open = await listOpenOffers();
+  return open.find((o) => o.travelerId === travelerId) ?? null;
+}
+
+function isInFlight(status: string): boolean {
+  return status === "offered" || status === "accepted" || status === "funded";
+}
+
 /** Newest in-flight offer (offered/accepted/funded) — used for handover, not inbound listing. */
 export async function latestActiveOffer(): Promise<StoredOffer | null> {
-  const active = (status: string) => status !== "released" && status !== "declined";
   if (!marketplaceConfigured()) {
-    const rows = loadFile().offers.filter((o) => active(o.status) && !isStaleDemoItem(o.item));
+    const rows = loadFile().offers.filter((o) => isInFlight(o.status) && !isStaleDemoItem(o.item));
     if (!rows.length) return null;
     return rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
   }
@@ -422,6 +437,44 @@ export async function latestActiveOffer(): Promise<StoredOffer | null> {
     take: 10,
   });
   return rows.map(rowToOffer).find((o) => !isStaleDemoItem(o.item)) ?? null;
+}
+
+export async function getActiveOfferForTraveler(travelerId: string): Promise<StoredOffer | null> {
+  if (!marketplaceConfigured()) {
+    const rows = loadFile().offers.filter(
+      (o) => o.travelerId === travelerId && isInFlight(o.status) && !isStaleDemoItem(o.item),
+    );
+    if (!rows.length) return null;
+    return rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const rows = await prisma.marketplaceOffer.findMany({
+    where: { travelerId, status: { in: ["offered", "accepted", "funded"] } },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+  return rows.map(rowToOffer).find((o) => !isStaleDemoItem(o.item)) ?? null;
+}
+
+/** Accept only if still offered — drops a late yes after cancel / timeout / another accept. */
+export async function acceptOfferIfOpen(id: string): Promise<StoredOffer | null> {
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    const i = store.offers.findIndex((o) => o.id === id);
+    if (i < 0 || store.offers[i]!.status !== "offered") return null;
+    store.offers[i] = { ...store.offers[i]!, status: "accepted", notifiedShopper: false };
+    saveFile(store);
+    return store.offers[i]!;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const res = await prisma.marketplaceOffer.updateMany({
+    where: { id, status: "offered" },
+    data: { status: "accepted", notifiedShopper: false },
+  });
+  if (res.count === 0) return null;
+  return getOffer(id);
 }
 
 /** Close leftover offered/accepted rows that never funded (demo leftovers). */

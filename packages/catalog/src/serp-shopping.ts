@@ -36,6 +36,15 @@ function inferCategory(query: string, title: string): ProductListing["category"]
   return "electronics";
 }
 
+function parseTaxCents(extensions: string[]): number | undefined {
+  const t = extensions.filter(Boolean).join(" ");
+  const m = t.match(/\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:estimated\s+)?tax\b/i);
+  if (!m) return undefined;
+  const dollars = Number(m[1]);
+  if (!Number.isFinite(dollars) || dollars < 0) return undefined;
+  return Math.round(dollars * 100);
+}
+
 function availabilityFrom(raw: string | undefined): Pick<ProductListing, "availability" | "availabilityLabel"> {
   const t = (raw ?? "").toLowerCase();
   if (/out of stock|unavailable|sold out/.test(t)) {
@@ -77,6 +86,7 @@ export async function searchGoogleShoppingLive(args: {
   const market = wired ?? nationalShopMarket();
   if (!market) throw new NoShopMarketError(city || "national");
 
+  const countryOnly = /^(us|usa|united states)$/i.test(city);
   const params = new URLSearchParams({
     engine: "google_shopping",
     q: args.query,
@@ -85,8 +95,8 @@ export async function searchGoogleShoppingLive(args: {
     gl: market.gl,
     num: "40",
   });
-  // National catalog: omit city location rather than inventing New York.
-  if (city && wired) params.set("location", `${city}, ${market.locationCountry}`);
+  if (city && wired && !countryOnly) params.set("location", `${city}, ${market.locationCountry}`);
+  else if (countryOnly) params.set("location", market.locationCountry);
 
   const res = await fetch(`https://serpapi.com/search.json?${params}`);
   if (!res.ok) {
@@ -106,7 +116,8 @@ export async function searchGoogleShoppingLive(args: {
     if (!store) continue;
     const priceCents = parsePriceToCents(item.extracted_price ?? item.price);
     if (priceCents == null) continue;
-    const ext = [...(item.extensions ?? []), item.delivery ?? ""].filter(Boolean).join(" ");
+    const extParts = [...(item.extensions ?? []), item.delivery ?? ""].filter(Boolean);
+    const ext = extParts.join(" ");
     const avail = availabilityFrom(ext);
     const listing: ProductListing = {
       listingId: listingIdFor(store.slug, url),
@@ -114,6 +125,7 @@ export async function searchGoogleShoppingLive(args: {
       storeSlug: store.slug,
       productTitle: item.title,
       priceCents,
+      taxCents: parseTaxCents(extParts),
       currency: market.currency,
       availability: avail.availability,
       availabilityLabel: avail.availabilityLabel,

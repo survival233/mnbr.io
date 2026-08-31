@@ -58,13 +58,18 @@ export type Session = {
   shoppingCity?: string;
   deliveryCity?: string;
   deadline?: Date;
+  /** Shopper-stated traveler earnings (cents). Never default to $30. */
   maxFeeCents?: number;
+  /** True after one earnings re-ask with no number. */
+  earningsReasked?: boolean;
   category?: string;
   listings?: ProductListing[];
   selected?: ProductListing;
   ranked?: RankedTraveler[];
   extendCandidate?: RankedTraveler;
   chosenTravelerId?: string;
+  /** Travelers already offered this request (decline / timeout). Do not re-offer. */
+  triedTravelerIds?: string[];
   /** Suggested slot shown in the last agent turn (dialog state, not chat log). */
   offer?: DialogOffer;
   /** Canonical open question. Prefer this over offer when resolving a turn. */
@@ -131,6 +136,7 @@ export function getOrCreateSession(
       chatId,
       channel: opts?.channel ?? "linq",
       step: "idle",
+      shoppingCity: undefined,
       pending: null,
       stay: { openedAt: Date.now() },
       updatedAt: Date.now(),
@@ -164,12 +170,14 @@ export function resetSession(s: Session) {
   s.deliveryCity = undefined;
   s.deadline = undefined;
   s.maxFeeCents = undefined;
+  s.earningsReasked = undefined;
   s.category = undefined;
   s.listings = undefined;
   s.selected = undefined;
   s.ranked = undefined;
   s.extendCandidate = undefined;
   s.chosenTravelerId = undefined;
+  s.triedTravelerIds = undefined;
   s.offer = undefined;
   s.pending = null;
   s.bidId = undefined;

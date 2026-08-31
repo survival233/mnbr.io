@@ -24,7 +24,8 @@ export function nationalShopMarket(): ShopMarket {
 
 export function shopMarketForCity(city?: string): ShopMarket | undefined {
   const t = city?.trim();
-  if (!t) return nationalShopMarket();
+  if (!t) return undefined;
+  if (/^(us|usa|united states)$/i.test(t)) return nationalShopMarket();
   const hub = resolveHub(t);
   if (!hub?.country) return undefined;
   return SHOP_MARKETS.find((m) => m.countries.includes(hub.country));

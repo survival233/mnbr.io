@@ -15,6 +15,8 @@ export type EarnOffer = {
   destinationCity: string;
   feeCents: number;
   score: number;
+  merchant?: string;
+  itemCostCents?: number;
 };
 
 export function dbConfigured(): boolean {
@@ -98,6 +100,8 @@ export async function persistBookedTrip(args: {
           itemName: o.item,
           destinationCity: o.destinationCity ?? destCity,
           feeCents: o.travelerFeeCents || o.totalCents,
+          merchant: o.nextTravelerName ?? undefined,
+          itemCostCents: o.itemCostCents,
           score: 90,
         })),
       };
@@ -135,6 +139,8 @@ export async function persistBookedTrip(args: {
           itemName: o.item,
           destinationCity: o.destinationCity ?? destCity,
           feeCents: o.travelerFeeCents || o.totalCents,
+          merchant: o.nextTravelerName ?? undefined,
+          itemCostCents: o.itemCostCents,
           score: 90,
         });
       }
@@ -159,6 +165,7 @@ export async function persistBookedTrip(args: {
             itemName: item.itemName,
             destinationCity: item.destinationCity,
             feeCents: suggestedTravelerFeeCents(item.itemCostCents),
+            itemCostCents: item.itemCostCents,
             score: p.score,
           });
         }

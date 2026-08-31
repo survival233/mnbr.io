@@ -6,7 +6,7 @@ import { shopMarketForCity, nationalShopMarket, NoShopMarketError } from "./mark
 
 export { supportedShoppingCities, hasSerpApiKey, shopMarketForCity, nationalShopMarket, NoShopMarketError };
 
-/** Empty = national catalog. Never invent New York. */
+/** Empty = no search until the shopper names a shop-from place. Never invent New York. */
 export function catalogSearchCity(shoppingCity?: string | null): string {
   return shoppingCity?.trim() ?? "";
 }
@@ -22,7 +22,7 @@ export async function searchProducts(args: {
 }): Promise<ProductSearchResult> {
   const shoppingCity = catalogSearchCity(args.shoppingCity);
   const query = args.query.trim();
-  if (!query) {
+  if (!query || !shoppingCity) {
     return { query, shoppingCity, identifiedProduct: null, listings: [] };
   }
 

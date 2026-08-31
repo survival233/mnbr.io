@@ -22,6 +22,7 @@ import {
   ensureStay,
   rememberQuestion,
   rememberItem,
+  travelerAsk,
   type DialogPendingSlot,
 } from "@manebra/dialog";
 import { markSessionDirty, persistSessionsNow } from "./session.mts";
@@ -300,8 +301,13 @@ async function handlePickOrBook(
       const top = earnOffers[0]!;
       await say(
         s,
-        `You’re headed to ${top.destinationCity}. A shopper needs ${top.itemName}. Traveler earnings about $${(top.feeCents / 100).toFixed(0)}.`,
-        `Shop & Deliver — accept or decline?`,
+        ...travelerAsk({
+          city: top.destinationCity,
+          title: top.itemName,
+          merchant: top.merchant ?? "the store",
+          itemCents: top.itemCostCents ?? 0,
+          earningsCents: top.feeCents,
+        }),
       );
     } else {
       s.step = "done";
@@ -337,7 +343,7 @@ async function handleEarn(
   const n = parseInt(text, 10);
   if (n >= 1 && n <= offers.length) offer = offers[n - 1];
   if (!offer && !/^(y|yes|ok|okay|sure|yeah|yep|accept)\b/i.test(text)) {
-    await reply(s, `Say yes to accept this Shop & Deliver, or no to skip.`);
+    await reply(s, `Want it? Yes or no.`);
     return true;
   }
   if (!offer) {

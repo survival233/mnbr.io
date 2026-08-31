@@ -6,6 +6,8 @@ export interface ProductListing {
   storeSlug: "apple" | "bestbuy" | "walmart" | "target" | "amazon" | "link";
   productTitle: string;
   priceCents: number;
+  /** Catalog tax in cents when SerpAPI includes it; recap estimates otherwise. */
+  taxCents?: number;
   currency: string;
   availability: "in_stock" | "pickup_today" | "limited" | "out_of_stock" | "unknown";
   availabilityLabel: string;

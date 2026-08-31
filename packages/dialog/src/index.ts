@@ -13,7 +13,7 @@ export { persistBeforeAsk } from "./persist";
 export { parseDate, parseUsdCents, categoryOf } from "./parse";
 export { parseItem, extractProductUrl } from "./item";
 export { fuzzyMatchIndex } from "./fuzzy";
-export { parseUsShoppingCity, parseShoppingCity, parseDeliveryTown, parseTripDestination, parseTripOrigin, isDestinationShaped, guestCityName, isCityAdviceQuestion, US_SHOP_HUBS } from "./cities";
+export { parseUsShoppingCity, parseShoppingCity, parseShopCountry, parseShopPlace, parseDeliveryTown, parseTripDestination, parseTripOrigin, isDestinationShaped, guestCityName, isCityAdviceQuestion, US_SHOP_HUBS } from "./cities";
 export type { UsShopHub } from "./cities";
 export { HOSPITALITY_PERSONA } from "./persona";
 export {
@@ -32,5 +32,24 @@ export {
 } from "./memory";
 export type { DialogTurn } from "./memory";
 export { composeHostReply, hostBeats } from "./reply";
+export {
+  EARNINGS_ASK,
+  SHOP_PLACE_ASK,
+  SHOP_PLACE_NO_MARKET,
+  recapTotalCents,
+  estimateTaxCents,
+  taxCentsFor,
+  listingCaption,
+  listingImageParts,
+  guessImageContentType,
+  recapBody,
+  shopperWait,
+  shopperNobody,
+  shopperAccepted,
+  travelerAsk,
+  assignsTravelerBeforeAccept,
+  inventsThirtyEarnings,
+} from "./guest-copy";
+export type { ChatPart, ChatMediaPart, ChatTextPart } from "./guest-copy";
 export { SHOPPER_SLOT_SCHEMA, TRAVELER_SLOT_SCHEMA } from "./schema";
 export type { SlotDef, SlotKind } from "./schema";
