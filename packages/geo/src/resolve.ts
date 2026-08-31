@@ -40,7 +40,8 @@ function metroOf(row: AirportRow): Metro {
   return { id: row.metro, city: row.city, country: row.country };
 }
 
-function lookupKnown(t: string): Metro | null {
+/** Exact place: IATA, alias, catchment, or city name. Does not scan tokens in a sentence. */
+function lookupExact(t: string): Metro | null {
   if (/^[a-z]{3}$/.test(t) && BY_IATA.has(t)) return metroOf(BY_IATA.get(t)!);
 
   const named = ALIASES[t] ?? CATCHMENTS[t];
@@ -48,6 +49,12 @@ function lookupKnown(t: string): Metro | null {
 
   if (BY_CITY.has(t)) return metroOf(BY_CITY.get(t)!);
   if (BY_METRO.has(slug(t))) return metroOf(BY_METRO.get(slug(t))!);
+  return null;
+}
+
+function lookupKnown(t: string): Metro | null {
+  const exact = lookupExact(t);
+  if (exact) return exact;
 
   for (const tok of t.split(/[\s\-–—/|]+/)) {
     if (tok.length === 3 && BY_IATA.has(tok)) return metroOf(BY_IATA.get(tok)!);
@@ -56,6 +63,70 @@ function lookupKnown(t: string): Metro | null {
     if (BY_CITY.has(tok)) return metroOf(BY_CITY.get(tok)!);
   }
   return null;
+}
+
+/** A named place by itself (Lagos, ACC, New York). Not a full chat sentence. */
+export function placeMetro(raw?: string | null): Metro | null {
+  if (!raw?.trim()) return null;
+  const t = clean(raw);
+  if (!t) return null;
+  return lookupExact(t);
+}
+
+function stripPlaceTail(raw: string): string {
+  return raw
+    .replace(/\s+(?:on|by|next|this|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*$/i, "")
+    .replace(/[?!.,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const DEST_SHAPED =
+  /\b(?:going|flying|heading|headed|traveling|travelling|off|trip|flight|fly)\s+to\s+(.+)$/i;
+
+/**
+ * Arrival city from an utterance. Dest-shaped ("I'm going to Lagos") wins;
+ * otherwise a bare place. Never returns an IATA code.
+ */
+export function destinationMetro(raw?: string | null): Metro | null {
+  if (!raw?.trim()) return null;
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  const shaped =
+    trimmed.match(DEST_SHAPED) ||
+    trimmed.match(/\bbe\s+(?:in|at)\s+(.+)$/i) ||
+    trimmed.match(/\b(?:to|into)\s+([A-Za-z][A-Za-z\s.'-]{1,40})$/i);
+  if (shaped?.[1]) {
+    const inner = stripPlaceTail(shaped[1]);
+    const found = placeMetro(inner) ?? lookupExact(clean(inner));
+    if (found) return found;
+  }
+  return placeMetro(trimmed);
+}
+
+/** Origin city from "from X" or a bare place. */
+export function originMetro(raw?: string | null): Metro | null {
+  if (!raw?.trim()) return null;
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  const from = trimmed.match(/\bfrom\s+([A-Za-z][A-Za-z\s.'-]{1,40}?)(?:\s+to\b|$)/i);
+  if (from?.[1]) {
+    const found = placeMetro(stripPlaceTail(from[1]));
+    if (found) return found;
+  }
+  return placeMetro(trimmed);
+}
+
+/**
+ * IATA for flight search. A typed code stays itself (LGA → LGA);
+ * a city/alias maps to that metro's primary airport (New York → JFK, Lagos → LOS).
+ */
+export function hubIata(raw?: string | null): string | null {
+  if (!raw?.trim()) return null;
+  const t = clean(raw);
+  if (/^[a-z]{3}$/.test(t) && BY_IATA.has(t)) return BY_IATA.get(t)!.iata;
+  const metro = placeMetro(raw) ?? resolveHub(raw);
+  if (!metro) return null;
+  const row = BY_METRO.get(metro.id);
+  return row?.iata ?? null;
 }
 
 /**

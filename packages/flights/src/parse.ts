@@ -1,64 +1,12 @@
-import { normalizeCity } from "@manebra/calendar";
-import { hubCity } from "@manebra/geo";
+import { hubCity, hubIata, destinationMetro } from "@manebra/geo";
 import type { FlightSearchQuery } from "./types.js";
 
-const CITY_AIRPORTS: Record<string, string> = {
-  "New York": "JFK",
-  Newark: "EWR",
-  Washington: "IAD",
-  Atlanta: "ATL",
-  Chicago: "ORD",
-  Houston: "IAH",
-  "Los Angeles": "LAX",
-  Dallas: "DFW",
-  Boston: "BOS",
-  Accra: "ACC",
-  Kumasi: "KMS",
-  Tamale: "TML",
-  London: "LHR",
-  "San José": "SJO",
-  "Buenos Aires": "EZE",
-};
-
-const ALIASES: Record<string, string> = {
-  nyc: "JFK",
-  "new york city": "JFK",
-  manhattan: "JFK",
-  accra: "ACC",
-  jfk: "JFK",
-  lga: "LGA",
-  ewr: "EWR",
-  acc: "ACC",
-  sjo: "SJO",
-  eze: "EZE",
-  aep: "AEP",
-  "san jose": "SJO",
-  "san josé": "SJO",
-  "buenos aires": "EZE",
-};
-
 export function toAirportCode(raw: string): string | null {
-  const t = raw.trim().toLowerCase();
+  const t = raw.trim();
   if (!t) return null;
+  const iata = hubIata(t) ?? hubIata(destinationMetro(t)?.city ?? "");
+  if (iata) return iata;
   if (/^[a-z]{3}$/i.test(t)) return t.toUpperCase();
-  if (ALIASES[t]) return ALIASES[t]!;
-  const city = normalizeCity(raw);
-  if (city && CITY_AIRPORTS[city]) return CITY_AIRPORTS[city]!;
-  // "New York JFK" / "JFK New York"
-  const KNOWN = new Set([
-    "JFK", "LGA", "EWR", "ACC", "ATL", "ORD", "IAH", "LAX", "DFW", "BOS", "IAD", "DCA", "KMS", "TML", "LHR", "SJO", "EZE", "AEP",
-  ]);
-  const codeTok = t.match(/\b([a-z]{3})\b/i);
-  if (codeTok) {
-    const c = codeTok[1]!.toUpperCase();
-    if (KNOWN.has(c)) return c;
-  }
-  const withoutCode = t.replace(/\b[a-z]{3}\b/g, " ").replace(/\s+/g, " ").trim();
-  if (withoutCode) {
-    const city2 = normalizeCity(withoutCode);
-    if (city2 && CITY_AIRPORTS[city2]) return CITY_AIRPORTS[city2]!;
-    if (ALIASES[withoutCode]) return ALIASES[withoutCode]!;
-  }
   return null;
 }
 
@@ -192,10 +140,17 @@ export function parseTravelIntent(text: string): Partial<FlightSearchQuery> & { 
   }
 
   if (!out.destination) {
+    const placeTail =
+      "(?:\\s+(?:on|by|friday|monday|tuesday|wednesday|thursday|saturday|sunday|this|next|morning|evening)|$|,|\\.)";
     const toM =
+      t.match(new RegExp(`\\bbe in\\s+([A-Za-z][A-Za-z\\s.'-]{1,40}?)${placeTail}`, "i")) ||
       t.match(
-        /\b(?:to|in|into)\s+([A-Za-z][A-Za-z\s.]{1,30}?)(?:\s+(?:on|by|friday|monday|tuesday|wednesday|thursday|saturday|sunday|this|next|,|\.|$))/i,
-      ) || t.match(/\bbe in\s+([A-Za-z][A-Za-z\s.]{1,30}?)(?:\s|$)/i);
+        new RegExp(
+          `\\b(?:going|flying|heading|headed|traveling|travelling|off|trip|flight|fly)\\s+to\\s+([A-Za-z][A-Za-z\\s.'-]{1,40}?)${placeTail}`,
+          "i",
+        ),
+      ) ||
+      t.match(new RegExp(`\\b(?:to|into)\\s+([A-Za-z][A-Za-z\\s.'-]{1,40}?)${placeTail}`, "i"));
     if (toM) out.destination = toAirportCode(toM[1]!) ?? toM[1]!.trim();
   }
   if (!out.origin) {

@@ -6,7 +6,7 @@
 import type { ProductListing } from "./types.js";
 import { matchVerifiedStore } from "./verified-stores.js";
 import { listingIdFor } from "./cache.js";
-import { shopMarketForCity, NoShopMarketError } from "./markets.js";
+import { shopMarketForCity, NoShopMarketError, nationalShopMarket } from "./markets.js";
 
 export function hasSerpApiKey(): boolean {
   return Boolean(process.env.SERPAPI_API_KEY?.trim());
@@ -61,7 +61,7 @@ interface SerpShoppingItem {
 
 export async function searchGoogleShoppingLive(args: {
   query: string;
-  shoppingCity: string;
+  shoppingCity?: string;
   limit?: number;
 }): Promise<ProductListing[]> {
   const apiKey = process.env.SERPAPI_API_KEY?.trim();
@@ -72,8 +72,10 @@ export async function searchGoogleShoppingLive(args: {
     );
   }
 
-  const market = shopMarketForCity(args.shoppingCity);
-  if (!market) throw new NoShopMarketError(args.shoppingCity);
+  const city = args.shoppingCity?.trim() ?? "";
+  const wired = city ? shopMarketForCity(city) : undefined;
+  const market = wired ?? nationalShopMarket();
+  if (!market) throw new NoShopMarketError(city || "national");
 
   const params = new URLSearchParams({
     engine: "google_shopping",
@@ -82,8 +84,9 @@ export async function searchGoogleShoppingLive(args: {
     hl: "en",
     gl: market.gl,
     num: "40",
-    location: `${args.shoppingCity}, ${market.locationCountry}`,
   });
+  // National catalog: omit city location rather than inventing New York.
+  if (city && wired) params.set("location", `${city}, ${market.locationCountry}`);
 
   const res = await fetch(`https://serpapi.com/search.json?${params}`);
   if (!res.ok) {
@@ -116,7 +119,7 @@ export async function searchGoogleShoppingLive(args: {
       availabilityLabel: avail.availabilityLabel,
       productUrl: url,
       imageUrl: item.thumbnail || "",
-      shoppingCity: args.shoppingCity,
+      shoppingCity: city,
       category: inferCategory(args.query, item.title),
     };
     const prev = bestByStore.get(store.slug);

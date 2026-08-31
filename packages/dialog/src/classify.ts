@@ -4,9 +4,9 @@
  */
 import { normalizeCity } from "@manebra/calendar";
 import { parseDate, parseUsdCents, categoryOf } from "./parse";
-import { parseItem } from "./item";
+import { parseItem, extractProductUrl } from "./item";
 import { fuzzyMatchIndex } from "./fuzzy";
-import { parseShoppingCity, parseDeliveryTown } from "./cities";
+import { parseShoppingCity, parseDeliveryTown, parseTripDestination, parseTripOrigin } from "./cities";
 import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
 
 export type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
@@ -249,10 +249,20 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
     if (city) return { ok: true, value: city };
   }
   if (pending.slot === "delivery_city") {
-    const city = parseDeliveryTown(t) ?? normalizeCity(t);
+    const city = parseDeliveryTown(t) ?? parseTripDestination(t) ?? normalizeCity(t);
+    if (city) return { ok: true, value: city };
+  }
+  if (pending.slot === "destination") {
+    const city = parseTripDestination(t);
+    if (city) return { ok: true, value: city };
+  }
+  if (pending.slot === "origin") {
+    const city = parseTripOrigin(t) ?? parseTripDestination(t);
     if (city) return { ok: true, value: city };
   }
   if (pending.slot === "product") {
+    const url = extractProductUrl(t);
+    if (url) return { ok: true, value: url };
     const item = parseItem(t);
     if (item) return { ok: true, value: item };
   }
@@ -277,8 +287,12 @@ function detectRepair(s: DialogSession, text: string): ClassifiedTurn | null {
     if (d) return { act: "REPAIR", slot: "need_by", value: d.toISOString() };
   }
   if (s.deliveryCity && open !== "delivery_city") {
-    const city = parseDeliveryTown(probe) ?? normalizeCity(probe);
+    const city = parseDeliveryTown(probe) ?? parseTripDestination(probe) ?? normalizeCity(probe);
     if (city) return { act: "REPAIR", slot: "delivery_city", value: city };
+  }
+  if (s.searchQuery && (open === "origin" || open === "departure_date" || open === "flight")) {
+    const dest = parseTripDestination(probe);
+    if (dest) return { act: "REPAIR", slot: "destination", value: dest };
   }
   if (s.shoppingCity && s.searchQuery && open !== "shopping_city") {
     const city = parseShoppingCity(probe);
@@ -330,6 +344,16 @@ export function classifyTurn(
   if (meta) return { act: "META", meta };
 
   if (hasPhoto) return { act: "NEW", query: parseItem(text) || "[photo]" };
+  const productUrl = extractProductUrl(text);
+  if (productUrl && !(pending && pending.slot !== "product" && parseAgainstPending(s, text).ok)) {
+    if (pending?.slot === "product" || !pending) {
+      // URL names the item. Open product slot continues; idle is NEW.
+      if (pending?.slot === "product") {
+        return { act: "CONTINUE", slot: "product", value: productUrl };
+      }
+      if (!open || replacementItem(text)) return { act: "NEW", query: productUrl };
+    }
+  }
   const replaced = parseItem(text);
   if (replacementItem(text) && replaced && !(pending && parseAgainstPending(s, text).ok)) {
     return { act: "NEW", query: replaced };
@@ -370,5 +394,6 @@ export function classifyTurn(
     return { act: "REASK", slot: "product" };
   }
   if (replaced) return { act: "NEW", query: replaced };
+  if (productUrl) return { act: "NEW", query: productUrl };
   return { act: "REASK", slot: "product" };
 }
