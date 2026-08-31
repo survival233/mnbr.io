@@ -15,10 +15,9 @@ import {
   personaSummary,
   predictiveAsk,
 } from "./state.mts";
-import { HOSPITALITY_PERSONA, llmStayBlock, parseItem } from "@manebra/dialog";
+import { HOSPITALITY_PERSONA, llmStayBlock, parseItem, parseShopPlace, SHOP_PLACE_ASK } from "@manebra/dialog";
 import {
   isCityAdviceQuestion,
-  parseShoppingCity,
   recommendUsCityBubble,
 } from "./cities.mts";
 
@@ -54,7 +53,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 function entitiesSummary(s: Session): string {
   return JSON.stringify({
     product: s.searchQuery ?? s.cognition?.pending?.hypothesis ?? null,
-    usCity: s.shoppingCity === "New York" ? null : s.shoppingCity,
+    usCity: s.shoppingCity.trim() ? s.shoppingCity : null,
     deliveryCity: s.deliveryCity,
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
@@ -141,7 +140,7 @@ export async function runPolicyTurn(args: {
 
   // Host-side concrete city parse before LLM (fast + reliable)
   if (step === "await_shopping_city" && text && !hasMedia) {
-    const city = parseShoppingCity(text);
+    const city = parseShopPlace(text);
     if (city) {
       appendEpisode(cog.memory, "slot", `Buy-from town ${city}`, { usCity: city });
       return {
@@ -166,9 +165,7 @@ export async function runPolicyTurn(args: {
     }
     if (step === "await_shopping_city" && text) {
       return {
-        bubbles: [
-          `I need the traveler’s home town to buy from — New York or Atlanta if you want the US catalog. Which one works?`,
-        ],
+        bubbles: [SHOP_PLACE_ASK],
         fallthrough: false,
       };
     }
@@ -223,7 +220,7 @@ export async function runPolicyTurn(args: {
         bubbles: [
           predictiveAsk({
             product: s.searchQuery,
-            shoppingCity: s.shoppingCity === "New York" ? undefined : s.shoppingCity,
+            shoppingCity: s.shoppingCity.trim() || undefined,
             deliveryCity: s.deliveryCity,
             deadline: s.deadline,
             maxFeeCents: s.maxFeeCents,
@@ -319,7 +316,7 @@ export async function runPolicyTurn(args: {
 
   if (turn.action === "ask_user") {
     // If model tried to stuff a non-city into usCity, ignore it
-    const slotCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
+    const slotCity = turn.slots.usCity ? parseShopPlace(turn.slots.usCity) : null;
     const ask =
       turn.askUser ??
       (step === "await_shopping_city"
@@ -327,7 +324,7 @@ export async function runPolicyTurn(args: {
         : null) ??
       predictiveAsk({
         product: s.searchQuery,
-        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity,
+        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity.trim() || undefined,
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
@@ -350,7 +347,7 @@ export async function runPolicyTurn(args: {
       (cog.pending?.kind === "confirm_product" ? cog.pending.hypothesis : null);
     const product = rawProduct ? parseItem(rawProduct) : null;
 
-    const usCity = turn.slots.usCity ? parseShoppingCity(turn.slots.usCity) : null;
+    const usCity = turn.slots.usCity ? parseShopPlace(turn.slots.usCity) : null;
     const safeSlots = { ...turn.slots, usCity };
 
     if (step === "await_shopping_city" && usCity) {
@@ -402,9 +399,7 @@ export async function runPolicyTurn(args: {
     return {
       bubbles: turn.askUser
         ? [turn.askUser]
-        : [
-            `I need the traveler’s home town — New York or Atlanta if you want the US catalog. Which should I use?`,
-          ],
+        : [SHOP_PLACE_ASK],
       fallthrough: false,
       monologueLog: cog.lastMonologue,
     };

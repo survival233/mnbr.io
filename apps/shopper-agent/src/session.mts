@@ -134,7 +134,7 @@ export function getOrCreateSession(
       chatId,
       channel: opts?.channel ?? "linq",
       step: "idle",
-      shoppingCity: "United States",
+      shoppingCity: "",
       pending: null,
       stay: { openedAt: Date.now() },
       updatedAt: Date.now(),
@@ -164,7 +164,7 @@ export function getOrCreateSession(
 export function resetSession(s: Session) {
   s.step = "idle";
   s.searchQuery = undefined;
-  s.shoppingCity = "United States";
+  s.shoppingCity = "";
   s.deliveryCity = undefined;
   s.deadline = undefined;
   s.maxFeeCents = undefined;

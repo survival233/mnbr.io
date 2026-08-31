@@ -14,9 +14,9 @@ export async function searchProducts(args: {
   query: string;
   shoppingCity: string;
 }): Promise<ProductSearchResult> {
-  const shoppingCity = args.shoppingCity.trim() || "United States";
+  const shoppingCity = args.shoppingCity.trim();
   const query = args.query.trim();
-  if (!query) {
+  if (!query || !shoppingCity) {
     return { query, shoppingCity, identifiedProduct: null, listings: [] };
   }
 

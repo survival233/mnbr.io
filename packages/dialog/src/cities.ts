@@ -76,6 +76,28 @@ export function parseUsShoppingCity(text: string): UsShopHub | null {
   return null;
 }
 
+/** Country-level shop place (catalog market), not a handover city. */
+export function parseShopCountry(text: string): string | null {
+  const t = text
+    .toLowerCase()
+    .replace(/[?!.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t || t.length > 40) return null;
+  if (isCityAdviceQuestion(text)) return null;
+  if (/^(us|usa|u s a|united states|america|the us|the usa|the united states)$/.test(t)) {
+    return "United States";
+  }
+  if (/\b(united states|usa)\b/.test(t) && t.split(/\s+/).length <= 5) return "United States";
+  return null;
+}
+
+/** Shopper’s preferred buy-from place: a city they name, or a country. */
+export function parseShopPlace(text: string): string | null {
+  if (isCityAdviceQuestion(text)) return null;
+  return parseShopCountry(text) ?? parseShoppingCity(text);
+}
+
 /** Traveler-home / buy-from town. Known hub or catchment, not free chat. */
 export function parseShoppingCity(text: string): string | null {
   if (isCityAdviceQuestion(text)) return null;

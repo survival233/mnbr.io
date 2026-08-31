@@ -1,5 +1,9 @@
 import { formatUsd } from "@manebra/shared";
 
+export const SHOP_PLACE_ASK = "Where should I shop from — a city or a country?";
+export const SHOP_PLACE_NO_MARKET =
+  "I don’t have a store catalog there yet. A US city or the US as a country works.";
+
 /** Exact shopper earnings ask — never invent a dollar amount. */
 export const EARNINGS_ASK = "What’s fair to pay the traveler for this?";
 

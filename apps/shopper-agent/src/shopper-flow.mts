@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity } from "@manebra/catalog";
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
 import {
@@ -36,6 +36,8 @@ import {
   rememberWait,
   parseItem,
   EARNINGS_ASK,
+  SHOP_PLACE_ASK,
+  SHOP_PLACE_NO_MARKET,
   recapTotalCents,
   taxCentsFor,
   listingImageParts,
@@ -43,6 +45,7 @@ import {
   shopperWait,
   shopperNobody,
   shopperAccepted,
+  parseShopPlace,
   type ClassifiedTurn,
 } from "@manebra/dialog";
 import * as linq from "./linq-client.mts";
@@ -65,7 +68,7 @@ import { PaySheet } from "@repo/agentcard/PaySheet";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
-import { parseDeliveryTown } from "./cognition/cities.mts";
+import { parseDeliveryTown, isCityAdviceQuestion } from "./cognition/cities.mts";
 type TravelerSeed = {
   id: string;
   name: string;
@@ -345,6 +348,30 @@ function namedProduct(raw: string): string | null {
   if (!item) return null;
   const q = normalizeSearchQuery(item);
   return parseItem(q) ?? q;
+}
+
+function hasShopPlace(s: Session): boolean {
+  return Boolean(s.shoppingCity?.trim());
+}
+
+function commitShopPlace(s: Session, raw: string): boolean {
+  const place = parseShopPlace(raw);
+  if (!place || !shopMarketForCity(place)) return false;
+  s.shoppingCity = place;
+  s.offer = undefined;
+  markSessionDirty();
+  return true;
+}
+
+function parkShopPlaceAsk(s: Session): string {
+  const prompt = SHOP_PLACE_ASK;
+  s.step = "await_shopping_city";
+  s.offer = undefined;
+  s.pending = { slot: "shopping_city", proposed: null, kind: "text", prompt };
+  rememberQuestion(stayOf(s), prompt);
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
+  return prompt;
 }
 
 function parkItemAsk(s: Session): string {
@@ -888,9 +915,13 @@ async function searchAndPromptListings(
     return;
   }
   const q = s.searchQuery!;
+  if (!hasShopPlace(s)) {
+    await sayHost(s, "REASK", parkShopPlaceAsk(s));
+    return;
+  }
   try {
     const results = await withTimeout(
-      searchProducts({ query: q, shoppingCity: "United States" }),
+      searchProducts({ query: q, shoppingCity: s.shoppingCity }),
       SERP_TIMEOUT_MS,
       "SerpAPI search",
     );
@@ -905,7 +936,8 @@ async function searchAndPromptListings(
       s.step = "await_product";
       markSessionDirty();
       if (e instanceof NoShopMarketError) {
-        await reply(s, `Search hiccupped on me. What should I look for instead?`);
+        await sayHost(s, "REASK", parkShopPlaceAsk(s));
+        await reply(s, SHOP_PLACE_NO_MARKET);
         return;
       }
       await reply(s, `Search hiccupped on me. What should I look for instead?`);
@@ -942,7 +974,7 @@ async function runSearchFlow(
   markSessionDirty();
   if (progress) await reply(s, progress, { thinkMs: 700 });
   else {
-    await reply(s, `One sec — checking verified stores…`, { thinkMs: 700 });
+    await reply(s, `One sec — checking verified stores in ${s.shoppingCity}…`, { thinkMs: 700 });
   }
   if (s.chatId) presenceTyping(s);
   await searchAndPromptListings(s, extra);
@@ -964,7 +996,13 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
   s.searchQuery = item;
   s.selected = undefined;
   s.listings = undefined;
+  const place = parseShopPlace(query) ?? parseShopPlace(stripped);
+  if (place && shopMarketForCity(place)) s.shoppingCity = place;
   markSessionDirty();
+  if (!hasShopPlace(s)) {
+    await sayHost(s, "CONTINUE", parkShopPlaceAsk(s));
+    return;
+  }
   await runSearchFlow(s, `Got it — searching ${item}…`, extra);
 }
 
@@ -1028,8 +1066,7 @@ function hydratePending(s: Session): void {
     if (s.deliveryCity) setOffer(s, "deliveryCity", s.deliveryCity, DEST_ASK);
     else parkDestAsk(s);
   } else if (s.step === "await_shopping_city") {
-    s.offer = undefined;
-    s.pending = null;
+    parkShopPlaceAsk(s);
   } else if (s.step === "await_product") {
     if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
@@ -1049,7 +1086,7 @@ function reaskPrompt(s: Session): string {
         : s.step === "await_delivery_city"
           ? DEST_ASK
           : s.step === "await_shopping_city"
-            ? shopperIntakeLine(s)
+            ? SHOP_PLACE_ASK
             : s.step === "await_product"
               ? shopperIntakeLine(s)
             : s.step === "await_listing"
@@ -1077,7 +1114,7 @@ function applyRepairSlots(s: Session, turn: ClassifiedTurn): void {
   } else if (turn.slot === "delivery_city" && typeof turn.value === "string") {
     s.deliveryCity = turn.value;
   } else if (turn.slot === "shopping_city" && typeof turn.value === "string") {
-    s.shoppingCity = turn.value;
+    commitShopPlace(s, turn.value);
   } else if (turn.slot === "delivery_fee" && typeof turn.value === "number") {
     s.maxFeeCents = turn.value;
   } else if (turn.slot === "traveler" && turn.optionIndex != null && s.ranked?.[turn.optionIndex]) {
@@ -1199,8 +1236,7 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
   if (value == null) return false;
 
   if (field === "shoppingCity") {
-    s.shoppingCity = value;
-    markSessionDirty();
+    if (!commitShopPlace(s, value)) return false;
     await runSearchFlow(s);
     return true;
   }
@@ -1542,7 +1578,8 @@ function applyCognitiveSlots(
   },
 ) {
   if (slots.usCity) {
-    /* Catalog is US-wide; buy-from city is not a shopper slot. */
+    const place = parseShopPlace(slots.usCity);
+    if (place && shopMarketForCity(place)) s.shoppingCity = place;
   }
   const dest = slots.deliveryCity ?? slots.ghCity;
   if (dest) s.deliveryCity = parseDeliveryTown(dest) ?? dest;
@@ -1567,6 +1604,10 @@ async function commitConfirmedProduct(
   appendEpisode(cog.memory, "slot", `Product locked: ${q}`, { product: q });
   if (slots) applyCognitiveSlots(s, slots);
   markSessionDirty();
+  if (!hasShopPlace(s)) {
+    await sayHost(s, stayOf(s).lastAct ?? "CONTINUE", parkShopPlaceAsk(s));
+    return;
+  }
   await runSearchFlow(s, `Searching “${q}”…`);
 }
 
@@ -1725,7 +1766,10 @@ async function handleInboundInner(
       return;
     }
     if (turn.slot === "shopping_city" && typeof turn.value === "string") {
-      s.shoppingCity = turn.value;
+      if (!commitShopPlace(s, turn.value)) {
+        await reply(s, SHOP_PLACE_ASK);
+        return;
+      }
       clearPending(s);
       await runSearchFlow(s);
       return;
@@ -1782,8 +1826,14 @@ async function handleInboundInner(
       return;
     }
     if (decision.confirmedUsCity) {
-      await runSearchFlow(s);
-      return;
+      if (commitShopPlace(s, decision.confirmedUsCity) && s.searchQuery) {
+        await runSearchFlow(s);
+        return;
+      }
+      if (s.searchQuery && !hasShopPlace(s)) {
+        await sayHost(s, "REASK", parkShopPlaceAsk(s));
+        return;
+      }
     }
     if (!decision.fallthrough) {
       markSessionDirty();
@@ -1866,11 +1916,22 @@ async function handleInboundInner(
       return;
     }
     case "await_shopping_city": {
-      if (s.searchQuery) {
-        await runSearchFlow(s);
+      if (intent.kind === "reject_results") {
+        s.step = "await_product";
+        markSessionDirty();
+        await reply(s, `No problem — what should I look for instead?`);
         return;
       }
-      await sayHost(s, "REASK", parkItemAsk(s));
+      if (isCityAdviceQuestion(text)) {
+        await reply(s, SHOP_PLACE_ASK);
+        return;
+      }
+      if (!commitShopPlace(s, text)) {
+        const guessed = parseShopPlace(text);
+        await reply(s, guessed && !shopMarketForCity(guessed) ? SHOP_PLACE_NO_MARKET : SHOP_PLACE_ASK);
+        return;
+      }
+      await runSearchFlow(s);
       return;
     }
     case "await_listing": {

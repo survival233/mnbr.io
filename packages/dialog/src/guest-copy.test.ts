@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatUsd } from "@manebra/shared";
 import {
   EARNINGS_ASK,
+  SHOP_PLACE_ASK,
   assignsTravelerBeforeAccept,
   inventsThirtyEarnings,
   listingCaption,
@@ -20,6 +21,12 @@ describe("earnings ask", () => {
     expect(EARNINGS_ASK).toBe("What’s fair to pay the traveler for this?");
     expect(inventsThirtyEarnings(EARNINGS_ASK)).toBe(false);
     expect(EARNINGS_ASK).not.toMatch(/\$30/);
+  });
+});
+
+describe("shop place ask", () => {
+  it("asks for the shopper’s preferred city or country", () => {
+    expect(SHOP_PLACE_ASK).toBe("Where should I shop from — a city or a country?");
   });
 });
 

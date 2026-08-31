@@ -1,6 +1,6 @@
 /** Episodic memory, persona (ToM), and conversation cognition types. */
 
-import { parseItem } from "@manebra/dialog";
+import { parseItem, SHOP_PLACE_ASK } from "@manebra/dialog";
 
 export type CognitiveTopic =
   | "intake"
@@ -163,6 +163,9 @@ export function predictiveAsk(args: {
     return warm
       ? "What are you looking to buy — or send a photo of the item?"
       : "What product should I shop for?";
+  }
+  if (!args.shoppingCity) {
+    return warm ? SHOP_PLACE_ASK : "Shop from which city or country?";
   }
   if (!args.deliveryCity) {
     return warm ? "Which city should it land in?" : "Delivery city?";

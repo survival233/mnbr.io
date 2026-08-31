@@ -7,8 +7,8 @@ describe("shopMarketForCity", () => {
     expect(shopMarketForCity("Brooklyn")?.id).toBe("us");
   });
 
-  it("resolves the US catalog without a shop-in city", () => {
-    expect(shopMarketForCity("")?.id).toBe("us");
+  it("resolves the US catalog for a country, not an empty default", () => {
+    expect(shopMarketForCity("")).toBeUndefined();
     expect(shopMarketForCity("United States")?.id).toBe("us");
     expect(shopMarketForCity("US")?.id).toBe("us");
   });
