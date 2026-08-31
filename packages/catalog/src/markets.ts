@@ -18,6 +18,10 @@ export const SHOP_MARKETS: readonly ShopMarket[] = [
 ];
 
 export function shopMarketForCity(city: string): ShopMarket | undefined {
+  const t = city.trim();
+  if (!t || /^(us|usa|united states)$/i.test(t)) {
+    return SHOP_MARKETS.find((m) => m.id === "us");
+  }
   const hub = resolveHub(city);
   if (!hub?.country) return undefined;
   return SHOP_MARKETS.find((m) => m.countries.includes(hub.country));

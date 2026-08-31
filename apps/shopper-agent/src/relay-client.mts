@@ -54,9 +54,24 @@ export async function sendText(args: {
   idempotencyKey: string;
   replyToMessageId?: string | null;
 }): Promise<{ messageId?: string }> {
+  return sendParts({
+    conversationId: args.conversationId,
+    parts: [{ type: "text", text: args.text }],
+    idempotencyKey: args.idempotencyKey,
+    replyToMessageId: args.replyToMessageId,
+  });
+}
+
+/** Outbound Relay parts (text + media). Image thumbnails need type: "media", not a URL in text. */
+export async function sendParts(args: {
+  conversationId: string;
+  parts: Record<string, unknown>[];
+  idempotencyKey: string;
+  replyToMessageId?: string | null;
+}): Promise<{ messageId?: string }> {
   const body: Record<string, unknown> = {
     conversation_id: args.conversationId,
-    parts: [{ type: "text", text: args.text }],
+    parts: args.parts,
   };
   if (args.replyToMessageId) {
     body.reply_to = { message_id: args.replyToMessageId, part_index: 0 };

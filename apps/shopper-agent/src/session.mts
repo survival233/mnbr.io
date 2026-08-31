@@ -58,7 +58,10 @@ export type Session = {
   shoppingCity: string;
   deliveryCity?: string;
   deadline?: Date;
+  /** Shopper-stated traveler earnings (cents). Never default to $30. */
   maxFeeCents?: number;
+  /** True after one earnings re-ask with no number. */
+  earningsReasked?: boolean;
   category?: string;
   listings?: ProductListing[];
   selected?: ProductListing;
@@ -131,7 +134,7 @@ export function getOrCreateSession(
       chatId,
       channel: opts?.channel ?? "linq",
       step: "idle",
-      shoppingCity: "New York",
+      shoppingCity: "United States",
       pending: null,
       stay: { openedAt: Date.now() },
       updatedAt: Date.now(),
@@ -161,10 +164,11 @@ export function getOrCreateSession(
 export function resetSession(s: Session) {
   s.step = "idle";
   s.searchQuery = undefined;
-  s.shoppingCity = "New York";
+  s.shoppingCity = "United States";
   s.deliveryCity = undefined;
   s.deadline = undefined;
   s.maxFeeCents = undefined;
+  s.earningsReasked = undefined;
   s.category = undefined;
   s.listings = undefined;
   s.selected = undefined;

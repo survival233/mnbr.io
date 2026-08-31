@@ -113,17 +113,8 @@ export async function runPolicyTurn(args: {
     cog.persona.beliefs = [...new Set([...cog.persona.beliefs, `wants ${product}`])].slice(-8);
     cog.persona.openQuestions = cog.persona.openQuestions.filter((q) => !/product/i.test(q));
     appendEpisode(cog.memory, "affirm", `Confirmed product ${product}`, { product });
-    const ask =
-      predictiveAsk({
-        product,
-        shoppingCity: undefined,
-        deliveryCity: s.deliveryCity,
-        deadline: s.deadline,
-        maxFeeCents: s.maxFeeCents,
-        tone: cog.persona.communication,
-      }) ?? `Which town should I buy ${product} from (the traveler’s home)? New York works for the US catalog.`;
     return {
-      bubbles: [`Locked in — ${product}.`, ask],
+      bubbles: [`Locked in — ${product}.`],
       confirmedProduct: product,
       fallthrough: false,
     };

@@ -31,6 +31,7 @@ import {
   rememberItem,
   rememberOffer,
   rememberWait,
+  travelerAsk,
   type DialogSession,
 } from "@manebra/dialog";
 
@@ -127,10 +128,6 @@ async function say(s: Session, ...bubbles: string[]) {
   }
 }
 
-function carryUsd(cents: number): string {
-  return `$${(cents / 100).toFixed(0)}`;
-}
-
 function travelerDestination(s: Session): string | null {
   const raw = s.trip?.destination ?? s.travelDestination;
   if (!raw?.trim()) return null;
@@ -143,16 +140,24 @@ function offerFitsThisTraveler(s: Session, offer: { destinationCity?: string | n
   return sameMetro(offer.destinationCity, dest);
 }
 
-function requestInvite(s: Session, offer: { item: string; travelerFeeCents: number; totalCents: number; needBy: Date | null; destinationCity?: string | null }): string[] {
+function requestInvite(s: Session, offer: {
+  item: string;
+  itemCostCents?: number;
+  travelerFeeCents: number;
+  totalCents: number;
+  needBy: Date | null;
+  destinationCity?: string | null;
+  nextTravelerName?: string | null;
+}): string[] {
   const dest = offer.destinationCity ?? travelerDestination(s) ?? "your city";
-  const when = s.trip?.departure_date ? ` on ${s.trip.departure_date}` : "";
-  const need = offer.needBy ? ` by ${new Date(offer.needBy).toLocaleDateString()}` : "";
-  const earn = offer.travelerFeeCents || offer.totalCents;
-  return [
-    `You’re headed to ${dest}${when}.`,
-    `A shopper needs ${offer.item}${need}. Traveler earnings about ${carryUsd(earn)}.`,
-    `Shop & Deliver — accept or decline?`,
-  ];
+  const merchant = offer.nextTravelerName?.trim() || "the store";
+  return travelerAsk({
+    city: dest,
+    title: offer.item,
+    merchant,
+    itemCents: offer.itemCostCents ?? 0,
+    earningsCents: offer.travelerFeeCents || 0,
+  });
 }
 
 function latestTravelerSession(): Session | null {
@@ -161,21 +166,26 @@ function latestTravelerSession(): Session | null {
   return withChat.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
 }
 
-/** Ping Traveler when a shopper request appears or funds land (shared marketplace store). */
+/** Ping matching travelers when a shopper request appears or funds land. */
 export async function syncTravelerMarketplace(): Promise<void> {
-  const s = latestTravelerSession();
-  if (!s?.chatId) return;
-
+  const sessions = allSessions().filter((s) => s.chatId);
   const open = await latestOpenOffer();
-  if (open && !open.notifiedTraveler && offerFitsThisTraveler(s, open)) {
-    await updateOffer(open.id, { notifiedTraveler: true });
-    rememberItem(stayOf(s), open.item);
-    rememberOffer(stayOf(s), open.id);
-    rememberQuestion(stayOf(s), `Shop & Deliver — accept or decline?`);
-    await say(s, ...requestInvite(s, open));
-    return;
+  if (open && !open.notifiedTraveler) {
+    const matches = sessions.filter((s) => offerFitsThisTraveler(s, open));
+    if (matches.length) {
+      await updateOffer(open.id, { notifiedTraveler: true });
+      for (const s of matches) {
+        rememberItem(stayOf(s), open.item);
+        rememberOffer(stayOf(s), open.id);
+        rememberQuestion(stayOf(s), "Want it?");
+        await say(s, ...requestInvite(s, open));
+      }
+      return;
+    }
   }
 
+  const s = latestTravelerSession();
+  if (!s?.chatId) return;
   const carry = await latestActiveOffer();
   if (carry?.status === "funded" && !carry.notifiedTravelerFunded) {
     await updateOffer(carry.id, { notifiedTravelerFunded: true });
@@ -223,7 +233,12 @@ async function tryHandleMarketplaceOffer(
 
   if (carry.status === "offered") {
     if (yes) {
-      await updateOffer(carry.id, { status: "accepted", notifiedShopper: false });
+      await updateOffer(carry.id, {
+        status: "accepted",
+        notifiedShopper: false,
+        travelerId: s.phone,
+        travelerName: "Traveler",
+      });
       rememberItem(stayOf(s), carry.item);
       rememberOffer(stayOf(s), carry.id);
       rememberWait(stayOf(s));

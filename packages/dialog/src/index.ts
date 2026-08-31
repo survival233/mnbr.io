@@ -32,5 +32,22 @@ export {
 } from "./memory";
 export type { DialogTurn } from "./memory";
 export { composeHostReply, hostBeats } from "./reply";
+export {
+  EARNINGS_ASK,
+  recapTotalCents,
+  estimateTaxCents,
+  taxCentsFor,
+  listingCaption,
+  listingImageParts,
+  guessImageContentType,
+  recapBody,
+  shopperWait,
+  shopperNobody,
+  shopperAccepted,
+  travelerAsk,
+  assignsTravelerBeforeAccept,
+  inventsThirtyEarnings,
+} from "./guest-copy";
+export type { ChatPart, ChatMediaPart, ChatTextPart } from "./guest-copy";
 export { SHOPPER_SLOT_SCHEMA, TRAVELER_SLOT_SCHEMA } from "./schema";
 export type { SlotDef, SlotKind } from "./schema";

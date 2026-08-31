@@ -1,4 +1,4 @@
-import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents, generateHandoverCode } from "@manebra/shared";
+import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
 import { searchProducts, hasSerpApiKey, NoShopMarketError } from "@manebra/catalog";
@@ -32,14 +32,22 @@ import {
   rememberQuestion,
   rememberItem,
   rememberQuote,
-  rememberCounterparty,
   rememberOffer,
   rememberWait,
   parseItem,
+  EARNINGS_ASK,
+  recapTotalCents,
+  taxCentsFor,
+  listingImageParts,
+  recapBody,
+  shopperWait,
+  shopperNobody,
+  shopperAccepted,
   type ClassifiedTurn,
 } from "@manebra/dialog";
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
+import { extractHttpUrl, listingFromProductUrl } from "./product-url.mts";
 import { SEED_TRAVELERS } from "./traveler-seeds.mts";
 import {
   completeHandoverAndRelease,
@@ -57,7 +65,7 @@ import { PaySheet } from "@repo/agentcard/PaySheet";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
-import { parseShoppingCity, parseDeliveryTown, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
+import { parseDeliveryTown } from "./cognition/cities.mts";
 type TravelerSeed = {
   id: string;
   name: string;
@@ -230,6 +238,73 @@ async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
   console.log(`[shopper-agent] → ${s.phone}: ${text.slice(0, 80).replace(/\n/g, " ")}`);
 }
 
+async function replyParts(
+  s: Session,
+  parts: Array<Record<string, unknown>>,
+  opts?: { thinkMs?: number },
+): Promise<void> {
+  const caption = parts
+    .filter((p) => p.type === "text")
+    .map((p) => String(p.text ?? ""))
+    .join("\n")
+    .trim();
+  const hasMedia = parts.some((p) => p.type === "media");
+  if (!caption && !hasMedia) {
+    console.warn("[shopper-agent] skip empty parts reply");
+    return;
+  }
+  if (caption) appendDialogTurn(s, "assistant", caption);
+  if (s.channel === "relay") {
+    if (s.chatId) {
+      if (s.relayMessageId) void relay.markRead(s.chatId, s.relayMessageId);
+      void relay.startTyping(s.chatId);
+    }
+    const paced = opts?.thinkMs ?? 700;
+    await sleep(paced);
+    if (!s.chatId) throw new Error("relay reply missing conversation id");
+    s.relayReplySeq = (s.relayReplySeq ?? 0) + 1;
+    const replyTo = s.relayReplySeq === 1 ? s.relayMessageId : null;
+    const keySeed = caption || String(parts.find((p) => p.type === "media")?.url ?? "media");
+    let lastErr: any;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await relay.sendParts({
+          conversationId: s.chatId,
+          parts,
+          idempotencyKey: relayIdempotencyKey(s, keySeed, attempt),
+          replyToMessageId: replyTo,
+        });
+        lastErr = null;
+        break;
+      } catch (e: any) {
+        lastErr = e;
+        if (!/idempotency_conflict|409/.test(String(e?.message ?? e))) throw e;
+        console.warn(`[shopper-agent] relay idempotency conflict; retrying (attempt ${attempt + 1})`);
+      }
+    }
+    if (lastErr) throw lastErr;
+    void relay.stopTyping(s.chatId);
+    markSessionDirty();
+    console.log(`[shopper-agent] → relay media ${s.phone}: ${caption.slice(0, 80)}`);
+    return;
+  }
+  console.warn("[shopper-agent] Linq cannot send Relay media parts — caption only (see PR)");
+  await reply(s, caption || "Photo", opts);
+}
+
+async function replyListing(s: Session, listing: NonNullable<Session["selected"]>): Promise<void> {
+  const parts = listingImageParts({
+    title: listing.productTitle.slice(0, 80),
+    merchant: listing.storeName,
+    priceCents: listing.priceCents,
+    imageUrl: listing.imageUrl,
+  });
+  if (!parts.some((p) => p.type === "media")) {
+    console.warn(`[shopper-agent] listing has no image URL: ${listing.productTitle.slice(0, 40)}`);
+  }
+  await replyParts(s, parts, { thinkMs: 500 });
+}
+
 void SHOPPER_SLOT_SCHEMA;
 void HOSPITALITY_PERSONA;
 
@@ -263,11 +338,6 @@ function shopperIntakeLine(s: Session): string {
   return s.channel === "relay"
     ? "What should I shop for you?"
     : "Send a product (text or photo) and I’ll find stock and a traveler heading to your city.";
-}
-
-/** Guest city ask — interpolates a parsed product only, never the raw utterance. */
-function shopCityPrompt(item: string): string {
-  return `Which town should I buy ${item} from (the traveler’s home)? I can search stores in New York or Atlanta today.`;
 }
 
 function namedProduct(raw: string): string | null {
@@ -448,7 +518,7 @@ function eligibleLiveTrip(
   if (t.status && t.status !== "upcoming") return false;
   if (!upcomingOnOrAfter(t.departureDate, now)) return false;
   if (!sameMetro(t.destinationCity, dest)) return false;
-  if (origin && t.originCity && !sameMetro(t.originCity, origin)) return false;
+  void origin;
   return true;
 }
 
@@ -577,7 +647,7 @@ async function upcomingToDest(city: string, origin?: string): Promise<TravelerSe
   } catch (e: any) {
     console.warn(`[shopper-agent] upcoming trips unavailable: ${e?.message ?? e}`);
   }
-  const pool = live.length ? live : seedTravelers(dest, home);
+  const pool = live;
   return pool
     .filter((t) => eligibleLiveTrip(t.trip, dest, now, home))
     .sort((a, b) => a.trip.departureDate.getTime() - b.trip.departureDate.getTime());
@@ -649,7 +719,7 @@ async function runMatching(s: Session): Promise<string> {
   const home = s.shoppingCity ? stampHub(s.shoppingCity) : undefined;
   const live = await loadLiveTravelers(city, deadline, home);
   const now = new Date();
-  const pool = live ?? seedTravelers(dest, home);
+  const pool = live ?? [];
   const travelers = pool.filter((t) => eligibleLiveTrip(t.trip, dest, now, home));
   const itemRequest = {
     id: "item-linq",
@@ -693,7 +763,7 @@ async function runMatching(s: Session): Promise<string> {
     markSessionDirty();
     return (
       `Hmm — nobody’s flying before ${deadline.toDateString()}.\n` +
-      `${next.t.name} leaves ${next.t.trip.departureDate.toDateString()} though.\n` +
+      `Someone leaves ${next.t.trip.departureDate.toDateString()} though.\n` +
       `Want me to stretch your deadline to meet them? Just say yes or no.`
     );
   }
@@ -717,17 +787,45 @@ async function runMatching(s: Session): Promise<string> {
   return "";
 }
 
-function quoteLines(s: Session): string {
+function persistRecapTotal(s: Session): {
+  title: string;
+  merchant: string;
+  itemCents: number;
+  taxCents: number;
+  earningsCents: number;
+  totalCents: number;
+} {
   const item = s.selected!;
-  const fee = suggestedTravelerFeeCents(item.priceCents);
-  const capped = Math.min(fee, s.maxFeeCents ?? fee);
-  const fees = computeFees(item.priceCents, capped);
-  s.totalCents = fees.totalCents;
+  const itemCents = item.priceCents;
+  const tax = taxCentsFor(item);
+  const earningsCents = s.maxFeeCents ?? 0;
+  const totalCents = recapTotalCents(itemCents, tax, earningsCents);
+  s.totalCents = totalCents;
   markSessionDirty();
-  return (
-    `${item.productTitle.slice(0, 80)}\n` +
-    `Item ${formatUsd(item.priceCents)} + traveler earnings ${formatUsd(capped)} → ${formatUsd(fees.totalCents)} all-in`
-  );
+  return {
+    title: item.productTitle.slice(0, 80),
+    merchant: item.storeName,
+    itemCents,
+    taxCents: tax,
+    earningsCents,
+    totalCents,
+  };
+}
+
+function quoteLines(s: Session): string {
+  const a = persistRecapTotal(s);
+  return recapBody(a);
+}
+
+function parkEarningsAsk(s: Session): string {
+  const prompt = EARNINGS_ASK;
+  s.step = "await_max_fee";
+  s.offer = undefined;
+  s.pending = { slot: "delivery_fee", proposed: null, kind: "money", prompt };
+  rememberQuestion(stayOf(s), prompt);
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
+  return prompt;
 }
 
 /** After the quote: wait on a traveler. No payment copy. */
@@ -755,19 +853,10 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
   const quote = quoteLines(s);
   rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
   if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
-  if (s.ranked?.length) {
-    await say(s, quote);
-    await lockTraveler(s, 0, { quoteAlreadyShown: true });
-    return;
-  }
-  s.step = "await_traveler_decision";
-  s.chosenTravelerId = undefined;
-  clearPending(s);
-  await say(
-    s,
-    quote,
-    `No one's heading to ${s.deliveryCity ?? "your city"} yet. I’ll notify you when a traveler is on that route and agrees after they book.`,
-  );
+  const city = s.deliveryCity ?? "your city";
+  const follow = s.ranked?.length ? shopperWait(city) : shopperNobody(city);
+  await say(s, `${quote}\n\n${follow}`);
+  await parkWaitingOnTraveler(s);
 }
 
 async function continueAfterListing(s: Session): Promise<void> {
@@ -781,80 +870,93 @@ async function continueAfterListing(s: Session): Promise<void> {
     return;
   }
   if (s.maxFeeCents == null) {
-    s.step = "await_max_fee";
-    setOffer(
-      s,
-      "maxFeeCents",
-      "3000",
-      "What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.",
-    );
-    markSessionDirty();
-    await sayHost(
-      s,
-      stayOf(s).lastAct ?? "CONTINUE",
-      `What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.`,
-    );
+    await sayHost(s, stayOf(s).lastAct ?? "CONTINUE", parkEarningsAsk(s));
     return;
   }
   if (s.chatId) presenceTyping(s);
   await presentQuoteAndWait(s);
 }
 
-async function searchAndPromptListings(s: Session): Promise<string> {
+async function searchAndPromptListings(
+  s: Session,
+  extra?: NonNullable<Session["listings"]>,
+): Promise<void> {
   if (!hasSerpApiKey()) {
     s.step = "done";
     markSessionDirty();
-    return "Store search isn’t hooked up on my side yet — try again later?";
+    await reply(s, "Store search isn’t hooked up on my side yet — try again later?");
+    return;
   }
   const q = s.searchQuery!;
   try {
     const results = await withTimeout(
-      searchProducts({ query: q, shoppingCity: s.shoppingCity }),
+      searchProducts({ query: q, shoppingCity: "United States" }),
       SERP_TIMEOUT_MS,
       "SerpAPI search",
     );
-    s.listings = results.listings.slice(0, 5);
+    const catalog = results.listings.slice(0, 5);
+    const seen = new Set((extra ?? []).map((l) => l.listingId));
+    s.listings = [...(extra ?? []), ...catalog.filter((l) => !seen.has(l.listingId))].slice(0, 5);
   } catch (e: any) {
     console.warn(`[shopper-agent] search failed: ${e?.message ?? e}`);
-    s.step = "await_product";
-    markSessionDirty();
-    if (e instanceof NoShopMarketError) {
-      return `I don’t have a store catalog for ${e.city} yet — I can search New York or Atlanta today. Which town should I buy from?`;
+    if (extra?.length) {
+      s.listings = extra.slice(0, 5);
+    } else {
+      s.step = "await_product";
+      markSessionDirty();
+      if (e instanceof NoShopMarketError) {
+        await reply(s, `Search hiccupped on me. What should I look for instead?`);
+        return;
+      }
+      await reply(s, `Search hiccupped on me. What should I look for instead?`);
+      return;
     }
-    return `Search hiccupped on me. What should I look for instead?`;
   }
   if (!s.listings?.length) {
     s.step = "await_product";
     markSessionDirty();
-    return "Nothing solid from verified stores. Want to try a different product name?";
+    await reply(s, "Nothing solid from verified stores. Want to try a different product name?");
+    return;
   }
   s.step = "await_listing";
   setOffer(s, "listing", "0");
   markSessionDirty();
-  const lines = s.listings.map(
-    (l, i) => `${i + 1}. ${l.storeName} · ${formatUsd(l.priceCents)}\n   ${l.productTitle.slice(0, 70)}`,
-  );
-  return (
-    `Found a few near ${s.shoppingCity}:\n\n${lines.join("\n\n")}\n\n` +
-    `Pick one (1–${s.listings.length} or a store name), or tell me if these aren’t right / what to search instead.`
+  for (const listing of s.listings) {
+    await replyListing(s, listing);
+  }
+  await reply(
+    s,
+    `Pick one (1–${s.listings.length} or a store name), or tell me if these aren’t right / what to search instead.`,
+    { thinkMs: 600 },
   );
 }
 
-async function runSearchFlow(s: Session, progress?: string): Promise<void> {
+async function runSearchFlow(
+  s: Session,
+  progress?: string,
+  extra?: NonNullable<Session["listings"]>,
+): Promise<void> {
   s.selected = undefined;
-  s.listings = undefined;
+  s.listings = extra;
   s.step = "await_listing";
   markSessionDirty();
   if (progress) await reply(s, progress, { thinkMs: 700 });
   else {
-    await reply(s, `One sec — checking verified stores near ${s.shoppingCity}…`, { thinkMs: 700 });
+    await reply(s, `One sec — checking verified stores…`, { thinkMs: 700 });
   }
   if (s.chatId) presenceTyping(s);
-  await reply(s, await searchAndPromptListings(s), { thinkMs: 1200 });
+  await searchAndPromptListings(s, extra);
 }
 
 async function applyNewQuery(s: Session, query: string): Promise<void> {
-  const item = namedProduct(query);
+  const url = extractHttpUrl(query);
+  let extra: NonNullable<Session["listings"]> | undefined;
+  if (url) {
+    const fromLink = await listingFromProductUrl(url);
+    if (fromLink) extra = [fromLink];
+  }
+  const stripped = query.replace(/https?:\/\/\S+/gi, "").trim();
+  const item = namedProduct(stripped) ?? extra?.[0]?.productTitle ?? null;
   if (!item) {
     await sayHost(s, "REASK", parkItemAsk(s));
     return;
@@ -863,19 +965,13 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
   s.selected = undefined;
   s.listings = undefined;
   markSessionDirty();
-  if (!s.shoppingCity) {
-    s.step = "await_shopping_city";
-    markSessionDirty();
-    setOffer(s, "shoppingCity", "New York");
-    await say(s, `Got it — “${item}”.`, shopCityPrompt(item));
-    return;
-  }
-  await runSearchFlow(s, `Got it — searching ${item} near ${s.shoppingCity}…`);
+  await runSearchFlow(s, `Got it — searching ${item}…`, extra);
 }
 
 async function selectListing(s: Session, idx: number): Promise<void> {
   const list = s.listings ?? [];
-  s.selected = list[idx]!;
+  const picked = list[idx]!;
+  s.selected = { ...picked, taxCents: taxCentsFor(picked) };
   s.category ??= categoryOf(s.selected.productTitle) ?? undefined;
   clearPending(s);
   markSessionDirty();
@@ -898,6 +994,17 @@ const FORM_HOLD = new Set([
 ]);
 
 function hydratePending(s: Session): void {
+  if (s.step === "await_max_fee" || s.offer?.field === "maxFeeCents" || s.pending?.slot === "delivery_fee") {
+    s.offer = undefined;
+    s.pending = {
+      slot: "delivery_fee",
+      proposed: null,
+      kind: "money",
+      prompt: EARNINGS_ASK,
+    };
+    rememberQuestion(stayOf(s), EARNINGS_ASK);
+    return;
+  }
   if (s.pending?.slot) return;
   if (s.offer) {
     setOffer(s, s.offer.field, s.offer.value);
@@ -915,20 +1022,14 @@ function hydratePending(s: Session): void {
       s,
       "deadline",
       s.extendCandidate.departs,
-      s.pending?.prompt || `Want me to stretch your deadline to meet ${s.extendCandidate.name}? Just say yes or no.`,
-    );
-  } else if (s.step === "await_max_fee") {
-    setOffer(
-      s,
-      "maxFeeCents",
-      String(s.maxFeeCents ?? 3000),
-      "What’s the most you’d pay the traveler in USD? $30 is a common cap — say that’s fine, or send a number.",
+      s.pending?.prompt ||       `Want me to stretch your deadline to meet them? Just say yes or no.`,
     );
   } else if (s.step === "await_delivery_city") {
     if (s.deliveryCity) setOffer(s, "deliveryCity", s.deliveryCity, DEST_ASK);
     else parkDestAsk(s);
   } else if (s.step === "await_shopping_city") {
-    setOffer(s, "shoppingCity", "New York", "Which town should I buy from (the traveler’s home)? New York works if you want the US catalog.");
+    s.offer = undefined;
+    s.pending = null;
   } else if (s.step === "await_product") {
     if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
@@ -944,11 +1045,11 @@ function reaskPrompt(s: Session): string {
     (s.step === "await_deadline"
       ? dateAskPrompt(s.deliveryCity ?? "your city", s.offer?.field === "deadline" ? s.offer.value : null)
       : s.step === "await_max_fee"
-        ? "Send a dollar amount, or say that’s fine for $30."
+        ? EARNINGS_ASK
         : s.step === "await_delivery_city"
           ? DEST_ASK
           : s.step === "await_shopping_city"
-            ? "Which town should I buy from (the traveler’s home)? New York works if you want the US catalog."
+            ? shopperIntakeLine(s)
             : s.step === "await_product"
               ? shopperIntakeLine(s)
             : s.step === "await_listing"
@@ -956,7 +1057,7 @@ function reaskPrompt(s: Session): string {
               : s.step === "await_traveler"
                 ? `Pick a traveler — a name or number from 1 to ${s.ranked?.length ?? 1}.`
                 : s.step === "await_traveler_decision"
-                  ? `Still waiting on ${s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler"}. I’ll ping you when they agree.`
+                  ? shopperWait(s.deliveryCity ?? "your city")
                   : s.step === "await_pay_confirm"
                     ? `Say yes when you’re ready to lock ${formatUsd(s.totalCents ?? 0)} test USDC.`
                     : "Still on that last question — say yes to the suggestion, or send the value.")
@@ -995,10 +1096,8 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
   }
   if (s.step === "await_traveler_decision") {
     void syncWaitingShoppers();
-    const waiting = s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? stayOf(s).lastTravelerName;
-    rememberCounterparty(stayOf(s), waiting);
     rememberWait(stayOf(s));
-    await sayHost(s, "META", `I’ll ping you when they agree.`, turn.meta);
+    await sayHost(s, "META", shopperWait(s.deliveryCity ?? "your city"), turn.meta);
     return;
   }
   hydratePending(s);
@@ -1039,15 +1138,19 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
     const cents = parseUsdCents(text);
     if (cents != null) {
       s.maxFeeCents = cents;
+      s.earningsReasked = undefined;
       clearPending(s);
       if (s.chatId) presenceTyping(s);
       await presentQuoteAndWait(s);
       return true;
     }
-    await reply(
-      s,
-      s.pending?.prompt || "Send a dollar amount, or say that’s fine for $30.",
-    );
+    if (!s.earningsReasked) {
+      s.earningsReasked = true;
+      markSessionDirty();
+      await reply(s, EARNINGS_ASK);
+      return true;
+    }
+    await reply(s, EARNINGS_ASK);
     return true;
   }
 
@@ -1115,6 +1218,7 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     const n = parseInt(value, 10);
     if (!Number.isFinite(n) || n <= 0) return false;
     s.maxFeeCents = n;
+    s.earningsReasked = undefined;
     markSessionDirty();
     if (s.chatId) presenceTyping(s);
     await presentQuoteAndWait(s);
@@ -1138,30 +1242,14 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
 
 async function lockTraveler(s: Session, idx: number, opts?: { quoteAlreadyShown?: boolean }): Promise<void> {
   const ranked = s.ranked ?? [];
-  const chosen = ranked[idx]!;
-  s.chosenTravelerId = chosen.id;
-  const item = s.selected!;
-  const fee = suggestedTravelerFeeCents(item.priceCents);
-  const capped = Math.min(fee, s.maxFeeCents ?? fee);
-  const fees = computeFees(item.priceCents, capped);
-  s.totalCents = fees.totalCents;
-  markSessionDirty();
-  if (!opts?.quoteAlreadyShown) {
-    await say(
-      s,
-      `${item.productTitle.slice(0, 80)}\n` +
-        `Item ${formatUsd(item.priceCents)} + traveler ${formatUsd(capped)} → ${formatUsd(fees.totalCents)} all-in`,
-    );
-  }
+  const chosen = ranked[idx];
+  if (chosen) s.chosenTravelerId = chosen.id;
+  void opts;
   await parkWaitingOnTraveler(s);
 }
 
-function travelerDisplayName(s: Session, fallback = "The traveler"): string {
-  return (s.ranked ?? []).find((t) => t.id === s.chosenTravelerId)?.name ?? fallback;
-}
-
-function acceptedNoFundCopy(travelerName: string): string {
-  return `${travelerName} accepted. Funding isn’t available on this host yet — I’ll keep the order as accepted.`;
+function acceptedNoFundCopy(city: string): string {
+  return `Someone heading to ${city} took it. Funding isn’t available on this host yet — I’ll keep the request as accepted.`;
 }
 
 function nextRanked(s: Session): { id: string; name: string; departs: string } | null {
@@ -1171,30 +1259,27 @@ function nextRanked(s: Session): { id: string; name: string; departs: string } |
 }
 
 async function parkWaitingOnTraveler(s: Session): Promise<void> {
-  const chosen = (s.ranked ?? []).find((t) => t.id === s.chosenTravelerId);
   const item = s.selected!;
-  const next = nextRanked(s);
+  const amounts = persistRecapTotal(s);
   const id = s.bidId ?? `req-${sessionKey(s.phone)}-${Date.now()}`;
   s.bidId = id;
   s.step = "await_traveler_decision";
+  s.chosenTravelerId = s.chosenTravelerId ?? "open";
   rememberItem(stayOf(s), item.productTitle);
-  if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
-  rememberCounterparty(stayOf(s), chosen?.name, s.chosenTravelerId);
+  rememberQuote(stayOf(s), amounts.totalCents);
   rememberOffer(stayOf(s), id);
   rememberWait(stayOf(s));
-  rememberQuestion(stayOf(s), `I’ll send this to ${chosen?.name ?? "a traveler"} heading your way. I’ll ping you when they agree.`);
+  rememberQuestion(stayOf(s), shopperWait(s.deliveryCity ?? "your city"));
   clearPending(s);
   try {
-    const fee = suggestedTravelerFeeCents(item.priceCents);
-    const capped = Math.min(fee, s.maxFeeCents ?? fee);
     await writeOffer({
       id,
-      travelerId: s.chosenTravelerId!,
-      travelerName: chosen?.name ?? "Traveler",
+      travelerId: "open",
+      travelerName: "Traveler",
       item: item.productTitle.slice(0, 80),
-      itemCostCents: item.priceCents,
-      travelerFeeCents: capped,
-      totalCents: s.totalCents ?? 0,
+      itemCostCents: amounts.itemCents,
+      travelerFeeCents: amounts.earningsCents,
+      totalCents: amounts.totalCents,
       needBy: s.deadline ?? null,
       destinationCity: s.deliveryCity ?? null,
       bidId: id,
@@ -1206,16 +1291,12 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
       notifiedShopper: false,
       notifiedTraveler: false,
       notifiedTravelerFunded: false,
-      nextTravelerId: next?.id,
-      nextTravelerName: next?.name,
+      nextTravelerId: null,
+      nextTravelerName: item.storeName,
     });
   } catch (e: any) {
     console.warn(`[shopper-agent] marketplace offer skipped: ${e?.message ?? e}`);
   }
-  await say(
-    s,
-    `I’ll send this to ${chosen?.name ?? "a traveler"} heading your way. I’ll ping you when they agree.`,
-  );
 }
 
 /** Hosted pay-sheet after accept. Amount is the recap total — do not recompute. */
@@ -1268,7 +1349,9 @@ export async function syncWaitingShoppers(): Promise<void> {
     if (!carry || carry.notifiedShopper) continue;
     if (carry.status === "accepted") {
       await updateOffer(carry.id, { notifiedShopper: true });
-      await say(s, `${carry.travelerName} agreed.`);
+      if (carry.travelerId && carry.travelerId !== "open") s.chosenTravelerId = carry.travelerId;
+      const city = s.deliveryCity ?? carry.destinationCity ?? "your city";
+      await say(s, shopperAccepted(city, carry.totalCents));
       if (agentcardConfigured()) {
         const opened = await openPaySheetAfterAccept(s, carry.totalCents);
         if (opened) continue;
@@ -1285,24 +1368,17 @@ export async function syncWaitingShoppers(): Promise<void> {
       } else {
         console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
         clearPending(s);
-        await say(s, acceptedNoFundCopy(carry.travelerName));
+        await say(s, acceptedNoFundCopy(city));
       }
     } else if (carry.status === "declined") {
-      await updateOffer(carry.id, { notifiedShopper: true });
-      const next = nextRanked(s);
-      if (next) {
-        setOffer(
-          s,
-          "traveler",
-          String((s.ranked ?? []).findIndex((t) => t.id === next.id)),
-          `They couldn’t take it. Want me to try ${next.name}?`,
-        );
-        await say(s, `They couldn’t take it. Want me to try ${next.name}?`);
-      } else {
-        s.step = "await_traveler";
-        markSessionDirty();
-        await reply(s, `They couldn’t take it. Want a different traveler, or change the request?`);
-      }
+      await updateOffer(carry.id, {
+        status: "offered",
+        notifiedTraveler: false,
+        notifiedShopper: false,
+        travelerId: "open",
+        travelerName: "Traveler",
+      });
+      await say(s, shopperNobody(s.deliveryCity ?? carry.destinationCity ?? "your city"));
     }
   }
 }
@@ -1319,10 +1395,8 @@ function escrowErrorForUser(e: unknown): string {
 
 async function fundAfterAccept(s: Session): Promise<void> {
   if (!demoLocalChain() && agentcardConfigured() && s.paySheetSent) {
-    const item = s.selected!;
-    const fee = suggestedTravelerFeeCents(item.priceCents);
-    const capped = Math.min(fee, s.maxFeeCents ?? fee);
-    const recapTotal = s.totalCents ?? s.paySheetAmountCents ?? computeFees(item.priceCents, capped).totalCents;
+    const a = persistRecapTotal(s);
+    const recapTotal = a.totalCents;
     const code = generateHandoverCode();
     s.handoverCode = code;
     s.totalCents = recapTotal;
@@ -1348,22 +1422,21 @@ async function fundAfterAccept(s: Session): Promise<void> {
   }
   if (!demoLocalChain()) {
     console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
-    await reply(s, acceptedNoFundCopy(travelerDisplayName(s)));
+    await reply(s, acceptedNoFundCopy(s.deliveryCity ?? "your city"));
     return;
   }
   await reply(s, `Opening escrow… one moment.`, { thinkMs: 600 });
   try {
     if (s.chatId) presenceTyping(s);
     const item = s.selected!;
-    const fee = suggestedTravelerFeeCents(item.priceCents);
-    const capped = Math.min(fee, s.maxFeeCents ?? fee);
+    const a = persistRecapTotal(s);
     const requestId = s.bidId;
     const out = await withTimeout(
       fundLocalEscrow({
         shopperUserId: s.phone,
-        travelerId: s.chosenTravelerId!,
-        itemCostCents: item.priceCents,
-        travelerFeeCents: capped,
+        travelerId: s.chosenTravelerId && s.chosenTravelerId !== "open" ? s.chosenTravelerId : s.phone,
+        itemCostCents: a.itemCents + a.taxCents,
+        travelerFeeCents: a.earningsCents,
       }),
       ESCROW_TIMEOUT_MS,
       "escrow fund",
@@ -1371,7 +1444,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
     s.escrowId = out.escrowId;
     s.handoverCode = out.handoverCode;
     s.fundTxHash = out.fundTxHash;
-    s.totalCents = out.totalCents;
+    s.totalCents = a.totalCents;
     s.step = "await_handover_done";
     s.offer = undefined;
     s.pending = null;
@@ -1380,7 +1453,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
       await updateOffer(requestId, {
         escrowId: out.escrowId,
         handoverCode: out.handoverCode,
-        totalCents: out.totalCents,
+        totalCents: a.totalCents,
         status: "funded",
         notifiedShopper: true,
         notifiedTravelerFunded: false,
@@ -1388,7 +1461,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
     }
     await say(
       s,
-      `Funded — ${formatUsd(out.totalCents)} in escrow.`,
+      `Funded — ${formatUsd(a.totalCents)} in escrow.`,
       `Your handover code is ${out.handoverCode}. Give that to the traveler when you meet and you’ve checked the item.`,
     );
   } catch (e: any) {
@@ -1469,15 +1542,11 @@ function applyCognitiveSlots(
   },
 ) {
   if (slots.usCity) {
-    const buyFrom = parseShoppingCity(slots.usCity);
-    if (buyFrom) s.shoppingCity = buyFrom;
+    /* Catalog is US-wide; buy-from city is not a shopper slot. */
   }
   const dest = slots.deliveryCity ?? slots.ghCity;
   if (dest) s.deliveryCity = parseDeliveryTown(dest) ?? dest;
   if (slots.deadline) s.deadline = parseDate(slots.deadline) ?? undefined;
-  if (typeof slots.maxFeeUsd === "number" && slots.maxFeeUsd > 0) {
-    s.maxFeeCents = Math.round(slots.maxFeeUsd * 100);
-  }
   if (slots.category) s.category = slots.category;
 }
 
@@ -1498,16 +1567,7 @@ async function commitConfirmedProduct(
   appendEpisode(cog.memory, "slot", `Product locked: ${q}`, { product: q });
   if (slots) applyCognitiveSlots(s, slots);
   markSessionDirty();
-
-  // If US city was filled (and not just the default placeholder path), search;
-  // otherwise ask for shopping city — New York stays the suggested default.
-  const cityFromSlots = Boolean(slots?.usCity?.trim());
-  if (cityFromSlots) {
-    await runSearchFlow(s, `Searching “${q}” near ${s.shoppingCity}…`);
-    return;
-  }
-  s.step = "await_shopping_city";
-  markSessionDirty();
+  await runSearchFlow(s, `Searching “${q}”…`);
 }
 
 async function handleInboundInner(
@@ -1719,23 +1779,9 @@ async function handleInboundInner(
     if (decision.bubbles.length) await say(s, ...decision.bubbles);
     if (decision.confirmedProduct) {
       await commitConfirmedProduct(s, decision.confirmedProduct, decision.applySlots);
-      if (!s.searchQuery) return;
-      if (decision.confirmedUsCity) {
-        s.shoppingCity = decision.confirmedUsCity;
-        markSessionDirty();
-        await runSearchFlow(s);
-        return;
-      }
-      if ((s.step as Step) === "await_shopping_city" && s.searchQuery && !decision.bubbles.some((b) => /city|york|atlanta/i.test(b))) {
-        setOffer(s, "shoppingCity", "New York");
-        await reply(s, shopCityPrompt(s.searchQuery));
-      }
-      markSessionDirty();
       return;
     }
     if (decision.confirmedUsCity) {
-      s.shoppingCity = decision.confirmedUsCity;
-      markSessionDirty();
       await runSearchFlow(s);
       return;
     }
@@ -1802,7 +1848,6 @@ async function handleInboundInner(
           }
           if (o && (o as any).city) s.deliveryCity = parseDeliveryTown((o as any).city) ?? (o as any).city;
           if (o && (o as any).deadline) s.deadline = parseDate((o as any).deadline) ?? undefined;
-          if (o && (o as any).maxFeeUsd) s.maxFeeCents = Math.round((o as any).maxFeeUsd * 100);
           if (o && (o as any).category) s.category = (o as any).category;
         } catch (e: any) {
           console.warn(`[shopper-agent] extractOrder skipped: ${e.message}`);
@@ -1813,42 +1858,19 @@ async function handleInboundInner(
         return;
       }
       s.searchQuery = query;
-      s.step = "await_shopping_city";
-      setOffer(s, "shoppingCity", "New York");
       ensureCognition(s).topic = "shopping";
       appendEpisode(ensureCognition(s).memory, "slot", `Product from text: ${query}`, { product: query });
       markSessionDirty();
       rememberItem(stayOf(s), query);
-      await sayHost(s, "NEW", shopCityPrompt(query));
+      await applyNewQuery(s, query);
       return;
     }
     case "await_shopping_city": {
-      if (intent.kind === "reject_results") {
-        s.step = "await_product";
-        markSessionDirty();
-        await reply(s, `No problem — what should I look for instead?`);
+      if (s.searchQuery) {
+        await runSearchFlow(s);
         return;
       }
-      if (/^(thanks|thank you|cool|great)\.?$/i.test(text)) {
-        setOffer(s, "shoppingCity", s.offer?.field === "shoppingCity" ? s.offer.value : "New York");
-        await reply(s, `Still on this — which town should I buy from (the traveler’s home)? New York works for the US catalog.`);
-        return;
-      }
-      if (isCityAdviceQuestion(text)) {
-        await say(s, ...recommendUsCityBubble(s.searchQuery));
-        return;
-      }
-      const city = parseShoppingCity(text);
-      if (!city) {
-        await reply(
-          s,
-          `I need the traveler’s home town — try New York or Atlanta if you want the US store catalog, or another known city.`,
-        );
-        return;
-      }
-      s.shoppingCity = city;
-      markSessionDirty();
-      await runSearchFlow(s);
+      await sayHost(s, "REASK", parkItemAsk(s));
       return;
     }
     case "await_listing": {
@@ -1931,13 +1953,9 @@ async function handleInboundInner(
     }
     case "await_max_fee": {
       if (/\b(cheap|cheaper|less|lower|reduce|too much)\b/i.test(text)) {
-        const base = s.offer?.field === "maxFeeCents" ? parseInt(s.offer.value, 10) : 3000;
-        const cheaper = Math.max(1000, Math.round((Number.isFinite(base) ? base : 3000) * 0.7));
-        s.maxFeeCents = cheaper;
-        s.offer = undefined;
+        if (!s.earningsReasked) s.earningsReasked = true;
         markSessionDirty();
-        if (s.chatId) presenceTyping(s);
-        await presentQuoteAndWait(s);
+        await reply(s, EARNINGS_ASK);
         return;
       }
       if (intent.kind === "no") {
@@ -1945,23 +1963,27 @@ async function handleInboundInner(
         const cents = rest ? parseUsdCents(rest) : null;
         if (cents != null) {
           s.maxFeeCents = cents;
+          s.earningsReasked = undefined;
           s.offer = undefined;
           markSessionDirty();
           if (s.chatId) presenceTyping(s);
           await presentQuoteAndWait(s);
           return;
         }
-        s.offer = undefined;
-        setOffer(s, "maxFeeCents", "2000");
-        await reply(s, `What cap works — $20, or send a number?`);
+        if (!s.earningsReasked) s.earningsReasked = true;
+        markSessionDirty();
+        await reply(s, EARNINGS_ASK);
         return;
       }
       const cents = parseUsdCents(text);
       if (cents == null) {
-        await reply(s, `Just the dollar amount is fine — like 40. Or say yes to $30.`);
+        if (!s.earningsReasked) s.earningsReasked = true;
+        markSessionDirty();
+        await reply(s, EARNINGS_ASK);
         return;
       }
       s.maxFeeCents = cents;
+      s.earningsReasked = undefined;
       s.offer = undefined;
       markSessionDirty();
       if (s.chatId) presenceTyping(s);
@@ -2015,7 +2037,7 @@ async function handleInboundInner(
         await parkWaitingOnTraveler(s);
         return;
       }
-      await reply(s, `I’ll send this to the traveler heading your way — say yes to confirm.`);
+      await reply(s, shopperWait(s.deliveryCity ?? "your city"));
       return;
     }
     case "await_traveler_decision": {
@@ -2047,16 +2069,14 @@ async function handleInboundInner(
       }
       const carry = s.bidId ? await getOffer(s.bidId) : null;
       if (carry?.status === "accepted") {
-        await reply(s, acceptedNoFundCopy(carry.travelerName));
+        await reply(s, shopperAccepted(s.deliveryCity ?? carry.destinationCity ?? "your city", carry.totalCents));
         return;
       }
-      const waitingName = s.ranked?.find((t) => t.id === s.chosenTravelerId)?.name ?? "the traveler";
       if (s.offer?.field === "traveler") {
-        const next = nextRanked(s);
-        await reply(s, next ? `They couldn’t take it. Want me to try ${next.name}?` : `They couldn’t take it. Want a different traveler?`);
+        await reply(s, shopperNobody(s.deliveryCity ?? "your city"));
         return;
       }
-      await reply(s, `Still waiting on ${waitingName}. I’ll ping you when they agree.`);
+      await reply(s, shopperWait(s.deliveryCity ?? "your city"));
       return;
     }
     case "await_pay_confirm": {
@@ -2067,7 +2087,7 @@ async function handleInboundInner(
       }
       if (!demoLocalChain()) {
         console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
-        await reply(s, acceptedNoFundCopy(travelerDisplayName(s)));
+        await reply(s, acceptedNoFundCopy(s.deliveryCity ?? "your city"));
         return;
       }
       if (!isYes(text) && intent.kind !== "yes" && !acceptsOffer(text, intent)) {
