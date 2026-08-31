@@ -15,3 +15,10 @@ export {
   initMarketplaceFile,
 } from "./marketplace";
 export type { StoredOffer, StoredTrip, OfferStatus } from "./marketplace";
+export {
+  getConnectedCard,
+  setConnectedCard,
+  getTravelerCard,
+  setTravelerCard,
+} from "./models/traveler.card";
+export type { StoredCard } from "./models/traveler.card";

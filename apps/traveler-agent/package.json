@@ -16,6 +16,8 @@
     "@manebra/calendar": "*",
     "@manebra/geo": "*",
     "@manebra/db": "*",
+    "@manebra/webhooks": "*",
+    "@repo/agentcard": "*",
     "@manebra/settlement": "*"
   },
   "devDependencies": {

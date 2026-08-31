@@ -54,6 +54,7 @@ const {
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
 const { handleInbound, syncTravelerMarketplace } = await import("./traveler-flow.mts");
+const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
@@ -189,6 +190,15 @@ async function startRelayLongPoll() {
 
 const server = createServer(async (req, res) => {
   const url = req.url ?? "/";
+  const hdrs = req.headers as Record<string, string | string[] | undefined>;
+
+  if (req.method === "POST" && isAgentCardRequest(hdrs)) {
+    const raw = await readBody(req);
+    const result = await handleAgentCardWebhook(raw, hdrs);
+    if (result.ok) ok(res, { received: true }, result.status);
+    else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
+    return;
+  }
 
   if (req.method === "GET" && (url === "/" || url === "/health")) {
     const stats = sessionStats();

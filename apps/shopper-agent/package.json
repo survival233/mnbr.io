@@ -18,6 +18,8 @@
     "@manebra/calendar": "*",
     "@manebra/geo": "*",
     "@manebra/db": "*",
+    "@manebra/webhooks": "*",
+    "@repo/agentcard": "*",
     "@manebra/settlement": "*",
     "@manebra/api": "*",
     "viem": "^2.21.0"

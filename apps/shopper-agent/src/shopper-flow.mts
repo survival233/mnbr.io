@@ -1,4 +1,4 @@
-import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents } from "@manebra/shared";
+import { formatUsd, endOfLocalDay, computeFees, suggestedTravelerFeeCents, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
 import { searchProducts, hasSerpApiKey, NoShopMarketError } from "@manebra/catalog";
@@ -50,7 +50,10 @@ import {
   updateOffer,
   getOffer,
   listUpcomingTrips,
+  getConnectedCard,
 } from "@manebra/db";
+import { agentcardConfigured } from "@repo/agentcard";
+import { PaySheet } from "@repo/agentcard/PaySheet";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
 import { parseShoppingCity, parseDeliveryTown, isCityAdviceQuestion, recommendUsCityBubble } from "./cognition/cities.mts";
@@ -1070,6 +1073,10 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     }
   }
   if (s.step === "await_pay_confirm" && acceptsOffer(text, intent)) {
+    if (s.paySheetSent) {
+      await reply(s, `Open the pay link I sent — I’ll lock it once your card is on file.`);
+      return true;
+    }
     await fundAfterAccept(s);
     return true;
   }
@@ -1210,15 +1217,61 @@ async function parkWaitingOnTraveler(s: Session): Promise<void> {
   );
 }
 
+/** Hosted pay-sheet after accept. Amount is the recap total — do not recompute. */
+async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
+  try {
+    const sheet = await PaySheet({
+      identity: sessionKey(s.phone),
+      amountCents: recapTotalCents,
+      merchant: "Manebra",
+    });
+    s.step = "await_pay_confirm";
+    s.paySheetSent = true;
+    s.paySheetAmountCents = sheet.amountCents;
+    s.offer = undefined;
+    s.pending = {
+      slot: "pay",
+      proposed: sheet.amountCents,
+      kind: "bool",
+      prompt: `Fund ${formatUsd(sheet.amountCents)} with your card.`,
+    };
+    markSessionDirty();
+    await say(
+      s,
+      `Fund ${formatUsd(sheet.amountCents)} with your card (4242… if you still need to add one).`,
+      sheet.url,
+    );
+    return true;
+  } catch (e: any) {
+    console.warn(`[shopper-agent] pay-sheet: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
+  if (s.step !== "await_pay_confirm" || !s.paySheetSent || s.handoverCode || s.escrowId) return false;
+  const card = await getConnectedCard(sessionKey(s.phone));
+  if (!card) return false;
+  await fundAfterAccept(s);
+  return true;
+}
+
 /** When Traveler accepts/declines, ping waiting Shopper (same process as Relay long-poll). */
 export async function syncWaitingShoppers(): Promise<void> {
   for (const s of allSessions()) {
+    if ((s.step === "await_pay_confirm" || s.step === "await_traveler_decision") && s.bidId) {
+      if (await maybeCompleteAgentCardFund(s)) continue;
+    }
     if (s.step !== "await_traveler_decision" || !s.bidId) continue;
     const carry = await getOffer(s.bidId);
     if (!carry || carry.notifiedShopper) continue;
     if (carry.status === "accepted") {
       await updateOffer(carry.id, { notifiedShopper: true });
       await say(s, `${carry.travelerName} agreed.`);
+      if (agentcardConfigured()) {
+        const opened = await openPaySheetAfterAccept(s, carry.totalCents);
+        if (opened) continue;
+      }
       if (demoLocalChain()) {
         s.step = "await_pay_confirm";
         setOffer(
@@ -1264,6 +1317,34 @@ function escrowErrorForUser(e: unknown): string {
 }
 
 async function fundAfterAccept(s: Session): Promise<void> {
+  if (!demoLocalChain() && agentcardConfigured() && s.paySheetSent) {
+    const item = s.selected!;
+    const fee = suggestedTravelerFeeCents(item.priceCents);
+    const capped = Math.min(fee, s.maxFeeCents ?? fee);
+    const recapTotal = s.totalCents ?? s.paySheetAmountCents ?? computeFees(item.priceCents, capped).totalCents;
+    const code = generateHandoverCode();
+    s.handoverCode = code;
+    s.totalCents = recapTotal;
+    s.step = "await_handover_done";
+    s.offer = undefined;
+    s.pending = null;
+    markSessionDirty();
+    if (s.bidId) {
+      await updateOffer(s.bidId, {
+        handoverCode: code,
+        totalCents: recapTotal,
+        status: "funded",
+        notifiedShopper: true,
+        notifiedTravelerFunded: false,
+      });
+    }
+    await say(
+      s,
+      `Funded — ${formatUsd(recapTotal)}.`,
+      `Your handover code is ${code}. Give that to the traveler when you meet and you’ve checked the item.`,
+    );
+    return;
+  }
   if (!demoLocalChain()) {
     console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
     await reply(s, acceptedNoFundCopy(travelerDisplayName(s)));
@@ -1510,6 +1591,10 @@ async function handleInboundInner(
     if (s.step === "await_traveler_decision") {
       await syncWaitingShoppers();
       if ((s.step as string) === "await_pay_confirm" && closer) {
+        if (s.paySheetSent) {
+          await reply(s, `Open the pay link I sent — I’ll lock it once your card is on file.`);
+          return;
+        }
         await fundAfterAccept(s);
         return;
       }
@@ -1923,6 +2008,10 @@ async function handleInboundInner(
       await syncWaitingShoppers();
       const afterWait = s.step as string;
       if (afterWait === "await_pay_confirm") {
+        if (s.paySheetSent) {
+          await reply(s, `Open the pay link I sent — I’ll lock it once your card is on file.`);
+          return;
+        }
         if (isYes(text) || intent.kind === "yes" || acceptsOffer(text, intent)) {
           await fundAfterAccept(s);
         }
@@ -1957,6 +2046,11 @@ async function handleInboundInner(
       return;
     }
     case "await_pay_confirm": {
+      if (s.paySheetSent) {
+        if (await maybeCompleteAgentCardFund(s)) return;
+        await reply(s, `Open the pay link I sent — I’ll lock it once your card is on file.`);
+        return;
+      }
       if (!demoLocalChain()) {
         console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
         await reply(s, acceptedNoFundCopy(travelerDisplayName(s)));

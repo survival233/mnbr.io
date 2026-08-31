@@ -15,7 +15,9 @@ import {
   latestOpenOffer,
   latestActiveOffer,
   updateOffer,
+  getTravelerCard,
 } from "@manebra/db";
+import { agentcardConfigured, createWalletLink } from "@repo/agentcard";
 import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
 import { isTravelIntent } from "@manebra/flights";
 import { hubCity, sameMetro } from "@manebra/geo";
@@ -177,11 +179,22 @@ export async function syncTravelerMarketplace(): Promise<void> {
   const carry = await latestActiveOffer();
   if (carry?.status === "funded" && !carry.notifiedTravelerFunded) {
     await updateOffer(carry.id, { notifiedTravelerFunded: true });
+    const onFile = await getTravelerCard(s.phone);
     await say(
       s,
       `Shopper funded — ${carry.item} is locked in escrow.`,
-      `When you meet, enter their 6-digit handover code.`,
+      onFile
+        ? `Shop with your card on file. When you meet, enter their 6-digit handover code.`
+        : `When you meet, enter their 6-digit handover code.`,
     );
+    if (agentcardConfigured() && !onFile) {
+      try {
+        const link = await createWalletLink(s.phone);
+        await say(s, `Add a test card (4242…) so you can shop with yours.`, link.url);
+      } catch (e: any) {
+        console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
+      }
+    }
   }
 }
 
@@ -215,6 +228,21 @@ async function tryHandleMarketplaceOffer(
       rememberOffer(stayOf(s), carry.id);
       rememberWait(stayOf(s));
       await io.say(s, `Accepted. Waiting for the shopper to fund — no Shop & Deliver until then.`);
+      if (agentcardConfigured()) {
+        const onFile = await getTravelerCard(s.phone);
+        if (!onFile) {
+          try {
+            const link = await createWalletLink(s.phone);
+            await io.say(
+              s,
+              `Add a test card (4242…) so you can shop with yours — never the shopper’s.`,
+              link.url,
+            );
+          } catch (e: any) {
+            console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
+          }
+        }
+      }
       return true;
     }
     if (no) {

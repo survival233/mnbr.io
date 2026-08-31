@@ -78,6 +78,9 @@ export type Session = {
   handoverCode?: string;
   fundTxHash?: string;
   totalCents?: number;
+  /** Pay-sheet already texted after traveler accept (AgentCard). */
+  paySheetSent?: boolean;
+  paySheetAmountCents?: number;
   /** Multimodal cognition: persona, episodic memory, pending product confirm. */
   cognition?: CognitionState;
   updatedAt: number;
@@ -175,6 +178,8 @@ export function resetSession(s: Session) {
   s.handoverCode = undefined;
   s.fundTxHash = undefined;
   s.totalCents = undefined;
+  s.paySheetSent = undefined;
+  s.paySheetAmountCents = undefined;
   s.stay = { openedAt: Date.now() };
   // Keep long-horizon persona/memory; clear only in-flight confirm.
   if (s.cognition) {

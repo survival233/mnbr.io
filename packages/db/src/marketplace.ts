@@ -431,7 +431,7 @@ export async function expireStaleMarketplaceOffers(maxAgeMs = 72 * 3600_000): Pr
     const store = loadFile();
     let n = 0;
     for (const o of store.offers) {
-      if ((o.status === "offered" || o.status === "accepted") && o.updatedAt < cutoff) {
+      if ((o.status === "offered" || o.status === "accepted") && o.createdAt < cutoff) {
         o.status = "declined";
         n += 1;
       }

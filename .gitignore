@@ -31,3 +31,7 @@ coverage/
 apps/shopper-agent/.sessions.json
 apps/shopper-agent/.sessions.json.tmp
 apps/agent-cli/.demo-marketplace.json
+.agentcard-store.json
+.agentcard-cards.json
+apps/*/.agentcard-store.json
+apps/*/.agentcard-cards.json
