@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { resolveMetro, resolveHub, hubCity, guestTown, sameMetro } from "./resolve";
+import {
+  resolveMetro,
+  resolveHub,
+  hubCity,
+  guestTown,
+  sameMetro,
+  destinationMetro,
+  placeMetro,
+  hubIata,
+} from "./resolve";
 
 describe("resolveMetro", () => {
   it("maps IATA, city, and airport name to one metro", () => {
@@ -39,5 +48,26 @@ describe("resolveMetro", () => {
     expect(sameMetro("San José", "SJO")).toBe(true);
     expect(resolveMetro("EZE")?.id).toBe("buenos_aires");
     expect(sameMetro("Buenos Aires", "AEP")).toBe(true);
+  });
+});
+
+describe("destinationMetro — any geo city, guest names never IATA", () => {
+  it("commits Lagos, London, Kumasi, New York, Accra from natural utterances", () => {
+    expect(destinationMetro("I'm going to Lagos")?.city).toBe("Lagos");
+    expect(destinationMetro("London")?.city).toBe("London");
+    expect(destinationMetro("Kumasi")?.city).toBe("Kumasi");
+    expect(destinationMetro("New York")?.city).toBe("New York");
+    expect(destinationMetro("I'm going to Accra")?.city).toBe("Accra");
+    expect(destinationMetro("JFK")?.city).toBe("New York");
+  });
+
+  it("does not treat Accra as the only real city", () => {
+    expect(placeMetro("Lagos")?.id).toBe("lagos");
+    expect(placeMetro("Nairobi")?.id).toBe("nairobi");
+    expect(hubIata("Lagos")).toBe("LOS");
+    expect(hubIata("Accra")).toBe("ACC");
+    expect(guestTown("ACC")).toBe("Accra");
+    expect(guestTown("LOS")).toBe("Lagos");
+    expect(destinationMetro("I'm going to Lagos")?.city).not.toBe("Accra");
   });
 });

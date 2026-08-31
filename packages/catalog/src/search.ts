@@ -2,25 +2,34 @@ import type { ProductListing, ProductSearchResult } from "./types.js";
 import { searchGoogleShoppingLive, hasSerpApiKey } from "./serp-shopping.js";
 import { cacheListings, getCachedListing } from "./cache.js";
 import { supportedShoppingCities } from "./verified-stores.js";
-import { shopMarketForCity, NoShopMarketError } from "./markets.js";
+import { shopMarketForCity, nationalShopMarket, NoShopMarketError } from "./markets.js";
 
-export { supportedShoppingCities, hasSerpApiKey, shopMarketForCity, NoShopMarketError };
+export { supportedShoppingCities, hasSerpApiKey, shopMarketForCity, nationalShopMarket, NoShopMarketError };
+
+/** Empty = no search until the shopper names a shop-from place. Never invent New York. */
+export function catalogSearchCity(shoppingCity?: string | null): string {
+  return shoppingCity?.trim() ?? "";
+}
 
 /**
  * Live product search across verified stores (Apple, Best Buy, Walmart, Target, Amazon).
  * Uses Google Shopping via SerpAPI — not each store's API, and not dummy data.
+ * Catalog is national approved merchants; shoppingCity is optional and never defaults to a city.
  */
 export async function searchProducts(args: {
   query: string;
-  shoppingCity: string;
+  shoppingCity?: string;
 }): Promise<ProductSearchResult> {
-  const shoppingCity = args.shoppingCity.trim();
+  const shoppingCity = catalogSearchCity(args.shoppingCity);
   const query = args.query.trim();
   if (!query || !shoppingCity) {
     return { query, shoppingCity, identifiedProduct: null, listings: [] };
   }
 
-  const listings = await searchGoogleShoppingLive({ query, shoppingCity });
+  const listings = await searchGoogleShoppingLive({
+    query,
+    shoppingCity: shoppingCity || undefined,
+  });
   cacheListings(listings);
 
   return {

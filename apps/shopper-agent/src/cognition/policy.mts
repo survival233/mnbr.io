@@ -53,7 +53,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 function entitiesSummary(s: Session): string {
   return JSON.stringify({
     product: s.searchQuery ?? s.cognition?.pending?.hypothesis ?? null,
-    usCity: s.shoppingCity.trim() ? s.shoppingCity : null,
+    usCity: s.shoppingCity?.trim() ? s.shoppingCity : null,
     deliveryCity: s.deliveryCity,
     deadline: s.deadline?.toISOString?.() ?? null,
     maxFeeCents: s.maxFeeCents ?? null,
@@ -129,20 +129,16 @@ export async function runPolicyTurn(args: {
     };
   }
 
-  // Host-side city advice — never treat "which is best?" as a location
+  // Leftover shopping-city step: catalog is national — host searches.
   if (step === "await_shopping_city" && text && isCityAdviceQuestion(text) && !hasMedia) {
-    appendEpisode(cog.memory, "clarify", "Asked which buy-from town is best");
-    return {
-      bubbles: recommendUsCityBubble(s.searchQuery),
-      fallthrough: false,
-    };
+    appendEpisode(cog.memory, "clarify", "Asked which shop-from place");
+    return { bubbles: recommendUsCityBubble(), fallthrough: false };
   }
 
-  // Host-side concrete city parse before LLM (fast + reliable)
   if (step === "await_shopping_city" && text && !hasMedia) {
     const city = parseShopPlace(text);
     if (city) {
-      appendEpisode(cog.memory, "slot", `Buy-from town ${city}`, { usCity: city });
+      appendEpisode(cog.memory, "slot", `Buy-from place ${city}`, { usCity: city });
       return {
         bubbles: [],
         confirmedUsCity: city,
@@ -209,10 +205,7 @@ export async function runPolicyTurn(args: {
       };
     }
     if (step === "await_shopping_city") {
-      return {
-        bubbles: recommendUsCityBubble(s.searchQuery),
-        fallthrough: false,
-      };
+      return { bubbles: [], fallthrough: true };
     }
     // Do not blindly fall through on mid-conversation clarifies
     if (text.includes("?") || /^(which|what|why|how|should)\b/i.test(text)) {
@@ -220,7 +213,7 @@ export async function runPolicyTurn(args: {
         bubbles: [
           predictiveAsk({
             product: s.searchQuery,
-            shoppingCity: s.shoppingCity.trim() || undefined,
+            shoppingCity: s.shoppingCity?.trim() || undefined,
             deliveryCity: s.deliveryCity,
             deadline: s.deadline,
             maxFeeCents: s.maxFeeCents,
@@ -319,12 +312,9 @@ export async function runPolicyTurn(args: {
     const slotCity = turn.slots.usCity ? parseShopPlace(turn.slots.usCity) : null;
     const ask =
       turn.askUser ??
-      (step === "await_shopping_city"
-        ? recommendUsCityBubble(s.searchQuery).join(" ")
-        : null) ??
       predictiveAsk({
         product: s.searchQuery,
-        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity.trim() || undefined,
+        shoppingCity: step === "await_shopping_city" ? undefined : s.shoppingCity?.trim() || undefined,
         deliveryCity: s.deliveryCity,
         deadline: s.deadline,
         maxFeeCents: s.maxFeeCents,
@@ -395,11 +385,8 @@ export async function runPolicyTurn(args: {
   }
 
   if (step === "await_shopping_city") {
-    // Never fall through to treat free text as a city
     return {
-      bubbles: turn.askUser
-        ? [turn.askUser]
-        : [SHOP_PLACE_ASK],
+      bubbles: turn.askUser ? [turn.askUser] : [SHOP_PLACE_ASK],
       fallthrough: false,
       monologueLog: cog.lastMonologue,
     };

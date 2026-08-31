@@ -168,7 +168,7 @@ export function predictiveAsk(args: {
     return warm ? SHOP_PLACE_ASK : "Shop from which city or country?";
   }
   if (!args.deliveryCity) {
-    return warm ? "Which city should it land in?" : "Delivery city?";
+    return warm ? "Which city should it land in?" : "Which city should it land in?";
   }
   if (!args.deadline) {
     return warm ? "When do you need it by at most?" : "When do you need it by at most?";

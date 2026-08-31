@@ -32,6 +32,7 @@ import {
   rememberOffer,
   rememberWait,
   travelerAsk,
+  guestCityName,
   type DialogSession,
 } from "@manebra/dialog";
 
@@ -131,7 +132,7 @@ async function say(s: Session, ...bubbles: string[]) {
 function travelerDestination(s: Session): string | null {
   const raw = s.trip?.destination ?? s.travelDestination;
   if (!raw?.trim()) return null;
-  return hubCity(raw) ?? raw.trim();
+  return guestCityName(raw) ?? hubCity(raw) ?? raw.trim();
 }
 
 function offerFitsThisTraveler(s: Session, offer: { destinationCity?: string | null }): boolean {
@@ -336,7 +337,7 @@ export async function handleInbound(args: {
     return;
   }
   if (turn.act === "META") {
-    await sayHost(s, "META", stayOf(s).lastQuestion || "Still on your trip.", turn.meta);
+    await sayHost(s, "META", stayOf(s).lastQuestion || "Your trip.", turn.meta);
     return;
   }
 

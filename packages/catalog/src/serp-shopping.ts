@@ -6,7 +6,7 @@
 import type { ProductListing } from "./types.js";
 import { matchVerifiedStore } from "./verified-stores.js";
 import { listingIdFor } from "./cache.js";
-import { shopMarketForCity, NoShopMarketError } from "./markets.js";
+import { shopMarketForCity, NoShopMarketError, nationalShopMarket } from "./markets.js";
 
 export function hasSerpApiKey(): boolean {
   return Boolean(process.env.SERPAPI_API_KEY?.trim());
@@ -70,7 +70,7 @@ interface SerpShoppingItem {
 
 export async function searchGoogleShoppingLive(args: {
   query: string;
-  shoppingCity: string;
+  shoppingCity?: string;
   limit?: number;
 }): Promise<ProductListing[]> {
   const apiKey = process.env.SERPAPI_API_KEY?.trim();
@@ -81,11 +81,12 @@ export async function searchGoogleShoppingLive(args: {
     );
   }
 
-  const market = shopMarketForCity(args.shoppingCity);
-  if (!market) throw new NoShopMarketError(args.shoppingCity);
+  const city = args.shoppingCity?.trim() ?? "";
+  const wired = city ? shopMarketForCity(city) : undefined;
+  const market = wired ?? nationalShopMarket();
+  if (!market) throw new NoShopMarketError(city || "national");
 
-  const city = args.shoppingCity.trim();
-  const countryOnly = !city || /^(us|usa|united states)$/i.test(city);
+  const countryOnly = /^(us|usa|united states)$/i.test(city);
   const params = new URLSearchParams({
     engine: "google_shopping",
     q: args.query,
@@ -93,8 +94,9 @@ export async function searchGoogleShoppingLive(args: {
     hl: "en",
     gl: market.gl,
     num: "40",
-    location: countryOnly ? market.locationCountry : `${city}, ${market.locationCountry}`,
   });
+  if (city && wired && !countryOnly) params.set("location", `${city}, ${market.locationCountry}`);
+  else if (countryOnly) params.set("location", market.locationCountry);
 
   const res = await fetch(`https://serpapi.com/search.json?${params}`);
   if (!res.ok) {
@@ -129,7 +131,7 @@ export async function searchGoogleShoppingLive(args: {
       availabilityLabel: avail.availabilityLabel,
       productUrl: url,
       imageUrl: item.thumbnail || "",
-      shoppingCity: args.shoppingCity,
+      shoppingCity: city,
       category: inferCategory(args.query, item.title),
     };
     const prev = bestByStore.get(store.slug);

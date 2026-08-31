@@ -24,7 +24,7 @@
     "smoke:agentcard": "tsx scripts/agentcard-smoke.mts",
     "db:generate": "npm run generate --workspace @manebra/db",
     "db:migrate": "npm run migrate:dev --workspace @manebra/db",
-    "test": "npm run test --workspace @manebra/shared --workspace @manebra/settlement --workspace @manebra/agents --workspace @manebra/calendar --workspace @manebra/catalog --workspace @manebra/flights --workspace @manebra/dialog --workspace @repo/agentcard",
+    "test": "npm run test --workspace @manebra/shared --workspace @manebra/settlement --workspace @manebra/agents --workspace @manebra/calendar --workspace @manebra/catalog --workspace @manebra/flights --workspace @manebra/dialog --workspace @manebra/geo --workspace @manebra/traveler-agent --workspace @repo/agentcard",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "contracts:test": "cd packages/settlement/contracts && forge test",
     "deploy:audit": "bash deploy-audit.sh"

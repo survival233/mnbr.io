@@ -7,10 +7,9 @@
 import {
   parseTravelIntent,
   parseDepartDate,
-  toAirportCode,
-  resolvePlace,
   isoDate,
 } from "@manebra/flights";
+import { guestCityName, isDestinationShaped, parseTripDestination, parseTripOrigin } from "@manebra/dialog";
 
 export type TripField = "origin" | "destination" | "departure_date";
 
@@ -57,9 +56,20 @@ function confirm(trip: TripState, field: TripField) {
   if (!trip.confirmed.includes(field)) trip.confirmed.push(field);
 }
 
-function asAirport(raw: string | undefined | null): string | undefined {
-  if (!raw) return undefined;
-  return toAirportCode(raw) ?? (/^[A-Za-z]{3}$/.test(raw.trim()) ? raw.trim().toUpperCase() : undefined);
+/** Persist guest city names (Lagos), never IATA (LOS / ACC). */
+function asGuestCity(raw: string | undefined | null): string | undefined {
+  if (!raw?.trim()) return undefined;
+  return (
+    parseTripDestination(raw) ??
+    parseTripOrigin(raw) ??
+    guestCityName(raw) ??
+    undefined
+  );
+}
+
+function stampGuest(raw?: string): string | undefined {
+  if (!raw?.trim()) return undefined;
+  return guestCityName(raw) ?? raw.trim();
 }
 
 export type ExtractedSlots = {
@@ -81,12 +91,16 @@ export function extractSlots(text: string): ExtractedSlots {
 
   const parsed = parseTravelIntent(t);
   if (parsed.origin) {
-    const o = asAirport(String(parsed.origin));
+    const o = asGuestCity(String(parsed.origin));
     if (o) out.origin = o;
   }
   if (parsed.destination) {
-    const d = asAirport(String(parsed.destination));
+    const d = asGuestCity(String(parsed.destination));
     if (d) out.destination = d;
+  }
+  if (!out.destination) {
+    const dest = parseTripDestination(t);
+    if (dest && isDestinationShaped(t)) out.destination = dest;
   }
   if (parsed.departDate) {
     out.departure_date =
@@ -102,12 +116,10 @@ export function extractSlots(text: string): ExtractedSlots {
     if (d) out.departure_date = d;
   }
 
-  // Bare place reply (e.g. "New York", "JFK") when no route was parsed.
+  // Bare place reply (e.g. "New York", "Lagos") when no route was parsed.
   if (!out.origin && !out.destination) {
-    const place = resolvePlace(t);
+    const place = parseTripDestination(t) ?? parseTripOrigin(t);
     if (place) out.bare_place = place;
-  } else if (!out.origin || !out.destination) {
-    // "New York JFK" style already handled by resolvePlace inside toAirportCode paths
   }
 
   return out;
@@ -116,9 +128,13 @@ export function extractSlots(text: string): ExtractedSlots {
 /**
  * Merge extracted slots into persistent trip state.
  * - Explicit extractions always update that field and mark confirmed.
+ * - Dest-shaped utterances replace destination (Lagos after Accra is REPAIR, not a loop).
  * - Bare place fills only the first missing place slot (never overwrites confirmed).
  */
 export function mergeTripState(trip: TripState, text: string): ExtractedSlots {
+  if (trip.destination) trip.destination = stampGuest(trip.destination) ?? trip.destination;
+  if (trip.origin) trip.origin = stampGuest(trip.origin) ?? trip.origin;
+
   const extracted = extractSlots(text);
 
   if (extracted.origin) {
@@ -139,10 +155,11 @@ export function mergeTripState(trip: TripState, text: string): ExtractedSlots {
   if (extracted.bare_place) {
     const place = extracted.bare_place;
     const missing = missingFields(trip);
-    // Fill only missing place fields; never overwrite confirmed ones.
-    if (missing.includes("destination") && place !== trip.origin) {
-      trip.destination = place;
-      confirm(trip, "destination");
+    if (isDestinationShaped(text) || missing.includes("destination")) {
+      if (place !== trip.origin) {
+        trip.destination = place;
+        confirm(trip, "destination");
+      }
     } else if (missing.includes("origin") && place !== trip.destination) {
       trip.origin = place;
       confirm(trip, "origin");
@@ -153,28 +170,30 @@ export function mergeTripState(trip: TripState, text: string): ExtractedSlots {
   return extracted;
 }
 
-/** Next question for the first missing field only. */
+/** Next question for the first missing field only. Guest copy uses city names, never IATA. */
 export function nextQuestion(trip: TripState): { field: TripField; text: string } | null {
   const missing = missingFields(trip);
   if (!missing.length) return null;
   const field = missing[0]!;
+  const dest = stampGuest(trip.destination) ?? trip.destination;
+  const origin = stampGuest(trip.origin) ?? trip.origin;
   switch (field) {
     case "destination":
       return {
         field,
-        text: `Where are you flying? City or airport is fine.`,
+        text: `Where are you flying? City is fine.`,
       };
     case "origin":
       return {
         field,
         text: trip.departure_date
-          ? `Got ${trip.destination} on ${trip.departure_date} — where are you flying from? (city or airport code)`
-          : `Got ${trip.destination} — where are you flying from? (city or airport code)`,
+          ? `Got ${dest} on ${trip.departure_date} — where are you flying from?`
+          : `Got ${dest} — where are you flying from?`,
       };
     case "departure_date":
       return {
         field,
-        text: `Got ${trip.origin} → ${trip.destination}. What day do you want to depart?`,
+        text: `Got ${origin} → ${dest}. What day do you want to depart?`,
       };
   }
 }
@@ -190,11 +209,11 @@ export function ensureTrip(s: {
   if (!s.trip) {
     s.trip = blankTrip();
     if (s.travelDestination) {
-      s.trip.destination = s.travelDestination;
+      s.trip.destination = stampGuest(s.travelDestination) ?? s.travelDestination;
       confirm(s.trip, "destination");
     }
     if (s.travelOrigin) {
-      s.trip.origin = s.travelOrigin;
+      s.trip.origin = stampGuest(s.travelOrigin) ?? s.travelOrigin;
       confirm(s.trip, "origin");
     }
     if (s.travelDepartDate) {
@@ -202,8 +221,10 @@ export function ensureTrip(s: {
       confirm(s.trip, "departure_date");
     }
     if (s.travelArriveBy) s.trip.arrive_by = s.travelArriveBy.toISOString();
+  } else {
+    if (s.trip.destination) s.trip.destination = stampGuest(s.trip.destination) ?? s.trip.destination;
+    if (s.trip.origin) s.trip.origin = stampGuest(s.trip.origin) ?? s.trip.origin;
   }
-  // Keep legacy mirrors for any leftover readers.
   s.travelOrigin = s.trip.origin;
   s.travelDestination = s.trip.destination;
   s.travelDepartDate = s.trip.departure_date;

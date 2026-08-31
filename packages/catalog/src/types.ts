@@ -3,7 +3,7 @@ export interface ProductListing {
   /** Stable id for selection: `{storeSlug}:{sku}` */
   listingId: string;
   storeName: string;
-  storeSlug: "apple" | "bestbuy" | "walmart" | "target" | "amazon";
+  storeSlug: "apple" | "bestbuy" | "walmart" | "target" | "amazon" | "link";
   productTitle: string;
   priceCents: number;
   /** Catalog tax in cents when SerpAPI includes it; recap estimates otherwise. */

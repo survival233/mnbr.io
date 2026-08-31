@@ -55,7 +55,7 @@ export type Session = {
   relayMessageId?: string;
   step: Step;
   searchQuery?: string;
-  shoppingCity: string;
+  shoppingCity?: string;
   deliveryCity?: string;
   deadline?: Date;
   /** Shopper-stated traveler earnings (cents). Never default to $30. */
@@ -134,7 +134,7 @@ export function getOrCreateSession(
       chatId,
       channel: opts?.channel ?? "linq",
       step: "idle",
-      shoppingCity: "",
+      shoppingCity: undefined,
       pending: null,
       stay: { openedAt: Date.now() },
       updatedAt: Date.now(),
@@ -164,7 +164,7 @@ export function getOrCreateSession(
 export function resetSession(s: Session) {
   s.step = "idle";
   s.searchQuery = undefined;
-  s.shoppingCity = "";
+  s.shoppingCity = undefined;
   s.deliveryCity = undefined;
   s.deadline = undefined;
   s.maxFeeCents = undefined;
