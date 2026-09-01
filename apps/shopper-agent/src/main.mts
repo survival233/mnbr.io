@@ -5,23 +5,8 @@ const linqOff =
   process.env.LINQ_DISABLED === "1" || process.env.DEMO_RELAY_POLL === "1";
 const skipFromFiles = new Set(["DEMO_TRANSPORT", "LINQ_TO_PHONE", "LINQ_FROM_PHONE", "LINQ_CHAT_ID"]);
 
-// Load env before app modules read process.env (own → agent-cli → repo root)
-for (const rel of ["./../.env", "./../../agent-cli/.env", "./../../../.env"]) {
-  try {
-    const p = new URL(rel, import.meta.url);
-    for (const line of readFileSync(p, "utf8").split("\n")) {
-      const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
-      if (!m || process.env[m[1]]) continue;
-      if (linqOff && skipFromFiles.has(m[1]!)) continue;
-      process.env[m[1]!] = m[2]!.trim();
-    }
-  } catch {
-    /* missing ok */
-  }
-}
-
-/** Render web services scan this port on 0.0.0.0. Bind it before loading shopper-flow. */
-const PORT = Number(process.env.PORT ?? process.env.SHOPPER_AGENT_PORT ?? process.env.LINQ_AGENT_PORT ?? "8790");
+/** Render port scan needs this bound before any other boot work. */
+const PORT = Number(process.env.PORT) || 10000;
 const HOST = "0.0.0.0";
 const startedAt = Date.now();
 
@@ -57,14 +42,36 @@ const server = createServer((req, res) => {
     if (!res.headersSent) fail(res, 500, "internal error");
   });
 });
+server.on("error", (e: NodeJS.ErrnoException) => {
+  console.error(`[shopper-agent] listen error: ${e.message}`);
+  process.exit(1);
+});
 
-await new Promise<void>((resolve, reject) => {
-  server.once("error", reject);
-  server.listen(PORT, HOST, () => {
-    console.log(`[shopper-agent] listening on ${HOST}:${PORT}`);
-    resolve();
+server.listen(PORT, HOST, () => {
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : PORT;
+  console.log(`[shopper-agent] listening on ${HOST}:${port}`);
+  setImmediate(() => {
+    void boot().catch((e: any) => {
+      console.error(`[shopper-agent] boot failed: ${e?.message ?? e}`);
+    });
   });
 });
+
+async function boot() {
+for (const rel of ["./../.env", "./../../agent-cli/.env", "./../../../.env"]) {
+  try {
+    const p = new URL(rel, import.meta.url);
+    for (const line of readFileSync(p, "utf8").split("\n")) {
+      const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (!m || process.env[m[1]]) continue;
+      if (linqOff && skipFromFiles.has(m[1]!)) continue;
+      process.env[m[1]!] = m[2]!.trim();
+    }
+  } catch {
+    /* missing ok */
+  }
+}
 
 const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
   "./linq-client.mts"
@@ -219,7 +226,10 @@ dispatch = async (req, res) => {
   const url = req.url ?? "/";
   const hdrs = req.headers as Record<string, string | string[] | undefined>;
 
-  if (req.method === "POST" && isAgentCardRequest(hdrs)) {
+  if (
+    req.method === "POST" &&
+    (isAgentCardRequest(hdrs) || url.startsWith("/webhooks/agentcard"))
+  ) {
     const raw = await readBody(req);
     const result = await handleAgentCardWebhook(raw, hdrs);
     if (result.ok) {
@@ -383,3 +393,4 @@ process.on("SIGINT", () => {
   gracefulExit(0);
 });
 process.on("SIGTERM", () => gracefulExit(0));
+}

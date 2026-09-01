@@ -40,12 +40,8 @@ function loadEnvFile(rel: string, allowKeys?: Set<string>) {
   }
 }
 
-loadEnvFile("./../.env");
-loadEnvFile("./../../shopper-agent/.env", SHARED_FROM_SIBLINGS);
-loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
-
-/** Render web services scan this port on 0.0.0.0. Bind it before loading traveler-flow. */
-const PORT = Number(process.env.PORT ?? process.env.TRAVELER_AGENT_PORT ?? "8791");
+/** Render port scan needs this bound before any other boot work. */
+const PORT = Number(process.env.PORT) || 10000;
 const HOST = "0.0.0.0";
 const startedAt = Date.now();
 
@@ -81,14 +77,26 @@ const server = createServer((req, res) => {
     if (!res.headersSent) fail(res, 500, "internal error");
   });
 });
+server.on("error", (e: NodeJS.ErrnoException) => {
+  console.error(`[traveler-agent] listen error: ${e.message}`);
+  process.exit(1);
+});
 
-await new Promise<void>((resolve, reject) => {
-  server.once("error", reject);
-  server.listen(PORT, HOST, () => {
-    console.log(`[traveler-agent] listening on ${HOST}:${PORT}`);
-    resolve();
+server.listen(PORT, HOST, () => {
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : PORT;
+  console.log(`[traveler-agent] listening on ${HOST}:${port}`);
+  setImmediate(() => {
+    void boot().catch((e: any) => {
+      console.error(`[traveler-agent] boot failed: ${e?.message ?? e}`);
+    });
   });
 });
+
+async function boot() {
+loadEnvFile("./../.env");
+loadEnvFile("./../../shopper-agent/.env", SHARED_FROM_SIBLINGS);
+loadEnvFile("./../../agent-cli/.env", SHARED_FROM_SIBLINGS);
 
 const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature } = await import(
   "./linq-client.mts"
@@ -230,7 +238,10 @@ dispatch = async (req, res) => {
   const url = req.url ?? "/";
   const hdrs = req.headers as Record<string, string | string[] | undefined>;
 
-  if (req.method === "POST" && isAgentCardRequest(hdrs)) {
+  if (
+    req.method === "POST" &&
+    (isAgentCardRequest(hdrs) || url.startsWith("/webhooks/agentcard"))
+  ) {
     const raw = await readBody(req);
     const result = await handleAgentCardWebhook(raw, hdrs);
     if (result.ok) {
@@ -388,3 +399,4 @@ process.on("SIGINT", () => {
   gracefulExit(0);
 });
 process.on("SIGTERM", () => gracefulExit(0));
+}
