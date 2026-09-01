@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseItem, extractProductUrl } from "./item";
+import { parseItem, parseMerchant, parseCartQty, extractProductUrl } from "./item";
 
 describe("parseItem — product only, never the utterance", () => {
   it("returns null for shop intent without a named product", () => {
@@ -19,6 +19,13 @@ describe("parseItem — product only, never the utterance", () => {
   it("keeps only the product when it sits inside other words", () => {
     expect(parseItem("I want you to shop me a PS5 from the US")).toMatch(/^PS5$/i);
     expect(parseItem("A USB-C charger from Amazon")).toMatch(/^USB-C charger$/i);
+    expect(parseMerchant("A USB-C charger from Amazon")).toBe("amazon");
+    expect(parseMerchant("hoodie")).toBeNull();
+  });
+
+  it("parses cart qty from CONTINUE copy", () => {
+    expect(parseCartQty("2 of those")).toBe(2);
+    expect(parseCartQty("the pink one instead")).toBeNull();
   });
 
   it("does not treat a city or date as an item", () => {

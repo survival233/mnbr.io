@@ -5,13 +5,14 @@ export {
   isFormOpen,
   requestedSlot,
   parseAgainstPending,
+  parseListingReply,
   parseFuzzyDate,
 } from "./classify";
 export type { PendingParse } from "./classify";
 export type { ClassifiedTurn, DialogPendingSlot, DialogSession, StayMemory, TurnAct } from "./types";
 export { persistBeforeAsk } from "./persist";
 export { parseDate, parseUsdCents, categoryOf } from "./parse";
-export { parseItem, extractProductUrl } from "./item";
+export { parseItem, parseMerchant, parseCartQty, extractProductUrl } from "./item";
 export { fuzzyMatchIndex } from "./fuzzy";
 export { parseUsShoppingCity, parseShoppingCity, parseShopCountry, parseShopPlace, parseDeliveryTown, parseTripDestination, parseTripOrigin, isDestinationShaped, guestCityName, isCityAdviceQuestion, US_SHOP_HUBS } from "./cities";
 export type { UsShopHub } from "./cities";
@@ -41,19 +42,26 @@ export {
   recapTotalCents,
   estimateTaxCents,
   taxCentsFor,
+  lineTaxCents,
+  recapHash,
   shortListingTitle,
   listingHasPhoto,
   listingCaption,
   listingImageParts,
   guessImageContentType,
   recapBody,
+  RECAP_PAY_ASK,
+  PAYMENT_UNCONFIGURED,
+  requestStatusLine,
   shopperWait,
   shopperNobody,
   shopperAccepted,
+  TRAVELER_SKU_GONE,
   travelerAsk,
   assignsTravelerBeforeAccept,
   inventsThirtyEarnings,
 } from "./guest-copy";
+export type { RequestPhase } from "./guest-copy";
 export type { ChatPart, ChatMediaPart, ChatTextPart } from "./guest-copy";
 export { SHOPPER_SLOT_SCHEMA, TRAVELER_SLOT_SCHEMA } from "./schema";
 export type { SlotDef, SlotKind } from "./schema";

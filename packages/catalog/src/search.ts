@@ -1,7 +1,7 @@
 import type { ProductListing, ProductSearchResult } from "./types.js";
 import { searchGoogleShoppingLive, hasSerpApiKey } from "./serp-shopping.js";
 import { cacheListings, getCachedListing } from "./cache.js";
-import { supportedShoppingCities } from "./verified-stores.js";
+import { supportedShoppingCities, matchVerifiedStore } from "./verified-stores.js";
 import { shopMarketForCity, nationalShopMarket, NoShopMarketError } from "./markets.js";
 
 export { supportedShoppingCities, hasSerpApiKey, shopMarketForCity, nationalShopMarket, NoShopMarketError };
@@ -19,6 +19,7 @@ export function catalogSearchCity(shoppingCity?: string | null): string {
 export async function searchProducts(args: {
   query: string;
   shoppingCity?: string;
+  merchant?: string;
 }): Promise<ProductSearchResult> {
   const shoppingCity = catalogSearchCity(args.shoppingCity);
   const query = args.query.trim();
@@ -26,10 +27,13 @@ export async function searchProducts(args: {
     return { query, shoppingCity, identifiedProduct: null, listings: [] };
   }
 
-  const listings = await searchGoogleShoppingLive({
-    query,
-    shoppingCity: shoppingCity || undefined,
-  });
+  const listings = listingsForMerchant(
+    await searchGoogleShoppingLive({
+      query,
+      shoppingCity: shoppingCity || undefined,
+    }),
+    args.merchant,
+  );
   cacheListings(listings);
 
   return {
@@ -38,6 +42,17 @@ export async function searchProducts(args: {
     identifiedProduct: listings[0]?.productTitle ?? null,
     listings,
   };
+}
+
+/** Keep rows for a named merchant (“from Amazon”). Unknown names leave the list as-is. */
+export function listingsForMerchant(
+  listings: ProductListing[],
+  merchant?: string | null,
+): ProductListing[] {
+  if (!merchant?.trim()) return listings;
+  const hit = matchVerifiedStore(merchant);
+  if (!hit) return listings;
+  return listings.filter((l) => l.storeSlug === hit.slug);
 }
 
 /** Resolve a listing the shopper selected from a recent live search. */

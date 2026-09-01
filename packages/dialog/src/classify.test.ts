@@ -175,6 +175,39 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     expect(byPrice.optionIndex).toBe(1);
   });
 
+  it("yes on recap wait is CONTINUE pay, not a new search", () => {
+    const s = sess({
+      step: "await_pay_confirm",
+      searchQuery: "USB-C charger",
+      selected: { productTitle: "USB-C Charger 25W" },
+      pending: {
+        slot: "pay",
+        proposed: "abc123",
+        kind: "bool",
+        prompt: "That’s the total. Say yes and I’ll send the pay sheet.",
+      },
+    });
+    const t = act(s, "yes");
+    expect(t.act).toBe("CONTINUE");
+    expect(t.slot).toBe("pay");
+  });
+
+  it("2 of those continues the cart, not a new search", () => {
+    const s = sess({
+      step: "await_listing",
+      searchQuery: "charger",
+      listings: [
+        { storeName: "Amazon", productTitle: "USB-C Charger 25W", priceCents: 1599 },
+        { storeName: "Walmart", productTitle: "Anker charger", priceCents: 1899 },
+      ],
+      pending: { slot: "listing", proposed: null, kind: "choice", prompt: "Found a few" },
+    });
+    const t = act(s, "2 of those");
+    expect(t.act).toBe("CONTINUE");
+    expect(t.slot).toBe("listing");
+    expect(t.value).toBe(2);
+  });
+
   it("cancel / status win over CONTINUE while a slot is open", () => {
     const s = sess({
       step: "await_deadline",

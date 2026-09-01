@@ -65,6 +65,14 @@ export type Session = {
   category?: string;
   listings?: ProductListing[];
   selected?: ProductListing;
+  /** Persisted SKU + qty. Recap reads this, not leftover chat. */
+  cart?: { listingId: string; qty: number };
+  /** Hash of the shown recap. Confirm must match this. */
+  recapHash?: string;
+  /** “from Amazon” filter for searchProducts. Not catalog geo. */
+  merchantFilter?: string;
+  /** Shopper card funded (webhook / demo escrow). Matching starts after this. */
+  funded?: boolean;
   ranked?: RankedTraveler[];
   extendCandidate?: RankedTraveler;
   chosenTravelerId?: string;
@@ -83,9 +91,9 @@ export type Session = {
   handoverCode?: string;
   fundTxHash?: string;
   totalCents?: number;
-  /** Wallet attach link already texted after traveler accept (AgentCard). */
+  /** Wallet attach link already texted after recap confirm (AgentCard). */
   walletLinkSent?: boolean;
-  /** Pay-sheet already texted after traveler accept (AgentCard). */
+  /** Pay-sheet already texted after recap confirm (AgentCard). */
   paySheetSent?: boolean;
   paySheetAmountCents?: number;
   /** Multimodal cognition: persona, episodic memory, pending product confirm. */
@@ -166,16 +174,21 @@ export function getOrCreateSession(
 }
 
 export function resetSession(s: Session) {
+  const lastHandoverCity = s.deliveryCity;
   s.step = "idle";
   s.searchQuery = undefined;
   s.shoppingCity = undefined;
-  s.deliveryCity = undefined;
+  s.deliveryCity = lastHandoverCity;
   s.deadline = undefined;
   s.maxFeeCents = undefined;
   s.earningsReasked = undefined;
   s.category = undefined;
   s.listings = undefined;
   s.selected = undefined;
+  s.cart = undefined;
+  s.recapHash = undefined;
+  s.merchantFilter = undefined;
+  s.funded = undefined;
   s.ranked = undefined;
   s.extendCandidate = undefined;
   s.chosenTravelerId = undefined;

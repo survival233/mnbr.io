@@ -4,7 +4,7 @@
  */
 import { normalizeCity } from "@manebra/calendar";
 import { parseDate, parseUsdCents, categoryOf } from "./parse";
-import { parseItem, extractProductUrl } from "./item";
+import { parseItem, parseCartQty, extractProductUrl } from "./item";
 import { fuzzyMatchIndex } from "./fuzzy";
 import { parseShoppingCity, parseDeliveryTown, parseTripDestination, parseTripOrigin } from "./cities";
 import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
@@ -207,6 +207,56 @@ export type PendingParse =
   | { ok: true; value?: string | number; optionIndex?: number; applyProposed?: boolean }
   | { ok: false };
 
+function listingReplyText(text: string): string {
+  return text
+    .replace(/\b(instead|please)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Pick / qty against persisted SKU cards. Bare yes is never a pick. */
+export function parseListingReply(s: DialogSession, text: string): PendingParse {
+  const t = listingReplyText(text);
+  if (!t || !s.listings?.length) return { ok: false };
+  if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good)\b/i.test(t)) {
+    return { ok: false };
+  }
+  const qty = parseCartQty(text);
+  if (qty != null) return { ok: true, value: qty };
+  if (/^(that one|the first|first one)\b/i.test(t)) {
+    return { ok: true, optionIndex: 0 };
+  }
+  const priceAsk = t.match(/\$?\s*(\d+(?:\.\d{1,2})?)/);
+  if (priceAsk) {
+    const cents = Math.round(Number(priceAsk[1]) * 100);
+    if (Number.isFinite(cents) && cents > 0) {
+      const hit = s.listings.findIndex((l) => l.priceCents === cents);
+      if (hit >= 0) return { ok: true, optionIndex: hit };
+    }
+  }
+  if (/\b(cheap|cheaper|cheapest|lowest|less expensive)\b/i.test(t)) {
+    let best = 0;
+    for (let i = 1; i < s.listings.length; i++) {
+      if (s.listings[i]!.priceCents < s.listings[best]!.priceCents) best = i;
+    }
+    return { ok: true, optionIndex: best };
+  }
+  const opts = lastOptions({
+    ...s,
+    pending: { slot: "listing", proposed: null, kind: "choice", prompt: "" },
+  });
+  const idx = fuzzyMatchIndex(t, opts);
+  if (idx != null) return { ok: true, optionIndex: idx };
+  const needle = t.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (needle.length >= 3) {
+    const hit = s.listings.findIndex((l) =>
+      `${l.productTitle} ${l.storeName}`.toLowerCase().includes(needle),
+    );
+    if (hit >= 0) return { ok: true, optionIndex: hit };
+  }
+  return { ok: false };
+}
+
 export function parseAgainstPending(s: DialogSession, text: string): PendingParse {
   const pending = requestedSlot(s);
   const t = text.trim();
@@ -214,42 +264,15 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
 
   // Listing pick is a card (1 / title / price), never a yes-to-search or yes-to-first-SKU.
   if (pending.slot === "listing") {
-    if (/^(that one|the first|first one)\b/i.test(t)) {
-      return { ok: true, optionIndex: 0 };
-    }
-    if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good)\b/i.test(t)) {
-      return { ok: false };
-    }
+    return parseListingReply(s, t);
   } else if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good|that one|the first|first one)\b/i.test(t)) {
     return { ok: true, applyProposed: true };
   }
 
   const opts = lastOptions(s);
   if (pending.kind === "choice" || opts.length) {
-    const priceAsk = t.match(/\$?\s*(\d+(?:\.\d{1,2})?)/);
-    if (pending.slot === "listing" && priceAsk && s.listings?.length) {
-      const cents = Math.round(Number(priceAsk[1]) * 100);
-      if (Number.isFinite(cents) && cents > 0) {
-        const hit = s.listings.findIndex((l) => l.priceCents === cents);
-        if (hit >= 0) return { ok: true, optionIndex: hit };
-      }
-    }
-    if (/\b(cheap|cheaper|cheapest|lowest|less expensive)\b/i.test(t) && s.listings?.length) {
-      let best = 0;
-      for (let i = 1; i < s.listings.length; i++) {
-        if (s.listings[i]!.priceCents < s.listings[best]!.priceCents) best = i;
-      }
-      return { ok: true, optionIndex: best };
-    }
     const idx = fuzzyMatchIndex(t, opts);
     if (idx != null) return { ok: true, optionIndex: idx };
-    const needle = t.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
-    if (needle.length >= 3 && s.listings?.length) {
-      const hit = s.listings.findIndex((l) =>
-        `${l.productTitle} ${l.storeName}`.toLowerCase().includes(needle),
-      );
-      if (hit >= 0) return { ok: true, optionIndex: hit };
-    }
   }
 
   if (pending.kind === "date" || pending.slot === "need_by") {
@@ -333,6 +356,7 @@ function unmistakableNewItem(s: DialogSession, text: string, hasPhoto: boolean):
   const open = isFormOpen(s);
   const pending = requestedSlot(s);
   if (pending && parseAgainstPending(s, text).ok) return false;
+  if (s.listings?.length && parseListingReply(s, text).ok) return false;
   if (!open) return true;
   if (replacementItem(text)) return true;
   return Boolean(categoryOf(item) && item.split(/\s+/).length >= 2);
@@ -372,6 +396,15 @@ export function classifyTurn(
   }
   const replaced = parseItem(text);
   if (replacementItem(text) && replaced && !(pending && parseAgainstPending(s, text).ok)) {
+    const listingHit = parseListingReply(s, text);
+    if (listingHit.ok) {
+      return {
+        act: "CONTINUE",
+        slot: "listing",
+        value: listingHit.value,
+        optionIndex: listingHit.optionIndex,
+      };
+    }
     return { act: "NEW", query: replaced };
   }
 
@@ -393,6 +426,17 @@ export function classifyTurn(
     }
     if (pending.slot === "listing" && /^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good)\b/i.test(text)) {
       return { act: "REASK" };
+    }
+    if (pending.slot !== "listing" && s.listings?.length) {
+      const listingHit = parseListingReply(s, text);
+      if (listingHit.ok) {
+        return {
+          act: "CONTINUE",
+          slot: "listing",
+          value: listingHit.value,
+          optionIndex: listingHit.optionIndex,
+        };
+      }
     }
     if (isDependent(text) && /^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that one)\b/i.test(text)) {
       return { act: "CONTINUE", slot: pending.slot, query: String(pending.proposed ?? "") };

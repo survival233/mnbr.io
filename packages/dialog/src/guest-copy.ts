@@ -90,6 +90,40 @@ export function listingImageParts(args: {
   ];
 }
 
+export function lineTaxCents(
+  listing: { priceCents: number; taxCents?: number | null; storeName: string },
+  qty = 1,
+): number {
+  const q = Math.max(1, qty);
+  if (listing.taxCents != null && Number.isFinite(listing.taxCents) && listing.taxCents >= 0) {
+    return listing.taxCents * q;
+  }
+  return estimateTaxCents(listing.priceCents * q, listing.storeName);
+}
+
+export function recapHash(parts: {
+  sku: string;
+  qty: number;
+  itemCents: number;
+  taxCents: number;
+  earningsCents: number;
+  totalCents: number;
+  handoverCity: string;
+}): string {
+  const raw = [
+    parts.sku,
+    String(Math.max(1, parts.qty)),
+    String(parts.itemCents),
+    String(parts.taxCents),
+    String(parts.earningsCents),
+    String(parts.totalCents),
+    parts.handoverCity.trim().toLowerCase(),
+  ].join("|");
+  let h = 5381;
+  for (let i = 0; i < raw.length; i++) h = ((h << 5) + h + raw.charCodeAt(i)) >>> 0;
+  return h.toString(16);
+}
+
 export function recapBody(args: {
   title: string;
   merchant: string;
@@ -107,6 +141,17 @@ export function recapBody(args: {
   );
 }
 
+/** Recap wait — confirm of the shown hash opens the pay-sheet. Matching starts after funded. */
+export const RECAP_PAY_ASK = "That’s the total. Say yes and I’ll send the pay sheet.";
+
+export const PAYMENT_UNCONFIGURED = "Payment isn’t configured on this host yet.";
+
+export type RequestPhase = "funded" | "matching" | "accepted" | "shopping";
+
+export function requestStatusLine(phase: RequestPhase): string {
+  return `${phase.charAt(0).toUpperCase()}${phase.slice(1)}.`;
+}
+
 export function shopperWait(handoverCity: string): string {
   return `I’ll ask travelers already heading to ${handoverCity}. You’ll hear back when someone takes it.`;
 }
@@ -115,9 +160,12 @@ export function shopperNobody(handoverCity: string): string {
   return `Nobody on a trip to ${handoverCity} has taken it yet. I’ll keep it up.`;
 }
 
-export function shopperAccepted(handoverCity: string, totalCents: number): string {
-  return `Someone heading to ${handoverCity} took it. Total to fund is ${formatUsd(totalCents)} (item + tax + traveler).`;
+export function shopperAccepted(handoverCity: string): string {
+  return `Someone heading to ${handoverCity} took it.`;
 }
+
+export const TRAVELER_SKU_GONE =
+  "That item’s gone. Similar listing, cancel, or text the shopper?";
 
 export function travelerAsk(args: {
   city: string;

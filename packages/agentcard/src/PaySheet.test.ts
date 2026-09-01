@@ -16,11 +16,12 @@ describe("PaySheet amount is the recap total", () => {
 });
 
 describe("nextShopperFundingStep", () => {
-  it("uses Anvil when AGENTCARD_* is unset", () => {
-    expect(nextShopperFundingStep({ configured: false, hasCard: false, paySheetSent: false })).toBe("anvil");
+  it("uses Anvil only in demo when AGENTCARD_* is unset", () => {
+    expect(nextShopperFundingStep({ configured: false, hasCard: false, paySheetSent: false })).toBe("unconfigured");
+    expect(nextShopperFundingStep({ configured: false, hasCard: false, paySheetSent: false, demo: true })).toBe("anvil");
   });
 
-  it("sends wallet first when there is no connected card, then pay-sheet after accept", () => {
+  it("sends wallet first when there is no connected card, then pay-sheet on recap confirm", () => {
     expect(nextShopperFundingStep({ configured: true, hasCard: false, paySheetSent: false })).toBe("wallet");
     expect(nextShopperFundingStep({ configured: true, hasCard: true, paySheetSent: false })).toBe("paysheet");
     expect(nextShopperFundingStep({ configured: true, hasCard: true, paySheetSent: true })).toBe("wait_payment");

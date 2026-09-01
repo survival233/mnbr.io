@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { nextShopperFundingStep, paySheetUrl } from "@repo/agentcard";
 import {
   EARNINGS_ASK,
+  RECAP_PAY_ASK,
+  SKU_FOUND,
   assignsTravelerBeforeAccept,
   inventsThirtyEarnings,
   recapBody,
@@ -62,14 +64,19 @@ describe("SKU photo is a media part", () => {
   });
 });
 
-describe("funding after traveler accept", () => {
-  it("uses Anvil when AGENTCARD_* is unset", () => {
+describe("funding on recap confirm, not at needs_pick", () => {
+  it("uses Anvil only in demo when AGENTCARD_* is unset", () => {
     expect(nextShopperFundingStep({ configured: false, hasCard: true, paySheetSent: false })).toBe(
-      "anvil",
+      "unconfigured",
     );
+    expect(
+      nextShopperFundingStep({ configured: false, hasCard: true, paySheetSent: false, demo: true }),
+    ).toBe("anvil");
   });
 
-  it("sends wallet then pay-sheet only after accept, amount = recap total", () => {
+  it("sends wallet then pay-sheet on recap yes, amount = recap total", () => {
+    expect(SKU_FOUND).not.toMatch(/pay sheet/i);
+    expect(RECAP_PAY_ASK).toMatch(/pay sheet/i);
     expect(nextShopperFundingStep({ configured: true, hasCard: false, paySheetSent: false })).toBe(
       "wallet",
     );
@@ -81,6 +88,7 @@ describe("funding after traveler accept", () => {
     const total = recapTotalCents(item, tax, 5000);
     const url = paySheetUrl("https://app.agentcard.sh/w/wl_test.token", "Manebra", total);
     expect(new URL(url).searchParams.get("amount")).toBe(String(total));
-    expect(shopperAccepted("Accra", total)).toContain("Total to fund is");
+    expect(shopperAccepted("Accra")).toBe("Someone heading to Accra took it.");
+    expect(shopperAccepted("Accra")).not.toMatch(/total to fund|pay sheet/i);
   });
 });

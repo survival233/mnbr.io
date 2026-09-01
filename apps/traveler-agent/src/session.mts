@@ -42,6 +42,8 @@ export type Session = {
   stay?: StayMemory;
   /** AgentCard POST /buy already started for the funded request. */
   travelerBuyStarted?: boolean;
+  /** Last store buy failed because the SKU was gone. */
+  skuGoneAsk?: boolean;
   updatedAt: number;
 };
 
@@ -132,6 +134,7 @@ export function resetSession(s: Session) {
   s.pending = null;
   s.stay = { openedAt: Date.now() };
   s.travelerBuyStarted = undefined;
+  s.skuGoneAsk = undefined;
   s.updatedAt = Date.now();
   touchPersist();
 }

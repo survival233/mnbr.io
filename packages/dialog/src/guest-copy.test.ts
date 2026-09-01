@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { formatUsd } from "@manebra/shared";
 import {
   EARNINGS_ASK,
+  PAYMENT_UNCONFIGURED,
+  RECAP_PAY_ASK,
   SKU_FOUND,
   SKU_TOO_FEW,
   assignsTravelerBeforeAccept,
@@ -9,7 +11,9 @@ import {
   listingCaption,
   listingImageParts,
   recapBody,
+  recapHash,
   recapTotalCents,
+  requestStatusLine,
   shopperAccepted,
   shopperNobody,
   shopperWait,
@@ -31,6 +35,34 @@ describe("SKU catalog copy", () => {
     expect(SKU_FOUND).not.toMatch(/searching/i);
     expect(SKU_FOUND).not.toMatch(/say yes/i);
     expect(SKU_TOO_FEW).not.toMatch(/say yes/i);
+  });
+});
+
+describe("recap confirm copy", () => {
+  it("asks for yes to send the pay sheet, not matching yet", () => {
+    expect(RECAP_PAY_ASK).toBe("That’s the total. Say yes and I’ll send the pay sheet.");
+    expect(RECAP_PAY_ASK).not.toMatch(/traveler/i);
+    expect(SKU_FOUND).not.toMatch(/pay sheet/i);
+    expect(PAYMENT_UNCONFIGURED).toMatch(/isn’t configured/i);
+    expect(requestStatusLine("matching")).toBe("Matching.");
+    expect(requestStatusLine("funded")).toBe("Funded.");
+  });
+});
+
+describe("recap hash", () => {
+  it("changes when qty or total changes", () => {
+    const base = {
+      sku: "amazon:1",
+      qty: 1,
+      itemCents: 1599,
+      taxCents: 128,
+      earningsCents: 2000,
+      totalCents: 3727,
+      handoverCity: "Accra",
+    };
+    const a = recapHash(base);
+    expect(recapHash(base)).toBe(a);
+    expect(recapHash({ ...base, qty: 2, itemCents: 3198, taxCents: 256, totalCents: 5454 })).not.toBe(a);
   });
 });
 
@@ -68,7 +100,7 @@ describe("no named traveler before accept", () => {
     expect(assignsTravelerBeforeAccept("I’ll send this to Ama heading your way")).toBe(true);
     const wait = shopperWait("Accra");
     const nobody = shopperNobody("Accra");
-    const accepted = shopperAccepted("Accra", 4299 + 376 + 5000);
+    const accepted = shopperAccepted("Accra");
     for (const line of [wait, nobody, accepted]) {
       expect(assignsTravelerBeforeAccept(line)).toBe(false);
       expect(line).not.toMatch(/\b(Ama|Kofi|Nana)\b/);
@@ -77,7 +109,8 @@ describe("no named traveler before accept", () => {
     }
     expect(wait).toContain("I’ll ask travelers already heading to Accra");
     expect(nobody).toContain("I’ll keep it up");
-    expect(accepted).toContain("Someone heading to Accra took it");
+    expect(accepted).toBe("Someone heading to Accra took it.");
+    expect(accepted).not.toMatch(/total to fund/i);
   });
 });
 

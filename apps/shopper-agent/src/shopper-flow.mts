@@ -37,15 +37,22 @@ import {
   rememberWait,
   rememberCounterparty,
   parseItem,
+  parseMerchant,
+  parseCartQty,
   EARNINGS_ASK,
   SKU_FOUND,
   SKU_TOO_FEW,
   recapTotalCents,
   taxCentsFor,
+  lineTaxCents,
+  recapHash,
   listingCaption,
   listingHasPhoto,
   listingImageParts,
   recapBody,
+  RECAP_PAY_ASK,
+  PAYMENT_UNCONFIGURED,
+  requestStatusLine,
   shopperWait,
   shopperNobody,
   shopperAccepted,
@@ -124,7 +131,7 @@ const CFG = {
   highValueMinTrust: 120,
 };
 
-const SERP_TIMEOUT_MS = 12_000;
+const SERP_TIMEOUT_MS = 120_000;
 const ESCROW_TIMEOUT_MS = 45_000;
 
 function sleep(ms: number) {
@@ -795,13 +802,17 @@ function persistRecapTotal(s: Session): {
   taxCents: number;
   earningsCents: number;
   totalCents: number;
+  qty: number;
+  sku: string;
 } {
   const item = s.selected!;
-  const itemCents = item.priceCents;
-  const tax = taxCentsFor(item);
+  const qty = Math.max(1, s.cart?.qty ?? 1);
+  const itemCents = item.priceCents * qty;
+  const tax = lineTaxCents(item, qty);
   const earningsCents = s.maxFeeCents ?? 0;
   const totalCents = recapTotalCents(itemCents, tax, earningsCents);
   s.totalCents = totalCents;
+  if (!s.cart) s.cart = { listingId: item.listingId, qty };
   markSessionDirty();
   return {
     title: item.productTitle.slice(0, 80),
@@ -810,7 +821,22 @@ function persistRecapTotal(s: Session): {
     taxCents: tax,
     earningsCents,
     totalCents,
+    qty,
+    sku: s.cart.listingId,
   };
+}
+
+function shownRecapHash(s: Session): string {
+  const a = persistRecapTotal(s);
+  return recapHash({
+    sku: a.sku,
+    qty: a.qty,
+    itemCents: a.itemCents,
+    taxCents: a.taxCents,
+    earningsCents: a.earningsCents,
+    totalCents: a.totalCents,
+    handoverCity: handoverCity(s),
+  });
 }
 
 function quoteLines(s: Session): string {
@@ -829,12 +855,29 @@ function parkEarningsAsk(s: Session): string {
   return prompt;
 }
 
-/** After the quote: wait on a traveler. No payment copy. */
+function parkRecapWait(s: Session): void {
+  const hash = shownRecapHash(s);
+  s.recapHash = hash;
+  s.step = "await_pay_confirm";
+  s.offer = undefined;
+  s.pending = { slot: "pay", proposed: hash, kind: "bool", prompt: RECAP_PAY_ASK };
+  rememberQuestion(stayOf(s), RECAP_PAY_ASK);
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
+}
+
+/** After the quote: wait for recapHash confirm. Matching starts only after funded. */
 async function presentQuoteAndWait(s: Session): Promise<void> {
+  parkRecapWait(s);
+  const quote = quoteLines(s);
+  rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
+  if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
+  await say(s, quote, RECAP_PAY_ASK);
+}
+
+/** Matching only after the shopper is funded. */
+async function beginMatchingAfterFund(s: Session): Promise<void> {
   const matchText = await runMatching(s);
-  // Only park on extend when matching just produced that prompt. A leftover
-  // await_extend after the shopper said yes must continue to recap + wait
-  // (success returns "" and used to POST empty text → Relay 422).
   if (s.step === "await_extend" && matchText.trim()) {
     const altDay = parseDepartLabel(s.extendCandidate?.departs);
     if (altDay && s.deadline && endOfLocalDay(s.deadline).getTime() >= altDay.getTime()) {
@@ -851,17 +894,14 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
       return;
     }
   }
-  const quote = quoteLines(s);
-  rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
-  if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
   const city = handoverCity(s);
   if (s.ranked?.length) {
-    await say(s, quote, shopperWait(city));
+    await say(s, shopperWait(city));
     await lockTraveler(s, 0, { quoteAlreadyShown: true, silent: true });
     return;
   }
   await parkOpenRequest(s);
-  await say(s, quote, shopperNobody(city));
+  await say(s, shopperNobody(city));
 }
 
 async function continueAfterListing(s: Session): Promise<void> {
@@ -896,7 +936,11 @@ async function searchAndPromptListings(
   let catalog: NonNullable<Session["listings"]> = [];
   try {
     const results = await withTimeout(
-      searchProducts({ query: q, shoppingCity: s.shoppingCity || undefined }),
+      searchProducts({
+        query: q,
+        shoppingCity: s.shoppingCity || undefined,
+        merchant: s.merchantFilter,
+      }),
       SERP_TIMEOUT_MS,
       "SerpAPI search",
     );
@@ -1043,6 +1087,9 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
   s.searchQuery = item;
   s.selected = undefined;
   s.listings = undefined;
+  s.cart = undefined;
+  s.recapHash = undefined;
+  s.merchantFilter = parseMerchant(query) ?? parseMerchant(stripped) ?? undefined;
   const place = parseShopPlace(query) ?? parseShopPlace(stripped);
   if (place && shopMarketForCity(place)) s.shoppingCity = place;
   markSessionDirty();
@@ -1055,9 +1102,26 @@ async function selectListing(s: Session, idx: number): Promise<void> {
   const list = s.listings ?? [];
   const picked = list[idx]!;
   s.selected = { ...picked, taxCents: taxCentsFor(picked) };
+  s.cart = { listingId: picked.listingId, qty: s.cart?.qty ?? 1 };
   s.category ??= categoryOf(s.selected.productTitle) ?? undefined;
+  s.recapHash = undefined;
   clearPending(s);
   markSessionDirty();
+  await continueAfterListing(s);
+}
+
+async function applyCartQty(s: Session, qty: number): Promise<void> {
+  if (!s.selected) {
+    await reaskOpen(s);
+    return;
+  }
+  s.cart = { listingId: s.selected.listingId, qty };
+  s.recapHash = undefined;
+  markSessionDirty();
+  if (s.maxFeeCents != null && s.deliveryCity && s.deadline) {
+    await presentQuoteAndWait(s);
+    return;
+  }
   await continueAfterListing(s);
 }
 
@@ -1119,6 +1183,8 @@ function hydratePending(s: Session): void {
     if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
     parkListingPick(s, s.pending?.prompt || SKU_FOUND);
+  } else if (s.step === "await_pay_confirm" && !s.paySheetSent && !s.walletLinkSent && s.selected) {
+    parkRecapWait(s);
   } else if (s.step === "await_traveler" && s.ranked?.length) {
     setOffer(s, "traveler", "0", s.pending?.prompt);
   }
@@ -1145,7 +1211,9 @@ function reaskPrompt(s: Session): string {
                 : s.step === "await_traveler_decision"
                   ? shopperWait(s.deliveryCity ?? "your city")
                   : s.step === "await_pay_confirm"
-                    ? `Say yes when you’re ready to lock ${formatUsd(s.totalCents ?? 0)} test USDC.`
+                    ? s.paySheetSent || s.walletLinkSent
+                      ? `Open the pay link I sent — I’ll lock it once the charge lands.`
+                      : RECAP_PAY_ASK
                     : s.pending?.prompt || "Say yes to the suggestion, or send the value.")
   );
 }
@@ -1181,10 +1249,35 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
     await sayHost(s, "META", shopperIntakeLine(s), "cancel");
     return;
   }
+  const phase =
+    s.step === "await_handover_done"
+      ? "shopping"
+      : s.step === "await_traveler_decision"
+        ? s.chosenTravelerId && stayOf(s).lastTravelerName
+          ? "accepted"
+          : "matching"
+        : s.funded || s.handoverCode
+          ? "funded"
+          : null;
+  if ((turn.meta === "status" || turn.meta === "wait") && phase) {
+    await sayHost(s, "META", requestStatusLine(phase), turn.meta);
+    return;
+  }
+  if (s.step === "await_pay_confirm" && (s.paySheetSent || s.walletLinkSent)) {
+    await sayHost(
+      s,
+      "META",
+      s.paySheetSent
+        ? `Open the pay link I sent — I’ll lock it once the charge lands.`
+        : `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`,
+      turn.meta,
+    );
+    return;
+  }
   if (s.step === "await_traveler_decision") {
     void syncWaitingShoppers();
     rememberWait(stayOf(s));
-    await sayHost(s, "META", shopperWait(handoverCity(s)), turn.meta);
+    await sayHost(s, "META", requestStatusLine("matching"), turn.meta);
     return;
   }
   hydratePending(s);
@@ -1264,16 +1357,15 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     }
   }
   if (s.step === "await_pay_confirm" && acceptsOffer(text, intent)) {
-    if (agentcardConfigured() || s.paySheetSent || s.walletLinkSent) {
-      await reply(
-        s,
-        s.paySheetSent
-          ? `Open the pay link I sent — I’ll lock it once the charge lands.`
-          : `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`,
-      );
+    if (s.paySheetSent) {
+      await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
       return true;
     }
-    await fundAfterAccept(s);
+    if (s.walletLinkSent) {
+      await reply(s, `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`);
+      return true;
+    }
+    await confirmRecapPay(s);
     return true;
   }
   if (!acceptsOffer(text, intent) || !s.offer) return false;
@@ -1386,10 +1478,6 @@ async function lockTraveler(
   await parkWaitingOnTraveler(s, { silent: Boolean(opts?.silent) });
 }
 
-function acceptedNoFundCopy(city: string): string {
-  return `Someone heading to ${city} took it. Funding isn’t available on this host yet — I’ll keep the request as accepted.`;
-}
-
 async function parkWaitingOnTraveler(s: Session, opts?: { silent?: boolean }): Promise<void> {
   const chosen = (s.ranked ?? []).find((t) => t.id === s.chosenTravelerId);
   const item = s.selected!;
@@ -1419,8 +1507,8 @@ async function parkWaitingOnTraveler(s: Session, opts?: { silent?: boolean }): P
       needBy: s.deadline ?? null,
       destinationCity: s.deliveryCity ?? null,
       bidId: id,
-      escrowId: "",
-      handoverCode: "",
+      escrowId: s.escrowId ?? "",
+      handoverCode: s.handoverCode ?? "",
       status: "offered",
       shopperKey: sessionKey(s.phone),
       shopperChatId: s.chatId,
@@ -1463,28 +1551,20 @@ async function tryRematchWaiting(s: Session): Promise<void> {
 async function notifyShopperAccepted(s: Session, travelerName: string, totalCents: number): Promise<void> {
   const city = handoverCity(s);
   rememberCounterparty(stayOf(s), travelerName, s.chosenTravelerId);
-  await say(s, shopperAccepted(city, totalCents));
-  if (agentcardConfigured()) {
-    const started = await startFundingAfterAccept(s, totalCents);
-    if (started) return;
-  }
-  if (demoLocalChain()) {
-    s.step = "await_pay_confirm";
-    setOffer(
+  await say(s, shopperAccepted(city));
+  if (s.handoverCode) {
+    await say(
       s,
-      "pay",
-      "yes",
-      `Lock ${formatUsd(totalCents)} test USDC in escrow for this request?`,
+      `Your handover code is ${s.handoverCode}. Give that to the traveler when you meet and you’ve checked the item.`,
     );
-    await say(s, `Fund ${formatUsd(totalCents)} USDC to lock it.`);
-  } else {
-    console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
-    clearPending(s);
-    await say(s, acceptedNoFundCopy(city));
   }
+  s.step = "await_handover_done";
+  clearPending(s);
+  markSessionDirty();
+  void totalCents;
 }
 
-/** Wallet first if no card; pay-sheet only after connected_card.updated. Never at recap. */
+/** Wallet first if no card; pay-sheet once a card is on file. Recap confirm, not after accept. */
 async function startFundingAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
   const identity = sessionKey(s.phone);
   const card = await getConnectedCard(identity);
@@ -1492,7 +1572,19 @@ async function startFundingAfterAccept(s: Session, recapTotalCents: number): Pro
     configured: agentcardConfigured(),
     hasCard: Boolean(card),
     paySheetSent: Boolean(s.paySheetSent),
+    demo: demoLocalChain(),
   });
+  if (step === "unconfigured") {
+    s.step = "await_pay_confirm";
+    s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_UNCONFIGURED };
+    markSessionDirty();
+    await say(s, PAYMENT_UNCONFIGURED);
+    return true;
+  }
+  if (step === "anvil") {
+    await fundAfterAccept(s);
+    return true;
+  }
   if (step === "wallet") {
     try {
       const link = await createWalletLink(identity);
@@ -1519,7 +1611,19 @@ async function startFundingAfterAccept(s: Session, recapTotalCents: number): Pro
   return step === "wait_payment";
 }
 
-/** Hosted pay-sheet after accept. Amount is the recap total — do not recompute. */
+async function confirmRecapPay(s: Session): Promise<void> {
+  if (!s.selected) return;
+  const hash = shownRecapHash(s);
+  if (!s.recapHash || hash !== s.recapHash) {
+    await presentQuoteAndWait(s);
+    return;
+  }
+  const total = persistRecapTotal(s).totalCents;
+  const started = await startFundingAfterAccept(s, total);
+  if (!started) await say(s, PAYMENT_UNCONFIGURED);
+}
+
+/** Hosted pay-sheet after recap confirm. Amount is the recap total — do not recompute. */
 async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
   try {
     const sheet = await PaySheet({
@@ -1558,6 +1662,7 @@ async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
     configured: true,
     hasCard: Boolean(card),
     paySheetSent: Boolean(s.paySheetSent),
+    demo: demoLocalChain(),
   });
   if (step === "paysheet") {
     const total = s.paySheetAmountCents ?? persistRecapTotal(s).totalCents;
@@ -1653,7 +1758,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
     const code = generateHandoverCode();
     s.handoverCode = code;
     s.totalCents = recapTotal;
-    s.step = "await_handover_done";
+    s.funded = true;
     s.offer = undefined;
     s.pending = null;
     markSessionDirty();
@@ -1666,22 +1771,17 @@ async function fundAfterAccept(s: Session): Promise<void> {
         notifiedTravelerFunded: false,
       });
     }
-    await say(
-      s,
-      `Funded — ${formatUsd(recapTotal)}.`,
-      `Your handover code is ${code}. Give that to the traveler when you meet and you’ve checked the item.`,
-    );
+    await say(s, `Funded — ${formatUsd(recapTotal)}.`);
+    await beginMatchingAfterFund(s);
     return;
   }
   if (!demoLocalChain()) {
-    console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
-    await reply(s, acceptedNoFundCopy(s.deliveryCity ?? "your city"));
+    await say(s, PAYMENT_UNCONFIGURED);
     return;
   }
   await reply(s, `Opening escrow… one moment.`, { thinkMs: 600 });
   try {
     if (s.chatId) presenceTyping(s);
-    const item = s.selected!;
     const a = persistRecapTotal(s);
     const requestId = s.bidId;
     const out = await withTimeout(
@@ -1698,7 +1798,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
     s.handoverCode = out.handoverCode;
     s.fundTxHash = out.fundTxHash;
     s.totalCents = a.totalCents;
-    s.step = "await_handover_done";
+    s.funded = true;
     s.offer = undefined;
     s.pending = null;
     markSessionDirty();
@@ -1712,11 +1812,8 @@ async function fundAfterAccept(s: Session): Promise<void> {
         notifiedTravelerFunded: false,
       });
     }
-    await say(
-      s,
-      `Funded — ${formatUsd(a.totalCents)} in escrow.`,
-      `Your handover code is ${out.handoverCode}. Give that to the traveler when you meet and you’ve checked the item.`,
-    );
+    await say(s, `Funded — ${formatUsd(a.totalCents)} in escrow.`);
+    await beginMatchingAfterFund(s);
   } catch (e: any) {
     console.error(`[shopper-agent] settlement error: ${e.message}`);
     await reply(s, escrowErrorForUser(e));
@@ -1919,18 +2016,6 @@ async function handleInboundInner(
   if (turn.act === "CONTINUE") {
     if (s.step === "await_traveler_decision") {
       await syncWaitingShoppers();
-      if ((s.step as string) === "await_pay_confirm" && closer) {
-        if (s.paySheetSent) {
-          await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
-          return;
-        }
-        if (s.walletLinkSent || agentcardConfigured()) {
-          await reply(s, `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`);
-          return;
-        }
-        await fundAfterAccept(s);
-        return;
-      }
     }
     if (s.step === "await_extend") {
       const named =
@@ -1963,6 +2048,14 @@ async function handleInboundInner(
     if (await applyDialogAffirm(s, text, intent)) return;
     if (turn.slot === "listing" && turn.optionIndex != null) {
       await selectListing(s, turn.optionIndex);
+      return;
+    }
+    if (turn.slot === "listing" && typeof turn.value === "number") {
+      await applyCartQty(s, turn.value);
+      return;
+    }
+    if (s.step === "await_pay_confirm" && closer && !s.paySheetSent && !s.walletLinkSent) {
+      await confirmRecapPay(s);
       return;
     }
     if (turn.slot === "traveler" && turn.optionIndex != null) {
@@ -2320,13 +2413,11 @@ async function handleInboundInner(
           await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
           return;
         }
-        if (s.walletLinkSent || agentcardConfigured()) {
+        if (s.walletLinkSent) {
           await reply(s, `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`);
           return;
         }
-        if (isYes(text) || intent.kind === "yes" || acceptsOffer(text, intent)) {
-          await fundAfterAccept(s);
-        }
+        await confirmRecapPay(s);
         return;
       }
       if (s.offer?.field === "traveler" && (isYes(text) || intent.kind === "yes" || acceptsOffer(text, intent))) {
@@ -2345,7 +2436,7 @@ async function handleInboundInner(
       }
       const carry = s.bidId ? await getOffer(s.bidId) : null;
       if (carry?.status === "accepted") {
-        await reply(s, shopperAccepted(s.deliveryCity ?? carry.destinationCity ?? "your city", carry.totalCents));
+        await reply(s, shopperAccepted(s.deliveryCity ?? carry.destinationCity ?? "your city"));
         return;
       }
       if (s.offer?.field === "traveler") {
@@ -2357,7 +2448,7 @@ async function handleInboundInner(
       return;
     }
     case "await_pay_confirm": {
-      if (agentcardConfigured() || s.paySheetSent || s.walletLinkSent) {
+      if (s.paySheetSent || s.walletLinkSent) {
         if (await maybeCompleteAgentCardFund(s)) return;
         await reply(
           s,
@@ -2367,19 +2458,16 @@ async function handleInboundInner(
         );
         return;
       }
-      if (!demoLocalChain()) {
-        console.warn("[shopper-agent] payment stub: no local escrow on this host (Relay logs only)");
-        await reply(s, acceptedNoFundCopy(s.deliveryCity ?? "your city"));
-        return;
-      }
       if (!isYes(text) && intent.kind !== "yes" && !acceptsOffer(text, intent)) {
-        await reply(
-          s,
-          `No charge. Say yes when you’re ready to lock ${formatUsd(s.totalCents ?? 0)} test USDC.`,
-        );
+        const qty = parseCartQty(text);
+        if (qty != null && s.selected) {
+          await applyCartQty(s, qty);
+          return;
+        }
+        await reply(s, RECAP_PAY_ASK);
         return;
       }
-      await fundAfterAccept(s);
+      await confirmRecapPay(s);
       return;
     }
     case "await_handover_done": {

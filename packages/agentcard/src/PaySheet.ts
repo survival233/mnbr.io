@@ -32,15 +32,16 @@ export async function PaySheet(args: PaySheetArgs): Promise<PaySheetResult> {
 
 export { paySheetUrl };
 
-/** After traveler accept: wallet if no card, pay-sheet once a card is on file. Never at recap. */
-export type ShopperFundingStep = "anvil" | "wallet" | "paysheet" | "wait_payment";
+/** After recap confirm: wallet if no card, pay-sheet once a card is on file. Anvil only in demo. */
+export type ShopperFundingStep = "anvil" | "wallet" | "paysheet" | "wait_payment" | "unconfigured";
 
 export function nextShopperFundingStep(args: {
   configured: boolean;
   hasCard: boolean;
   paySheetSent: boolean;
+  demo?: boolean;
 }): ShopperFundingStep {
-  if (!args.configured) return "anvil";
+  if (!args.configured) return args.demo ? "anvil" : "unconfigured";
   if (!args.hasCard) return "wallet";
   if (!args.paySheetSent) return "paysheet";
   return "wait_payment";

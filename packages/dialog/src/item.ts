@@ -117,3 +117,33 @@ export function parseItem(text: string): string | null {
   if (!looksLikeProductName(leftover)) return null;
   return leftover.slice(0, 80).trim();
 }
+
+const MERCHANT_FROM =
+  /\bfrom\s+(amazon|walmart|target|apple|best\s*buy)\b/i;
+
+/** Merchant named in “from Amazon” — catalog filter, not the item name. */
+export function parseMerchant(text: string): "amazon" | "walmart" | "target" | "apple" | "bestbuy" | null {
+  const m = (text ?? "").match(MERCHANT_FROM);
+  if (!m) return null;
+  const n = m[1]!.toLowerCase().replace(/\s+/g, "");
+  if (n === "bestbuy") return "bestbuy";
+  if (n === "amazon" || n === "walmart" || n === "target" || n === "apple") return n;
+  return null;
+}
+
+const QTY_WORDS: Record<string, number> = { two: 2, three: 3, four: 4 };
+
+/** Cart qty from CONTINUE copy like “2 of those”. */
+export function parseCartQty(text: string): number | null {
+  const t = (text ?? "").trim();
+  const m = t.match(
+    /^(?:(?:i(?:'|’)ll take|get me|make it)\s+)?(?:(\d+)|(two|three|four)|a couple)\s+(?:of\s+)?(?:those|them|these|that|this|it)\b/i,
+  );
+  if (!m) return null;
+  if (m[1]) {
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) && n >= 1 && n <= 20 ? n : null;
+  }
+  if (m[2]) return QTY_WORDS[m[2].toLowerCase()] ?? null;
+  return 2;
+}

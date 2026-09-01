@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { matchVerifiedStore } from "./verified-stores.js";
 import { listingIdFor, cacheListings, getCachedListing } from "./cache.js";
-import { catalogSearchCity } from "./search.js";
+import { catalogSearchCity, listingsForMerchant } from "./search.js";
 import { formatSkuCardList, listingsWithPhotos } from "./sku-cards.js";
 import { parseProductHtml, listingFromUrlMeta } from "./product-url.js";
 import type { ProductListing } from "./types.js";
@@ -100,6 +100,30 @@ describe("SKU cards include image URL + title + price + merchant", () => {
     expect(cards.length).toBeLessThanOrEqual(4);
     expect(cards.every((c) => /^https?:\/\//.test(c.imageUrl))).toBe(true);
     expect(cards.some((c) => c.storeName === "Target" && c.priceCents === 39999)).toBe(false);
+  });
+});
+
+describe("from Amazon filters merchant", () => {
+  it("keeps only that storeSlug", () => {
+    const base = {
+      currency: "USD" as const,
+      availability: "in_stock" as const,
+      availabilityLabel: "In Stock",
+      productUrl: "https://example.com/x",
+      shoppingCity: "",
+      category: "electronics" as const,
+      imageUrl: "https://cdn.example.com/a.jpg",
+      priceCents: 1599,
+      productTitle: "USB-C Charger",
+    };
+    const rows: ProductListing[] = [
+      { ...base, listingId: "amazon:1", storeName: "Amazon", storeSlug: "amazon" },
+      { ...base, listingId: "target:1", storeName: "Target", storeSlug: "target" },
+    ];
+    const amazon = listingsForMerchant(rows, "Amazon");
+    expect(amazon).toHaveLength(1);
+    expect(amazon[0]?.storeSlug).toBe("amazon");
+    expect(listingsForMerchant(rows, "").map((l) => l.storeSlug)).toEqual(["amazon", "target"]);
   });
 });
 

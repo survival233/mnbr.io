@@ -34,6 +34,7 @@ import {
   rememberWait,
   travelerAsk,
   guestCityName,
+  TRAVELER_SKU_GONE,
   type DialogSession,
 } from "@manebra/dialog";
 import { offerBelongsToTraveler } from "./offer-fit.mts";
@@ -171,20 +172,33 @@ function requestInvite(s: Session, offer: {
 async function startTravelerBuy(
   s: Session,
   carry: { item: string; nextTravelerName?: string | null },
+  similar = false,
 ): Promise<void> {
-  if (s.travelerBuyStarted) return;
+  if (s.travelerBuyStarted && !similar) return;
   s.travelerBuyStarted = true;
+  s.skuGoneAsk = undefined;
   markSessionDirty();
   const merchant = carry.nextTravelerName?.trim() || "the store";
-  const ask = `Buy ${carry.item} at ${merchant}`;
+  const ask = similar
+    ? `Buy a similar listing to ${carry.item} at ${merchant}`
+    : `Buy ${carry.item} at ${merchant}`;
   try {
     const turn = await buyWithUserCard(s.phone, ask);
-    const replyText = turn.reply?.trim();
+    const replyText = turn.reply?.trim() ?? "";
+    if (/out of stock|unavailable|sold out|no longer available|couldn'?t find|not found/i.test(replyText)) {
+      s.travelerBuyStarted = false;
+      s.skuGoneAsk = true;
+      markSessionDirty();
+      await say(s, TRAVELER_SKU_GONE);
+      return;
+    }
     if (replyText) await say(s, replyText);
   } catch (e: any) {
     s.travelerBuyStarted = false;
+    s.skuGoneAsk = true;
     markSessionDirty();
     console.warn(`[traveler-agent] AgentCard buy: ${e?.message ?? e}`);
+    await say(s, TRAVELER_SKU_GONE);
   }
 }
 
@@ -247,6 +261,29 @@ async function tryHandleMarketplaceOffer(
   const carry = listed ?? inFlight;
   if (!carry) return false;
 
+  if (s.skuGoneAsk) {
+    if (/\bsimilar\b/i.test(text)) {
+      await startTravelerBuy(s, carry, true);
+      return true;
+    }
+    if (/^(n|no|nope|nah|cancel)\b/i.test(text)) {
+      s.skuGoneAsk = undefined;
+      markSessionDirty();
+      await updateOffer(carry.id, { status: "cancelled", notifiedShopper: false });
+      await io.say(s, `Cancelled. I won’t swap it.`);
+      return true;
+    }
+    if (/\btext\b/i.test(text) || /shopper/i.test(text)) {
+      s.skuGoneAsk = undefined;
+      markSessionDirty();
+      await updateOffer(carry.id, { notifiedShopper: false });
+      await io.say(s, `I’ll tell the shopper.`);
+      return true;
+    }
+    await io.say(s, TRAVELER_SKU_GONE);
+    return true;
+  }
+
   const yes = /^(y|yes|ok|okay|sure|yeah|yep|accept)\b/i.test(text);
   const no = /^(n|no|nope|nah|decline|can'?t)\b/i.test(text);
   const flights = /^(skip|flights?)\b/i.test(text);
@@ -263,7 +300,7 @@ async function tryHandleMarketplaceOffer(
       rememberItem(stayOf(s), accepted.item);
       rememberOffer(stayOf(s), accepted.id);
       rememberWait(stayOf(s));
-      await io.say(s, `Accepted. Waiting for the shopper to fund — no Shop & Deliver until then.`);
+      await io.say(s, `Accepted.`);
       if (agentcardConfigured()) {
         const onFile = await getTravelerCard(s.phone);
         if (!onFile) {
@@ -277,8 +314,15 @@ async function tryHandleMarketplaceOffer(
           } catch (e: any) {
             console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
           }
+        } else {
+          await startTravelerBuy(s, accepted);
         }
       }
+      await updateOffer(accepted.id, {
+        status: "funded",
+        handoverCode: accepted.handoverCode,
+        notifiedTravelerFunded: true,
+      });
       return true;
     }
     if (no) {
@@ -292,7 +336,13 @@ async function tryHandleMarketplaceOffer(
   }
 
   if (carry.status === "accepted") {
-    await io.reply(s, `Waiting for the shopper to fund.`);
+    if (agentcardConfigured()) {
+      const onFile = await getTravelerCard(s.phone);
+      if (onFile) await startTravelerBuy(s, carry);
+      else await io.reply(s, `Add a test card so you can shop with yours.`);
+    } else {
+      await io.reply(s, `Accepted.`);
+    }
     return true;
   }
 
