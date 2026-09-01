@@ -83,6 +83,8 @@ export type Session = {
   handoverCode?: string;
   fundTxHash?: string;
   totalCents?: number;
+  /** Wallet attach link already texted after traveler accept (AgentCard). */
+  walletLinkSent?: boolean;
   /** Pay-sheet already texted after traveler accept (AgentCard). */
   paySheetSent?: boolean;
   paySheetAmountCents?: number;
@@ -185,6 +187,7 @@ export function resetSession(s: Session) {
   s.handoverCode = undefined;
   s.fundTxHash = undefined;
   s.totalCents = undefined;
+  s.walletLinkSent = undefined;
   s.paySheetSent = undefined;
   s.paySheetAmountCents = undefined;
   s.stay = { openedAt: Date.now() };

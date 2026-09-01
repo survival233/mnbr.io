@@ -1,6 +1,6 @@
 /** Episodic memory, persona (ToM), and conversation cognition types. */
 
-import { parseItem, SHOP_PLACE_ASK } from "@manebra/dialog";
+import { EARNINGS_ASK, parseItem } from "@manebra/dialog";
 
 export type CognitiveTopic =
   | "intake"
@@ -164,9 +164,6 @@ export function predictiveAsk(args: {
       ? "What are you looking to buy — or send a photo of the item?"
       : "What product should I shop for?";
   }
-  if (!args.shoppingCity) {
-    return warm ? SHOP_PLACE_ASK : "Shop from which city or country?";
-  }
   if (!args.deliveryCity) {
     return warm ? "Which city should it land in?" : "Which city should it land in?";
   }
@@ -174,7 +171,7 @@ export function predictiveAsk(args: {
     return warm ? "When do you need it by at most?" : "When do you need it by at most?";
   }
   if (args.maxFeeCents == null) {
-    return warm ? "What’s the most you’d pay the traveler in USD?" : "Max traveler fee (USD)?";
+    return EARNINGS_ASK;
   }
   return null;
 }

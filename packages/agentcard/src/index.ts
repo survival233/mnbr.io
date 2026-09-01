@@ -1,7 +1,7 @@
-export { agentcardConfigured, connectIdentity, createWalletLink, getConnection, paySheetUrl } from "./client";
-export type { AgentCardConnection, WalletLink } from "./client";
-export { PaySheet } from "./PaySheet";
-export type { PaySheetArgs, PaySheetResult } from "./PaySheet";
+export { agentcardConfigured, buyWithUserCard, connectIdentity, createWalletLink, getConnection, mintPlatformToken, paySheetUrl } from "./client";
+export type { AgentCardConnection, BuyTurn, WalletLink } from "./client";
+export { PaySheet, nextShopperFundingStep } from "./PaySheet";
+export type { PaySheetArgs, PaySheetResult, ShopperFundingStep } from "./PaySheet";
 
 // OAuth 2.1 + PKCE ("Connect with AgentCard") + MCP card tools
 export {

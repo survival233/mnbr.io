@@ -40,6 +40,8 @@ export type Session = {
   pending?: DialogPendingSlot | null;
   turns?: Array<{ role: "user" | "assistant"; text: string }>;
   stay?: StayMemory;
+  /** AgentCard POST /buy already started for the funded request. */
+  travelerBuyStarted?: boolean;
   updatedAt: number;
 };
 
@@ -129,6 +131,7 @@ export function resetSession(s: Session) {
   s.offer = undefined;
   s.pending = null;
   s.stay = { openedAt: Date.now() };
+  s.travelerBuyStarted = undefined;
   s.updatedAt = Date.now();
   touchPersist();
 }

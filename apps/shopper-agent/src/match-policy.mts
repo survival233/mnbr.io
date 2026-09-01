@@ -35,9 +35,9 @@ export function requestExpiredCopy(city: string): string {
   return `Nobody agreed in time for ${city}, so I closed this one. Say hi to try again.`;
 }
 
-/** Gated confirmation — only after a live traveler accepted an open request. */
-export function travelerAgreedCopy(name: string, city: string): string {
-  return `${name} agreed — a traveler is heading your way to ${city}.`;
+/** Gated confirmation — only after a live traveler accepted an open request. Never name them. */
+export function travelerAgreedCopy(_name: string, city: string): string {
+  return `Someone heading to ${city} took it.`;
 }
 
 export function briefConfirmCopy(city: string): string {

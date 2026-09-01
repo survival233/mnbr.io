@@ -4,3 +4,4 @@ export {
   isAgentCardRequest,
   verifyAgentCardSignature,
 } from "./agentcard";
+export type { AgentCardWebhookResult } from "./agentcard";

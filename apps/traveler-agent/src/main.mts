@@ -14,6 +14,9 @@ const SHARED_FROM_SIBLINGS = new Set([
   "FLIGHT_PAYMENT_METHOD_ID",
   "DUFFEL_ACCESS_TOKEN",
   "OPENAI_API_KEY",
+  "AGENTCARD_CLIENT_ID",
+  "AGENTCARD_CLIENT_SECRET",
+  "AGENTCARD_WEBHOOK_SECRET",
 ]);
 
 const linqOff =
@@ -101,6 +104,7 @@ const {
 } = await import("./relay-client.mts");
 const { handleInbound, syncTravelerMarketplace } = await import("./traveler-flow.mts");
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
+const { agentcardConfigured, mintPlatformToken } = await import("@repo/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
@@ -229,8 +233,10 @@ dispatch = async (req, res) => {
   if (req.method === "POST" && isAgentCardRequest(hdrs)) {
     const raw = await readBody(req);
     const result = await handleAgentCardWebhook(raw, hdrs);
-    if (result.ok) ok(res, { received: true }, result.status);
-    else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
+    if (result.ok) {
+      ok(res, { received: true }, result.status);
+      void syncTravelerMarketplace();
+    } else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
     return;
   }
 
@@ -248,6 +254,7 @@ dispatch = async (req, res) => {
       inboundCount,
       linq: process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "configured" : "off",
       relay: relayConfigured() ? "configured" : "off",
+      agentcard: agentcardConfigured() ? "configured" : "off",
       flights: process.env.SERPAPI_API_KEY
         ? "serpapi"
         : process.env.FLIGHTS_ALLOW_DEMO !== "0"
@@ -345,6 +352,15 @@ console.log(
   `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"} keys=${relayTokenKeyNames().join(",") || "none"}`,
 );
 void ensureCloudWebhook();
+if (agentcardConfigured()) {
+  void mintPlatformToken()
+    .then((okMint) => {
+      console.log(`[traveler-agent] AgentCard platform token ${okMint ? "minted" : "skipped"}`);
+    })
+    .catch((e: any) => {
+      console.warn(`[traveler-agent] AgentCard token mint failed: ${e?.message ?? e}`);
+    });
+}
 void startRelayLongPoll();
 const pollMarketplace =
   Boolean(process.env.DATABASE_URL?.trim()) ||

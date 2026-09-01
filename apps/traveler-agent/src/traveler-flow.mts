@@ -18,7 +18,7 @@ import {
   updateOffer,
   getTravelerCard,
 } from "@manebra/db";
-import { agentcardConfigured, createWalletLink } from "@repo/agentcard";
+import { agentcardConfigured, buyWithUserCard, createWalletLink } from "@repo/agentcard";
 import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
 import { isTravelIntent } from "@manebra/flights";
 import { hubCity, sameMetro } from "@manebra/geo";
@@ -167,6 +167,27 @@ function requestInvite(s: Session, offer: {
   });
 }
 
+/** Traveler store checkout AFTER shopper funded. Never the shopper catalog, never at recap. */
+async function startTravelerBuy(
+  s: Session,
+  carry: { item: string; nextTravelerName?: string | null },
+): Promise<void> {
+  if (s.travelerBuyStarted) return;
+  s.travelerBuyStarted = true;
+  markSessionDirty();
+  const merchant = carry.nextTravelerName?.trim() || "the store";
+  const ask = `Buy ${carry.item} at ${merchant}`;
+  try {
+    const turn = await buyWithUserCard(s.phone, ask);
+    const replyText = turn.reply?.trim();
+    if (replyText) await say(s, replyText);
+  } catch (e: any) {
+    s.travelerBuyStarted = false;
+    markSessionDirty();
+    console.warn(`[traveler-agent] AgentCard buy: ${e?.message ?? e}`);
+  }
+}
+
 /** Ping matching travelers when a shopper request appears or funds land. */
 export async function syncTravelerMarketplace(): Promise<void> {
   for (const s of allSessions()) {
@@ -182,14 +203,16 @@ export async function syncTravelerMarketplace(): Promise<void> {
     }
 
     const carry = await getActiveOfferForTraveler(s.phone);
-    if (carry?.status === "funded" && !carry.notifiedTravelerFunded) {
+    if (carry?.status !== "funded") continue;
+
+    const onFile = await getTravelerCard(s.phone);
+    if (!carry.notifiedTravelerFunded) {
       await updateOffer(carry.id, { notifiedTravelerFunded: true });
-      const onFile = await getTravelerCard(s.phone);
       await say(
         s,
-        `Shopper funded — ${carry.item} is locked in escrow.`,
+        `Shopper funded — ${carry.item} is ready.`,
         onFile
-          ? `Shop with your card on file. When you meet, enter their 6-digit handover code.`
+          ? `Shop with your card. When you meet, enter their 6-digit handover code.`
           : `When you meet, enter their 6-digit handover code.`,
       );
       if (agentcardConfigured() && !onFile) {
@@ -200,6 +223,9 @@ export async function syncTravelerMarketplace(): Promise<void> {
           console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
         }
       }
+    }
+    if (agentcardConfigured() && onFile) {
+      await startTravelerBuy(s, carry);
     }
   }
 }

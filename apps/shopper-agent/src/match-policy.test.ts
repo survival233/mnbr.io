@@ -37,11 +37,12 @@ describe("shopper copy before accept", () => {
     }
   });
 
-  it("agreed copy is the only heading-your-way confirmation", () => {
+  it("agreed copy is anonymous and does not name the traveler", () => {
     const line = travelerAgreedCopy("Ada", "Lagos");
-    expect(claimsHeadingYourWay(line)).toBe(true);
-    expect(line).toMatch(/agreed/i);
     expect(line).toMatch(/Lagos/);
+    expect(line).not.toMatch(/\bAda\b/);
+    expect(line).not.toMatch(/\bAma\b|\bKofi\b|\bNana\b/i);
+    expect(claimsHeadingYourWay(line)).toBe(false);
   });
 });
 

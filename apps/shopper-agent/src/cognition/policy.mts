@@ -15,11 +15,7 @@ import {
   personaSummary,
   predictiveAsk,
 } from "./state.mts";
-import { HOSPITALITY_PERSONA, llmStayBlock, parseItem, parseShopPlace, SHOP_PLACE_ASK } from "@manebra/dialog";
-import {
-  isCityAdviceQuestion,
-  recommendUsCityBubble,
-} from "./cities.mts";
+import { HOSPITALITY_PERSONA, llmStayBlock, parseItem, parseShopPlace } from "@manebra/dialog";
 
 export type PolicyDecision = {
   bubbles: string[];
@@ -130,22 +126,8 @@ export async function runPolicyTurn(args: {
   }
 
   // Leftover shopping-city step: catalog is national — host searches.
-  if (step === "await_shopping_city" && text && isCityAdviceQuestion(text) && !hasMedia) {
-    appendEpisode(cog.memory, "clarify", "Asked which shop-from place");
-    return { bubbles: recommendUsCityBubble(), fallthrough: false };
-  }
-
   if (step === "await_shopping_city" && text && !hasMedia) {
-    const city = parseShopPlace(text);
-    if (city) {
-      appendEpisode(cog.memory, "slot", `Buy-from place ${city}`, { usCity: city });
-      return {
-        bubbles: [],
-        confirmedUsCity: city,
-        applySlots: { usCity: city },
-        fallthrough: false,
-      };
-    }
+    return { bubbles: [], fallthrough: true };
   }
 
   const llm = hasMedia ? makeVisionLlm() : makeCognitiveLlm();
@@ -160,10 +142,7 @@ export async function runPolicyTurn(args: {
       };
     }
     if (step === "await_shopping_city" && text) {
-      return {
-        bubbles: [SHOP_PLACE_ASK],
-        fallthrough: false,
-      };
+      return { bubbles: [], fallthrough: true };
     }
     return { bubbles: [], fallthrough: true };
   }
@@ -380,14 +359,14 @@ export async function runPolicyTurn(args: {
   }
 
   // search_ok / ack
-  if (turn.proactiveAsk && ["await_product", "idle", "await_shopping_city"].includes(step)) {
+  if (turn.proactiveAsk && ["await_product", "idle"].includes(step)) {
     return { bubbles: [turn.proactiveAsk], fallthrough: false };
   }
 
   if (step === "await_shopping_city") {
     return {
-      bubbles: turn.askUser ? [turn.askUser] : [SHOP_PLACE_ASK],
-      fallthrough: false,
+      bubbles: [],
+      fallthrough: true,
       monologueLog: cog.lastMonologue,
     };
   }

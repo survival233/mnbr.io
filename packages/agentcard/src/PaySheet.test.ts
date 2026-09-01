@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { paySheetUrl } from "./PaySheet";
+import { paySheetUrl, nextShopperFundingStep } from "./PaySheet";
 
 describe("PaySheet amount is the recap total", () => {
   it("appends merchant + amount cents exactly", () => {
@@ -12,5 +12,17 @@ describe("PaySheet amount is the recap total", () => {
 
   it("rejects a non-recap amount", () => {
     expect(() => paySheetUrl("https://app.agentcard.sh/w/wl_x", "Manebra", 0)).toThrow(/recap total/);
+  });
+});
+
+describe("nextShopperFundingStep", () => {
+  it("uses Anvil when AGENTCARD_* is unset", () => {
+    expect(nextShopperFundingStep({ configured: false, hasCard: false, paySheetSent: false })).toBe("anvil");
+  });
+
+  it("sends wallet first when there is no connected card, then pay-sheet after accept", () => {
+    expect(nextShopperFundingStep({ configured: true, hasCard: false, paySheetSent: false })).toBe("wallet");
+    expect(nextShopperFundingStep({ configured: true, hasCard: true, paySheetSent: false })).toBe("paysheet");
+    expect(nextShopperFundingStep({ configured: true, hasCard: true, paySheetSent: true })).toBe("wait_payment");
   });
 });

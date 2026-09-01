@@ -78,9 +78,9 @@ const {
   resolveImagesForVision,
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
-const { handleInbound, syncWaitingShoppers } = await import("./shopper-flow.mts");
+const { handleInbound, syncWaitingShoppers, completeAgentCardPayment } = await import("./shopper-flow.mts");
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
-const { handleAgentcardOAuth, isAgentcardOAuthRequest, oauthConfigured } = await import("@repo/agentcard");
+const { handleAgentcardOAuth, isAgentcardOAuthRequest, oauthConfigured, agentcardConfigured, mintPlatformToken } = await import("@repo/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
@@ -222,8 +222,11 @@ dispatch = async (req, res) => {
   if (req.method === "POST" && isAgentCardRequest(hdrs)) {
     const raw = await readBody(req);
     const result = await handleAgentCardWebhook(raw, hdrs);
-    if (result.ok) ok(res, { received: true }, result.status);
-    else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
+    if (result.ok) {
+      ok(res, { received: true }, result.status);
+      void syncWaitingShoppers();
+      if (result.payment) void completeAgentCardPayment(result.identity);
+    } else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
     return;
   }
 
@@ -248,7 +251,8 @@ dispatch = async (req, res) => {
       sessions: stats.count,
       inboundCount,
       relay: relayConfigured() ? "configured" : "off",
-      agentcardOauth: oauthConfigured() ? "configured" : "off",
+      agentcard: agentcardConfigured() ? "configured" : "off",
+      agentcardOauth: agentcardConfigured() || oauthConfigured() ? "configured" : "off",
       vision: process.env.OPENAI_API_KEY ? "openai" : "off",
       cognition:
         process.env.OPENAI_API_KEY
@@ -350,6 +354,15 @@ console.log(
 );
 logLlmClient("cognition", makeCognitiveLlm());
 logLlmClient("vision", makeVisionLlm());
+if (agentcardConfigured()) {
+  void mintPlatformToken()
+    .then((okMint) => {
+      console.log(`[shopper-agent] AgentCard platform token ${okMint ? "minted" : "skipped"}`);
+    })
+    .catch((e: any) => {
+      console.warn(`[shopper-agent] AgentCard token mint failed: ${e?.message ?? e}`);
+    });
+}
 void ensureCloudWebhook();
 void startRelayLongPoll();
 const pollMarketplace =

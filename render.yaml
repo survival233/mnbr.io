@@ -54,6 +54,12 @@ services:
         fromDatabase:
           name: manebra-marketplace
           property: connectionString
+      - key: AGENTCARD_CLIENT_ID
+        sync: false
+      - key: AGENTCARD_CLIENT_SECRET
+        sync: false
+      - key: AGENTCARD_WEBHOOK_SECRET
+        sync: false
 
   - type: web
     name: manebra-traveler-agent
@@ -82,6 +88,12 @@ services:
         fromDatabase:
           name: manebra-marketplace
           property: connectionString
+      - key: AGENTCARD_CLIENT_ID
+        sync: false
+      - key: AGENTCARD_CLIENT_SECRET
+        sync: false
+      - key: AGENTCARD_WEBHOOK_SECRET
+        sync: false
       - key: FLIGHTS_ALLOW_DEMO
         value: "1"
       # Optional later — Relay chat pipe

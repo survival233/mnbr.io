@@ -16,7 +16,7 @@ export type AgentCardConnection = {
 
 type Store = { connections: AgentCardConnection[] };
 
-let orgToken: { value: string; exp: number } | null = null;
+let orgToken: { value: string; exp: number; clientId: string } | null = null;
 
 export function agentcardConfigured(): boolean {
   return Boolean(process.env.AGENTCARD_CLIENT_ID?.trim() && process.env.AGENTCARD_CLIENT_SECRET?.trim());
@@ -54,12 +54,13 @@ function putConnection(row: AgentCardConnection): void {
 }
 
 async function orgAccessToken(): Promise<string> {
-  if (orgToken && orgToken.exp > Date.now() + 30_000) return orgToken.value;
   const clientId = process.env.AGENTCARD_CLIENT_ID?.trim();
   const clientSecret = process.env.AGENTCARD_CLIENT_SECRET?.trim();
   if (!clientId || !clientSecret) throw new Error("AGENTCARD_CLIENT_ID / AGENTCARD_CLIENT_SECRET unset");
+  if (orgToken && orgToken.clientId === clientId && orgToken.exp > Date.now() + 30_000) return orgToken.value;
   const res = await fetch(`${API_BASE()}/api/v2/oauth/token`, {
     method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "client_credentials",
       client_id: clientId,
@@ -70,8 +71,15 @@ async function orgAccessToken(): Promise<string> {
   if (!res.ok || !body.access_token) {
     throw new Error(`AgentCard oauth failed (${res.status})`);
   }
-  orgToken = { value: body.access_token, exp: Date.now() + (body.expires_in ?? 3600) * 1000 };
+  orgToken = { value: body.access_token, exp: Date.now() + (body.expires_in ?? 3600) * 1000, clientId };
   return orgToken.value;
+}
+
+/** Mint (or reuse) the platform token. Never log the secret or the token. */
+export async function mintPlatformToken(): Promise<boolean> {
+  if (!agentcardConfigured()) return false;
+  await orgAccessToken();
+  return true;
 }
 
 function looksLikePhone(identity: string): boolean {
@@ -83,22 +91,46 @@ function sandboxEmail(identity: string): string {
   return `${safe}@sandbox.manebra.local`;
 }
 
-async function api<T>(path: string, init: RequestInit & { token?: string }): Promise<T> {
+async function api<T>(path: string, init: RequestInit & { token?: string; timeoutMs?: number }): Promise<T> {
   const token = init.token ?? (await orgAccessToken());
-  const { token: _t, ...rest } = init;
-  const res = await fetch(`${API_BASE()}${path}`, {
-    ...rest,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(rest.headers ?? {}),
-    },
-  });
-  const body = (await res.json().catch(() => ({}))) as T & { error?: string; message?: string };
-  if (!res.ok) {
-    throw new Error(`AgentCard ${path} failed (${res.status})`);
+  const { token: _t, timeoutMs, ...rest } = init;
+  const ctrl = timeoutMs ? new AbortController() : undefined;
+  const timer = timeoutMs ? setTimeout(() => ctrl!.abort(), timeoutMs) : undefined;
+  try {
+    const res = await fetch(`${API_BASE()}${path}`, {
+      ...rest,
+      signal: ctrl?.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(rest.headers ?? {}),
+      },
+    });
+    const body = (await res.json().catch(() => ({}))) as T & { error?: string; message?: string };
+    if (!res.ok) {
+      throw new Error(`AgentCard ${path} failed (${res.status})`);
+    }
+    return body;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return body;
+}
+
+export type BuyTurn = {
+  conversation_id?: string;
+  status?: string;
+  reply?: string;
+};
+
+/** Traveler store checkout AFTER shopper funded. Connection token, never the org token. */
+export async function buyWithUserCard(identity: string, ask: string): Promise<BuyTurn> {
+  const conn = await connectIdentity(identity);
+  return api<BuyTurn>("/buy", {
+    method: "POST",
+    token: conn.accessToken,
+    timeoutMs: 120_000,
+    body: JSON.stringify({ ask }),
+  });
 }
 
 /** Connect (sandbox verify 111111) + consent. Idempotent per identity. */

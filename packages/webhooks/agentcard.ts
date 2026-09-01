@@ -90,10 +90,28 @@ export async function applyConnectedCardUpdated(data: Record<string, unknown> | 
   console.log(`[webhooks/agentcard] connected_card.updated identity=${identity} last4=${asString(card.last4) ?? "****"}`);
 }
 
+function eventIdentity(data: Record<string, unknown> | undefined): string | undefined {
+  if (!data) return undefined;
+  return (
+    asString(data.external_user_id) ??
+    asString(data.externalUserId) ??
+    asString(data.user_id) ??
+    asString(data.userId)
+  );
+}
+
+export type AgentCardWebhookResult = {
+  ok: boolean;
+  status: number;
+  type?: string;
+  identity?: string;
+  payment?: boolean;
+};
+
 export async function handleAgentCardWebhook(
   raw: string,
   headers: Record<string, string | string[] | undefined>,
-): Promise<{ ok: boolean; status: number }> {
+): Promise<AgentCardWebhookResult> {
   const secret = process.env.AGENTCARD_WEBHOOK_SECRET?.trim();
   const sig = header(headers, "agentcard-signature") ?? header(headers, "x-agentcard-signature");
   if (secret) {
@@ -111,11 +129,13 @@ export async function handleAgentCardWebhook(
     return { ok: false, status: 400 };
   }
 
-  if (!remember(event.id)) return { ok: true, status: 200 };
+  if (!remember(event.id)) return { ok: true, status: 200, type: event.type };
 
   if (event.type === "connected_card.updated") {
     await applyConnectedCardUpdated(event.data);
   }
 
-  return { ok: true, status: 200 };
+  const identity = eventIdentity(event.data);
+  const payment = Boolean(event.type && /^(transaction\.|payment\.)/i.test(event.type));
+  return { ok: true, status: 200, type: event.type, identity, payment };
 }

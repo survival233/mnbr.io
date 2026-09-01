@@ -43,6 +43,18 @@ describe("catalogSearchCity — national, never invent NYC", () => {
     expect(catalogSearchCity("")).toBe("");
     expect(catalogSearchCity(null)).toBe("");
   });
+
+  it("empty shoppingCity still searches (does not skip listings)", async () => {
+    const { searchProducts } = await import("./search.js");
+    const prev = process.env.SERPAPI_API_KEY;
+    delete process.env.SERPAPI_API_KEY;
+    try {
+      await expect(searchProducts({ query: "airpods" })).rejects.toThrow(/SERPAPI/);
+    } finally {
+      if (prev === undefined) delete process.env.SERPAPI_API_KEY;
+      else process.env.SERPAPI_API_KEY = prev;
+    }
+  });
 });
 
 describe("SKU cards include image URL + title + price + merchant", () => {
