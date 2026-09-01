@@ -18,6 +18,7 @@ describe("parseItem — product only, never the utterance", () => {
 
   it("keeps only the product when it sits inside other words", () => {
     expect(parseItem("I want you to shop me a PS5 from the US")).toMatch(/^PS5$/i);
+    expect(parseItem("A USB-C charger from Amazon")).toMatch(/^USB-C charger$/i);
   });
 
   it("does not treat a city or date as an item", () => {

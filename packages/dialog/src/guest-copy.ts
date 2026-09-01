@@ -34,8 +34,22 @@ export function taxCentsFor(listing: {
   return estimateTaxCents(listing.priceCents, listing.storeName);
 }
 
+export const SKU_FOUND = "Found a few — any of these, or want me to narrow?";
+export const SKU_TOO_FEW =
+  "I couldn’t get enough product photos. What should I search instead?";
+
+export function shortListingTitle(title: string, max = 48): string {
+  const t = title.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 3).trim()}...`;
+}
+
+export function listingHasPhoto(imageUrl?: string | null): boolean {
+  return /^https?:\/\//i.test(imageUrl?.trim() ?? "");
+}
+
 export function listingCaption(args: { title: string; merchant: string; priceCents: number }): string {
-  return `${args.title} · ${args.merchant} · ${formatUsd(args.priceCents)}`;
+  return `${shortListingTitle(args.title)} · ${args.merchant} · ${formatUsd(args.priceCents)}`;
 }
 
 export type ChatMediaPart = {
@@ -56,25 +70,24 @@ export function guessImageContentType(url: string): string {
   return "image/jpeg";
 }
 
-/** Relay outbound: image URL as a media part, caption as text. Not a markdown link. */
+/** Relay outbound: image URL as a media part, caption as text. Skip rows with no photo. */
 export function listingImageParts(args: {
   title: string;
   merchant: string;
   priceCents: number;
   imageUrl?: string | null;
 }): ChatPart[] {
-  const parts: ChatPart[] = [];
   const url = args.imageUrl?.trim() ?? "";
-  if (/^https?:\/\//i.test(url)) {
-    parts.push({
+  if (!listingHasPhoto(url)) return [];
+  return [
+    {
       type: "media",
       url,
       media_kind: "image",
       content_type: guessImageContentType(url),
-    });
-  }
-  parts.push({ type: "text", text: listingCaption(args) });
-  return parts;
+    },
+    { type: "text", text: listingCaption(args) },
+  ];
 }
 
 export function recapBody(args: {

@@ -155,8 +155,8 @@ function lastOptions(s: DialogSession): Array<{ id: string; label: string; hayst
   if (s.pending?.slot === "listing" || s.step === "await_listing") {
     return (s.listings ?? []).map((l, i) => ({
       id: String(i),
-      label: l.storeName,
-      haystack: `${l.productTitle} ${l.storeName}`,
+      label: `${l.productTitle} · ${l.storeName}`,
+      haystack: `${l.productTitle} ${l.storeName} ${l.priceCents}`,
     }));
   }
   if (s.pending?.slot === "traveler" || s.step === "await_traveler") {
@@ -212,12 +212,28 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
   const t = text.trim();
   if (!pending) return { ok: false };
 
-  if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good|that one|the first|first one)\b/i.test(t)) {
+  // Listing pick is a card (1 / title / price), never a yes-to-search or yes-to-first-SKU.
+  if (pending.slot === "listing") {
+    if (/^(that one|the first|first one)\b/i.test(t)) {
+      return { ok: true, optionIndex: 0 };
+    }
+    if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good)\b/i.test(t)) {
+      return { ok: false };
+    }
+  } else if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good|that one|the first|first one)\b/i.test(t)) {
     return { ok: true, applyProposed: true };
   }
 
   const opts = lastOptions(s);
   if (pending.kind === "choice" || opts.length) {
+    const priceAsk = t.match(/\$?\s*(\d+(?:\.\d{1,2})?)/);
+    if (pending.slot === "listing" && priceAsk && s.listings?.length) {
+      const cents = Math.round(Number(priceAsk[1]) * 100);
+      if (Number.isFinite(cents) && cents > 0) {
+        const hit = s.listings.findIndex((l) => l.priceCents === cents);
+        if (hit >= 0) return { ok: true, optionIndex: hit };
+      }
+    }
     if (/\b(cheap|cheaper|cheapest|lowest|less expensive)\b/i.test(t) && s.listings?.length) {
       let best = 0;
       for (let i = 1; i < s.listings.length; i++) {
@@ -374,6 +390,9 @@ export function classifyTurn(
         optionIndex: parsed.optionIndex,
         query: parsed.applyProposed ? String(pending.proposed ?? "") : undefined,
       };
+    }
+    if (pending.slot === "listing" && /^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good)\b/i.test(text)) {
+      return { act: "REASK" };
     }
     if (isDependent(text) && /^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that one)\b/i.test(text)) {
       return { act: "CONTINUE", slot: pending.slot, query: String(pending.proposed ?? "") };

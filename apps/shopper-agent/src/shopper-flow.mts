@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, type ProductListing } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsWithPhotos, type ProductListing } from "@manebra/catalog";
 
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -38,8 +38,12 @@ import {
   rememberCounterparty,
   parseItem,
   EARNINGS_ASK,
+  SKU_FOUND,
+  SKU_TOO_FEW,
   recapTotalCents,
   taxCentsFor,
+  listingCaption,
+  listingHasPhoto,
   listingImageParts,
   recapBody,
   shopperWait,
@@ -273,17 +277,22 @@ async function replyParts(
   await reply(s, caption || "Photo", opts);
 }
 
-async function replyListing(s: Session, listing: NonNullable<Session["selected"]>): Promise<void> {
+async function replyListing(s: Session, listing: NonNullable<Session["selected"]>): Promise<boolean> {
+  if (!listingHasPhoto(listing.imageUrl)) return false;
   const parts = listingImageParts({
-    title: listing.productTitle.slice(0, 80),
+    title: listing.productTitle,
     merchant: listing.storeName,
     priceCents: listing.priceCents,
     imageUrl: listing.imageUrl,
   });
-  if (!parts.some((p) => p.type === "media")) {
-    console.warn(`[shopper-agent] listing has no image URL: ${listing.productTitle.slice(0, 40)}`);
+  if (!parts.some((p) => p.type === "media")) return false;
+  try {
+    await replyParts(s, parts, { thinkMs: 500 });
+    return true;
+  } catch (e: any) {
+    console.warn(`[shopper-agent] listing image send failed: ${e?.message ?? e}`);
+    return false;
   }
-  await replyParts(s, parts, { thinkMs: 500 });
 }
 
 void SHOPPER_SLOT_SCHEMA;
@@ -404,7 +413,10 @@ const OFFER_META: Record<
 
 function lastChoiceOptions(s: Session, field: DialogOffer["field"]): PendingSlot["options"] {
   if (field === "listing") {
-    return (s.listings ?? []).map((l, i) => ({ id: String(i), label: l.storeName }));
+    return (s.listings ?? []).map((l, i) => ({
+      id: String(i),
+      label: listingCaption({ title: l.productTitle, merchant: l.storeName, priceCents: l.priceCents }),
+    }));
   }
   if (field === "traveler") {
     return (s.ranked ?? []).map((r, i) => ({ id: String(i), label: r.name }));
@@ -448,7 +460,7 @@ function isNewShopRequest(text: string, intent: { kind: string }): boolean {
 
 function listingLabels(s: Session) {
   return (s.listings ?? []).map((l) => ({
-    label: l.storeName,
+    label: listingCaption({ title: l.productTitle, merchant: l.storeName, priceCents: l.priceCents }),
     haystack: `${l.productTitle} ${l.storeName}`,
   }));
 }
@@ -855,7 +867,7 @@ async function presentQuoteAndWait(s: Session): Promise<void> {
 async function continueAfterListing(s: Session): Promise<void> {
   if (!s.deliveryCity) {
     parkDestAsk(s);
-    await say(s, `Nice — ${s.selected!.storeName}, ${formatUsd(s.selected!.priceCents)}.`, DEST_ASK);
+    await say(s, DEST_ASK);
     return;
   }
   if (!s.deadline) {
@@ -881,86 +893,117 @@ async function searchAndPromptListings(
     return;
   }
   const q = s.searchQuery!;
+  let catalog: NonNullable<Session["listings"]> = [];
   try {
     const results = await withTimeout(
       searchProducts({ query: q, shoppingCity: s.shoppingCity || undefined }),
       SERP_TIMEOUT_MS,
       "SerpAPI search",
     );
-    const catalog = results.listings.slice(0, 5);
-    const seen = new Set((extra ?? []).map((l) => l.listingId));
-    s.listings = [...(extra ?? []), ...catalog.filter((l) => !seen.has(l.listingId))].slice(0, 5);
+    catalog = results.listings;
   } catch (e: any) {
     console.warn(`[shopper-agent] search failed: ${e?.message ?? e}`);
-
-    if (extra?.length) {
-      s.listings = extra.slice(0, 5);
-    } else {
+    if (!extra?.length) {
       s.step = "await_product";
       markSessionDirty();
       if (e instanceof NoShopMarketError) {
-        await reply(s, "Nothing solid from verified stores. Want to try a different product name?");
+        await reply(s, SKU_TOO_FEW);
         return;
       }
       await reply(s, `Search hiccupped on me. What should I look for instead?`);
       return;
-
     }
   }
-  if (!s.listings?.length) {
+  const seen = new Set<string>();
+  const merged: NonNullable<Session["listings"]> = [];
+  for (const l of [...(extra ?? []), ...catalog]) {
+    if (seen.has(l.listingId)) continue;
+    seen.add(l.listingId);
+    merged.push(l);
+  }
+  const candidates = listingsWithPhotos(merged, 4);
+  if (candidates.length < 2) {
+    s.listings = undefined;
     s.step = "await_product";
+    s.offer = undefined;
+    s.pending = null;
     markSessionDirty();
-    await reply(s, "Nothing solid from verified stores. Want to try a different product name?");
+    await reply(s, SKU_TOO_FEW);
     return;
   }
-  s.step = "await_listing";
-  setOffer(s, "listing", "0");
-  markSessionDirty();
-
-  for (const listing of s.listings) {
-    await replyListing(s, listing);
+  await reply(s, SKU_FOUND, { thinkMs: 400 });
+  const sent: NonNullable<Session["listings"]> = [];
+  for (const listing of candidates) {
+    if (await replyListing(s, listing)) sent.push(listing);
   }
-  await reply(
-    s,
-    `Pick one (1–${s.listings.length} or a store name), or tell me if these aren’t right / what to search instead.`,
-    { thinkMs: 600 },
+  if (sent.length < 2) {
+    s.listings = undefined;
+    s.step = "await_product";
+    s.offer = undefined;
+    s.pending = null;
+    markSessionDirty();
+    await reply(s, SKU_TOO_FEW);
+    return;
+  }
+  s.listings = sent;
+  parkListingPick(s);
+}
 
-  );
+function parkListingPick(s: Session, prompt = SKU_FOUND) {
+  s.step = "await_listing";
+  s.offer = undefined;
+  s.pending = {
+    slot: "listing",
+    proposed: null,
+    kind: "choice",
+    prompt,
+    options: (s.listings ?? []).map((l, i) => ({
+      id: String(i),
+      label: listingCaption({ title: l.productTitle, merchant: l.storeName, priceCents: l.priceCents }),
+    })),
+  };
+  rememberQuestion(stayOf(s), prompt);
+  persistBeforeAsk(persistSessionsNow);
+  markSessionDirty();
 }
 
 async function runSearchFlow(
   s: Session,
-  progress?: string,
   extra?: NonNullable<Session["listings"]>,
 ): Promise<void> {
   s.selected = undefined;
   s.listings = extra;
   s.step = "await_listing";
   markSessionDirty();
-  if (progress) await reply(s, progress, { thinkMs: 700 });
-  else {
-    await reply(s, `One sec — checking verified stores…`, { thinkMs: 700 });
-  }
   if (s.chatId) presenceTyping(s);
   await searchAndPromptListings(s, extra);
 }
 
 async function presentUrlCard(s: Session, listing: ProductListing): Promise<void> {
+  if (!listingHasPhoto(listing.imageUrl) || !listing.productTitle.trim()) {
+    const q = namedProduct(listing.productTitle) ?? listing.productTitle;
+    s.searchQuery = q;
+    rememberItem(stayOf(s), q);
+    await runSearchFlow(s);
+    return;
+  }
   s.listings = [listing];
   s.searchQuery = listing.productTitle;
   s.selected = undefined;
-  s.step = "await_listing";
-  setOffer(s, "listing", "0");
   rememberItem(stayOf(s), listing.productTitle);
   markSessionDirty();
-  await replyListing(s, listing);
-  await reply(s, `Say yes if that’s the one, or send another link / product name.`);
+  const ok = await replyListing(s, listing);
+  if (!ok) {
+    s.searchQuery = namedProduct(listing.productTitle) ?? listing.productTitle;
+    await runSearchFlow(s);
+    return;
+  }
+  parkListingPick(s, "This one, or send another link / product name?");
 }
 
 async function intakeProductUrl(s: Session, url: string): Promise<void> {
-  await reply(s, `One sec — pulling that listing…`, { thinkMs: 500 });
   const listing = await listingFromProductUrl(url);
-  if (listing && listing.productTitle && listing.imageUrl) {
+  if (listing && listing.productTitle && listingHasPhoto(listing.imageUrl)) {
     if (listing.priceCents > 0) {
       await presentUrlCard(s, listing);
       return;
@@ -968,7 +1011,7 @@ async function intakeProductUrl(s: Session, url: string): Promise<void> {
     const q = namedProduct(listing.productTitle) ?? listing.productTitle;
     s.searchQuery = q;
     rememberItem(stayOf(s), q);
-    await runSearchFlow(s, `Got the page — searching ${q} in verified stores…`);
+    await runSearchFlow(s, [listing]);
     return;
   }
   const fallback = productNameFromUrl(url);
@@ -979,7 +1022,7 @@ async function intakeProductUrl(s: Session, url: string): Promise<void> {
   }
   s.searchQuery = item;
   rememberItem(stayOf(s), item);
-  await runSearchFlow(s, `Couldn’t read that page — searching ${item}…`);
+  await runSearchFlow(s);
 }
 
 async function applyNewQuery(s: Session, query: string): Promise<void> {
@@ -1004,7 +1047,7 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
   if (place && shopMarketForCity(place)) s.shoppingCity = place;
   markSessionDirty();
 
-  await runSearchFlow(s, `Got it — searching ${item}…`, extra);
+  await runSearchFlow(s, extra);
 
 }
 
@@ -1046,7 +1089,7 @@ function hydratePending(s: Session): void {
     return;
   }
   if (s.pending?.slot) return;
-  if (s.offer) {
+  if (s.offer && s.offer.field !== "listing") {
     setOffer(s, s.offer.field, s.offer.value);
     return;
   }
@@ -1075,7 +1118,7 @@ function hydratePending(s: Session): void {
   } else if (s.step === "await_product") {
     if (!s.pending?.slot) parkItemAsk(s);
   } else if (s.step === "await_listing" && s.listings?.length) {
-    setOffer(s, "listing", "0", s.pending?.prompt);
+    parkListingPick(s, s.pending?.prompt || SKU_FOUND);
   } else if (s.step === "await_traveler" && s.ranked?.length) {
     setOffer(s, "traveler", "0", s.pending?.prompt);
   }
@@ -1096,7 +1139,7 @@ function reaskPrompt(s: Session): string {
             : s.step === "await_product"
               ? shopperIntakeLine(s)
             : s.step === "await_listing"
-              ? `Pick one (1–${s.listings?.length ?? 1} or a store name), or tell me if these aren’t right.`
+              ? SKU_FOUND
               : s.step === "await_traveler"
                 ? `Pick a traveler — a name or number from 1 to ${s.ranked?.length ?? 1}.`
                 : s.step === "await_traveler_decision"
@@ -1240,7 +1283,6 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     (field === "deliveryCity" && s.step === "await_delivery_city") ||
     (field === "deadline" && (s.step === "await_deadline" || s.step === "await_extend")) ||
     (field === "maxFeeCents" && s.step === "await_max_fee") ||
-    (field === "listing" && s.step === "await_listing") ||
     (field === "traveler" && s.step === "await_traveler");
   if (!matches) return false;
 
@@ -1270,12 +1312,6 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     markSessionDirty();
     if (s.chatId) presenceTyping(s);
     await presentQuoteAndWait(s);
-    return true;
-  }
-  if (field === "listing") {
-    const idx = parseInt(value, 10);
-    if (!s.listings?.[idx]) return false;
-    await selectListing(s, idx);
     return true;
   }
   if (field === "traveler") {
@@ -1735,9 +1771,9 @@ export async function handleInbound(args: {
       await reply(
         s,
         prompt ||
-          (s.ranked?.length && s.selected
-            ? `Say yes to see the total and wait on ${s.ranked[0]!.name}.`
-            : `Say yes to continue.`),
+          (s.step === "await_listing"
+            ? SKU_FOUND
+            : s.pending?.prompt?.trim() || shopperIntakeLine(s)),
         { thinkMs: 400 },
       );
     } catch (sendErr: any) {
@@ -1786,7 +1822,7 @@ async function commitConfirmedProduct(
   if (slots) applyCognitiveSlots(s, slots);
   markSessionDirty();
 
-  await runSearchFlow(s, `Searching “${q}”…`);
+  await runSearchFlow(s);
 }
 
 async function handleInboundInner(
@@ -2048,15 +2084,13 @@ async function handleInboundInner(
 
   switch (s.step as Step) {
     case "await_product_confirm": {
-      // Policy should have handled yes/no; if we fell through, ask again
       const hyp = s.cognition?.pending?.hypothesis;
-      const item = hyp ? parseItem(hyp) : null;
-      await reply(
-        s,
-        item
-          ? `Just to confirm — shop for ${item}? (yes / no)`
-          : `What product should I shop for? Text or a photo works.`,
-      );
+      const item = hyp ? parseItem(hyp) : namedProduct(s.searchQuery ?? "");
+      if (item) {
+        await commitConfirmedProduct(s, item);
+        return;
+      }
+      await sayHost(s, "REASK", parkItemAsk(s));
       return;
     }
     case "await_product": {
@@ -2131,10 +2165,7 @@ async function handleInboundInner(
         return;
       }
       const list = s.listings ?? [];
-      await reply(
-        s,
-        `Send 1–${list.length}, a store name (like Target), or tell me what’s wrong / what to search instead.`,
-      );
+      await reply(s, list.length ? SKU_FOUND : SKU_TOO_FEW);
       return;
     }
     case "await_delivery_city": {

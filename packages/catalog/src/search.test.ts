@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { matchVerifiedStore } from "./verified-stores.js";
 import { listingIdFor, cacheListings, getCachedListing } from "./cache.js";
 import { catalogSearchCity } from "./search.js";
-import { formatSkuCardList } from "./sku-cards.js";
+import { formatSkuCardList, listingsWithPhotos } from "./sku-cards.js";
 import { parseProductHtml, listingFromUrlMeta } from "./product-url.js";
 import type { ProductListing } from "./types.js";
 
@@ -78,6 +78,28 @@ describe("SKU cards include image URL + title + price + merchant", () => {
     expect(text).toMatch(/\$15\.99/);
     expect(text).toMatch(/Amazon/);
     expect(text).toMatch(/https:\/\/cdn\.example.com\/charger\.jpg/);
+  });
+
+  it("named item yields ≥2 photo SKUs and drops text-only rows", () => {
+    const base = {
+      currency: "USD" as const,
+      availability: "in_stock" as const,
+      availabilityLabel: "In Stock",
+      productUrl: "https://example.com/x",
+      shoppingCity: "",
+      category: "electronics" as const,
+    };
+    const rows: ProductListing[] = [
+      { ...base, listingId: "amazon:1", storeName: "Amazon", storeSlug: "amazon", productTitle: "USB-C Charger 25W", priceCents: 1599, imageUrl: "https://cdn.example.com/a.jpg" },
+      { ...base, listingId: "target:1", storeName: "Target", storeSlug: "target", productTitle: "USB-C Charger", priceCents: 39999, imageUrl: "" },
+      { ...base, listingId: "walmart:1", storeName: "Walmart", storeSlug: "walmart", productTitle: "Anker USB-C Charger", priceCents: 1899, imageUrl: "https://cdn.example.com/b.jpg" },
+      { ...base, listingId: "apple:1", storeName: "Apple", storeSlug: "apple", productTitle: "USB-C Charge Cable", priceCents: 1900, imageUrl: "https://cdn.example.com/c.jpg" },
+    ];
+    const cards = listingsWithPhotos(rows, 4);
+    expect(cards.length).toBeGreaterThanOrEqual(2);
+    expect(cards.length).toBeLessThanOrEqual(4);
+    expect(cards.every((c) => /^https?:\/\//.test(c.imageUrl))).toBe(true);
+    expect(cards.some((c) => c.storeName === "Target" && c.priceCents === 39999)).toBe(false);
   });
 });
 

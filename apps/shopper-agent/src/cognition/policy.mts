@@ -105,11 +105,8 @@ export async function runPolicyTurn(args: {
       };
     }
     cog.pending = null;
-    cog.persona.beliefs = [...new Set([...cog.persona.beliefs, `wants ${product}`])].slice(-8);
-    cog.persona.openQuestions = cog.persona.openQuestions.filter((q) => !/product/i.test(q));
-    appendEpisode(cog.memory, "affirm", `Confirmed product ${product}`, { product });
     return {
-      bubbles: [`Locked in — ${product}.`],
+      bubbles: [],
       confirmedProduct: product,
       fallthrough: false,
     };
@@ -255,7 +252,7 @@ export async function runPolicyTurn(args: {
     }
     cog.pending = null;
     return {
-      bubbles: [`Looks like ${turn.productHypothesis}.`],
+      bubbles: [],
       confirmedProduct: turn.productHypothesis,
       applySlots: { ...turn.slots, product: turn.productHypothesis },
       fallthrough: false,
@@ -263,7 +260,7 @@ export async function runPolicyTurn(args: {
     };
   }
 
-  // Policy: propose_product must confirm — never search yet
+  // Named product: search immediately. Do not park a yes-to-search gate.
   if (turn.action === "propose_product" && turn.productHypothesis) {
     if (turn.confidence < 0.45) {
       return {
@@ -274,16 +271,14 @@ export async function runPolicyTurn(args: {
         monologueLog: cog.lastMonologue,
       };
     }
-    cog.pending = {
-      kind: "confirm_product",
-      hypothesis: turn.productHypothesis,
-      confidence: turn.confidence,
+    cog.pending = null;
+    return {
+      bubbles: [],
+      confirmedProduct: turn.productHypothesis,
+      applySlots: { ...turn.slots, product: turn.productHypothesis },
+      fallthrough: false,
+      monologueLog: cog.lastMonologue,
     };
-    s.step = "await_product_confirm";
-    const q =
-      turn.confirmQuestion ??
-      `Looks like ${turn.productHypothesis} — want me to shop that?`;
-    return { bubbles: [q], fallthrough: false, monologueLog: cog.lastMonologue };
   }
 
   if (turn.action === "ask_user") {
@@ -332,16 +327,8 @@ export async function runPolicyTurn(args: {
     if (product && (hasMedia || cog.pending || !s.searchQuery)) {
       if (cog.pending || hasMedia || turn.confidence >= 0.7) {
         cog.pending = null;
-        const ask =
-          turn.proactiveAsk ??
-          predictiveAsk({
-            product,
-            shoppingCity: usCity ?? undefined,
-            deliveryCity: turn.slots.deliveryCity ?? s.deliveryCity,
-            tone: cog.persona.communication,
-          });
         return {
-          bubbles: ask ? [`Got it — ${product}.`, ask] : [`Got it — ${product}.`],
+          bubbles: [],
           confirmedProduct: product,
           applySlots: safeSlots,
           confirmedUsCity: usCity ?? undefined,

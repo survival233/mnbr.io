@@ -57,6 +57,7 @@ function stripTails(s: string): string {
   return s
     .replace(/\s+instead\b.*$/i, "")
     .replace(/\s+from\s+(the\s+)?(us|usa|united states)\b.*$/i, "")
+    .replace(/\s+from\s+(amazon|walmart|target|apple|best\s*buy)\b.*$/i, "")
     .replace(/\s+(in|near|at)\s+[a-z][a-z\s.]{1,40}$/i, "")
     .replace(/\s+please[.!?]*$/i, "")
     .replace(/[.!?]+$/g, "")

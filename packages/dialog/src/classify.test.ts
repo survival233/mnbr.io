@@ -151,13 +151,28 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     expect(act(s, "", true).act).toBe("NEW");
   });
 
-  it("yes after an error retries CONTINUE, not NEW", () => {
+  it("bare yes on SKU cards is a reask, not pick-first / yes-to-search", () => {
     const s = sess({
       step: "await_listing",
-      searchQuery: "PS5",
-      pending: { slot: "listing", proposed: "0", kind: "choice", prompt: "Pick one" },
+      searchQuery: "USB-C charger",
+      listings: [
+        { storeName: "Target", productTitle: "USB-C Charger", priceCents: 39999 },
+        { storeName: "Amazon", productTitle: "USB-C Charger 25W", priceCents: 1599 },
+      ],
+      pending: {
+        slot: "listing",
+        proposed: "0",
+        kind: "choice",
+        prompt: "Found a few — any of these, or want me to narrow?",
+      },
     });
-    expect(act(s, "yes").act).toBe("CONTINUE");
+    expect(act(s, "yes").act).toBe("REASK");
+    const pick = act(s, "1");
+    expect(pick.act).toBe("CONTINUE");
+    expect(pick.optionIndex).toBe(0);
+    const byPrice = act(s, "the 15.99 one");
+    expect(byPrice.act).toBe("CONTINUE");
+    expect(byPrice.optionIndex).toBe(1);
   });
 
   it("cancel / status win over CONTINUE while a slot is open", () => {

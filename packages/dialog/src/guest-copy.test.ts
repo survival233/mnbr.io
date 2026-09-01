@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { formatUsd } from "@manebra/shared";
 import {
   EARNINGS_ASK,
-  SHOP_PLACE_ASK,
+  SKU_FOUND,
+  SKU_TOO_FEW,
   assignsTravelerBeforeAccept,
   inventsThirtyEarnings,
   listingCaption,
@@ -24,9 +25,12 @@ describe("earnings ask", () => {
   });
 });
 
-describe("shop place ask", () => {
-  it("asks for the shopper’s preferred city or country", () => {
-    expect(SHOP_PLACE_ASK).toBe("Where should I shop from — a city or a country?");
+describe("SKU catalog copy", () => {
+  it("is one human line, not a searching interpolator or yes-gate", () => {
+    expect(SKU_FOUND).toBe("Found a few — any of these, or want me to narrow?");
+    expect(SKU_FOUND).not.toMatch(/searching/i);
+    expect(SKU_FOUND).not.toMatch(/say yes/i);
+    expect(SKU_TOO_FEW).not.toMatch(/say yes/i);
   });
 });
 
@@ -96,6 +100,17 @@ describe("listing image parts", () => {
       text: listingCaption({ title: "AirPods Pro", merchant: "Apple", priceCents: 4299 }),
     });
     expect(JSON.stringify(parts)).not.toMatch(/\[.*\]\(https?:/);
+  });
+
+  it("skips a SKU with no product photo instead of a text-only row", () => {
+    expect(
+      listingImageParts({
+        title: "USB-C Charger",
+        merchant: "Target",
+        priceCents: 39999,
+        imageUrl: "",
+      }),
+    ).toEqual([]);
   });
 });
 

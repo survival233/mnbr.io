@@ -12,6 +12,13 @@ function usd(cents: number): string {
   return `$${dollars.toLocaleString("en-US")}.${rem}`;
 }
 
+/** Real SKU cards need a photo URL. Skip text-only merchant+price rows. */
+export function listingsWithPhotos(listings: ProductListing[], max = 4): ProductListing[] {
+  return listings
+    .filter((l) => /^https?:\/\//i.test(l.imageUrl?.trim() ?? "") && l.productTitle.trim() && l.priceCents > 0)
+    .slice(0, max);
+}
+
 /**
  * Compact SKU list a chat client can turn into horizontal cards:
  * image URL + short title + price + merchant per row.
