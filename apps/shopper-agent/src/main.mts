@@ -47,18 +47,27 @@ server.on("error", (e: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
-server.listen(PORT, HOST, () => {
-  const addr = server.address();
-  const port = typeof addr === "object" && addr ? addr.port : PORT;
-  console.log(`[shopper-agent] listening on ${HOST}:${port}`);
+function runBoot() {
   setImmediate(() => {
     void boot().catch((e: any) => {
       console.error(`[shopper-agent] boot failed: ${e?.message ?? e}`);
     });
   });
-});
+}
+
+if (process.env.SHOPPER_SKIP_LISTEN !== "1") {
+  server.listen(PORT, HOST, () => {
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : PORT;
+    console.log(`[shopper-agent] listening on ${HOST}:${port}`);
+    runBoot();
+  });
+} else {
+  runBoot();
+}
 
 async function boot() {
+  console.log("[shopper-agent] boot starting");
 for (const rel of ["./../.env", "./../../agent-cli/.env", "./../../../.env"]) {
   try {
     const p = new URL(rel, import.meta.url);
@@ -393,4 +402,10 @@ process.on("SIGINT", () => {
   gracefulExit(0);
 });
 process.on("SIGTERM", () => gracefulExit(0));
+
+const attach = (globalThis as { __shopperSetDispatch?: (fn: RequestHandler) => void }).__shopperSetDispatch;
+if (typeof attach === "function") {
+  attach((req, res) => dispatch(req, res));
+  console.log("[shopper-agent] boot attached");
+}
 }

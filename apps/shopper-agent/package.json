@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/main.mts",
+    "start": "node --import ./bind.mjs --import tsx src/main.mts",
     "dev": "tsx watch src/main.mts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
