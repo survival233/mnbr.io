@@ -36,7 +36,7 @@ export function taxCentsFor(listing: {
 
 export const SKU_FOUND = "Found a few — any of these, or want me to narrow?";
 export const SKU_TOO_FEW =
-  "I couldn’t get enough product photos. What should I search instead?";
+  "I couldn’t find enough listings. What should I search instead?";
 
 export function shortListingTitle(title: string, max = 48): string {
   const t = title.replace(/\s+/g, " ").trim();

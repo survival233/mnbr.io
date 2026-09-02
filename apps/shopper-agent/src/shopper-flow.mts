@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsWithPhotos, type ProductListing } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, listingsWithPhotos, formatShopPickList, type ProductListing } from "@manebra/catalog";
 
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -285,19 +285,32 @@ async function replyParts(
 }
 
 async function replyListing(s: Session, listing: NonNullable<Session["selected"]>): Promise<boolean> {
-  if (!listingHasPhoto(listing.imageUrl)) return false;
-  const parts = listingImageParts({
+  const caption = listingCaption({
     title: listing.productTitle,
     merchant: listing.storeName,
     priceCents: listing.priceCents,
-    imageUrl: listing.imageUrl,
   });
-  if (!parts.some((p) => p.type === "media")) return false;
+  if (listingHasPhoto(listing.imageUrl)) {
+    const parts = listingImageParts({
+      title: listing.productTitle,
+      merchant: listing.storeName,
+      priceCents: listing.priceCents,
+      imageUrl: listing.imageUrl,
+    });
+    if (parts.some((p) => p.type === "media")) {
+      try {
+        await replyParts(s, parts, { thinkMs: 500 });
+        return true;
+      } catch (e: any) {
+        console.warn(`[shopper-agent] listing image send failed: ${e?.message ?? e}`);
+      }
+    }
+  }
   try {
-    await replyParts(s, parts, { thinkMs: 500 });
+    await reply(s, caption, { thinkMs: 400 });
     return true;
   } catch (e: any) {
-    console.warn(`[shopper-agent] listing image send failed: ${e?.message ?? e}`);
+    console.warn(`[shopper-agent] listing text send failed: ${e?.message ?? e}`);
     return false;
   }
 }
@@ -965,7 +978,7 @@ async function searchAndPromptListings(
     seen.add(l.listingId);
     merged.push(l);
   }
-  const candidates = listingsWithPhotos(merged, 4);
+  const candidates = listingsForPicker(merged, 4);
   if (candidates.length < 2) {
     s.listings = undefined;
     s.step = "await_product";
@@ -975,21 +988,21 @@ async function searchAndPromptListings(
     await reply(s, SKU_TOO_FEW);
     return;
   }
+  const photos = listingsWithPhotos(candidates, 4);
   await reply(s, SKU_FOUND, { thinkMs: 400 });
-  const sent: NonNullable<Session["listings"]> = [];
-  for (const listing of candidates) {
-    if (await replyListing(s, listing)) sent.push(listing);
+  if (photos.length >= 2) {
+    const sent: NonNullable<Session["listings"]> = [];
+    for (const listing of photos) {
+      if (await replyListing(s, listing)) sent.push(listing);
+    }
+    if (sent.length >= 2) {
+      s.listings = sent;
+      parkListingPick(s);
+      return;
+    }
   }
-  if (sent.length < 2) {
-    s.listings = undefined;
-    s.step = "await_product";
-    s.offer = undefined;
-    s.pending = null;
-    markSessionDirty();
-    await reply(s, SKU_TOO_FEW);
-    return;
-  }
-  s.listings = sent;
+  await reply(s, formatShopPickList(candidates), { thinkMs: 400 });
+  s.listings = candidates;
   parkListingPick(s);
 }
 

@@ -6,7 +6,7 @@ import {
   listingCaption,
   listingImageParts,
 } from "@manebra/dialog";
-import { listingsWithPhotos, type ProductListing } from "@manebra/catalog";
+import { formatShopPickList, listingsForPicker, listingsWithPhotos, type ProductListing } from "@manebra/catalog";
 
 function listing(partial: Partial<ProductListing> & Pick<ProductListing, "listingId" | "storeName" | "storeSlug" | "productTitle" | "priceCents" | "imageUrl">): ProductListing {
   return {
@@ -94,6 +94,34 @@ describe("named item → photo SKU cards, no yes-gate", () => {
     };
     expect(classifyTurn(s, { text: "yes" }).act).toBe("REASK");
     expect(classifyTurn(s, { text: "1" }).optionIndex).toBe(0);
+  });
+
+  it("fallback is a numbered 4-shop list when photos are missing", () => {
+    const picks = listingsForPicker(rows, 4);
+    expect(picks.length).toBeGreaterThanOrEqual(2);
+    expect(picks.length).toBeLessThanOrEqual(4);
+    expect(picks.some((c) => !c.imageUrl && c.storeName === "Target")).toBe(true);
+    const list = formatShopPickList(picks);
+    expect(list).toMatch(/^1\. /);
+    expect(list).toMatch(/2\. /);
+    expect(list).toMatch(/ · /);
+    expect(list).not.toMatch(/got it — searching/i);
+    const s: DialogSession = {
+      step: "await_listing",
+      pending: {
+        slot: "listing",
+        proposed: null,
+        kind: "choice",
+        prompt: SKU_FOUND,
+      },
+      listings: picks.map((l) => ({
+        productTitle: l.productTitle,
+        storeName: l.storeName,
+        priceCents: l.priceCents,
+      })),
+    };
+    expect(classifyTurn(s, { text: "1" }).optionIndex).toBe(0);
+    expect(classifyTurn(s, { text: "yes" }).act).toBe("REASK");
   });
 });
 
