@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, listingsWithPhotos, formatShopPickList, type ProductListing } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, listingsWithPhotos, formatShopPickList, resolveListingPick, type ProductListing } from "@manebra/catalog";
 
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -43,7 +43,6 @@ import {
   SKU_FOUND,
   SKU_TOO_FEW,
   recapTotalCents,
-  taxCentsFor,
   lineTaxCents,
   recapHash,
   listingCaption,
@@ -817,11 +816,13 @@ function persistRecapTotal(s: Session): {
   totalCents: number;
   qty: number;
   sku: string;
+  taxEstimated: boolean;
 } {
   const item = s.selected!;
   const qty = Math.max(1, s.cart?.qty ?? 1);
   const itemCents = item.priceCents * qty;
   const tax = lineTaxCents(item, qty);
+  const taxEstimated = !item.includesTax && (item.taxCents == null || item.taxCents < 0);
   const earningsCents = s.maxFeeCents ?? 0;
   const totalCents = recapTotalCents(itemCents, tax, earningsCents);
   s.totalCents = totalCents;
@@ -836,6 +837,7 @@ function persistRecapTotal(s: Session): {
     totalCents,
     qty,
     sku: s.cart.listingId,
+    taxEstimated,
   };
 }
 
@@ -990,6 +992,17 @@ async function searchAndPromptListings(
   }
   const photos = listingsWithPhotos(candidates, 4);
   await reply(s, SKU_FOUND, { thinkMs: 400 });
+  if (photos.length >= 3) {
+    const sent: NonNullable<Session["listings"]> = [];
+    for (const listing of photos.slice(0, 4)) {
+      if (await replyListing(s, listing)) sent.push(listing);
+    }
+    if (sent.length >= 3) {
+      s.listings = sent;
+      parkListingPick(s);
+      return;
+    }
+  }
   if (photos.length >= 2) {
     const sent: NonNullable<Session["listings"]> = [];
     for (const listing of photos) {
@@ -1111,10 +1124,11 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
 
 }
 
-async function selectListing(s: Session, idx: number): Promise<void> {
+async function selectListing(s: Session, idx: number, text = ""): Promise<void> {
   const list = s.listings ?? [];
-  const picked = list[idx]!;
-  s.selected = { ...picked, taxCents: taxCentsFor(picked) };
+  const parent = list[idx]!;
+  const picked = resolveListingPick(parent, text);
+  s.selected = { ...picked };
   s.cart = { listingId: picked.listingId, qty: s.cart?.qty ?? 1 };
   s.category ??= categoryOf(s.selected.productTitle) ?? undefined;
   s.recapHash = undefined;
@@ -2060,7 +2074,7 @@ async function handleInboundInner(
     if (await resolveOpenQuestion(s, text, intent)) return;
     if (await applyDialogAffirm(s, text, intent)) return;
     if (turn.slot === "listing" && turn.optionIndex != null) {
-      await selectListing(s, turn.optionIndex);
+      await selectListing(s, turn.optionIndex, text);
       return;
     }
     if (turn.slot === "listing" && typeof turn.value === "number") {
@@ -2263,7 +2277,7 @@ async function handleInboundInner(
         return;
       }
       if (intent.kind === "select" && intent.index != null) {
-        await selectListing(s, intent.index);
+        await selectListing(s, intent.index, text);
         return;
       }
       if (intent.kind === "new_query" && intent.query) {

@@ -72,7 +72,7 @@ describe("recap total", () => {
     const tax = taxCentsFor({ priceCents: item, storeName: "Apple" });
     const earnings = 5000;
     const total = recapTotalCents(item, tax, earnings);
-    expect(tax).toBe(Math.round((4299 * 875) / 10_000));
+    expect(tax).toBe(Math.round((4299 * 800) / 10_000));
     expect(total).toBe(item + tax + earnings);
     const body = recapBody({
       title: "AirPods Pro",
@@ -80,9 +80,10 @@ describe("recap total", () => {
       itemCents: item,
       taxCents: tax,
       earningsCents: earnings,
+      taxEstimated: true,
     });
     expect(body).toContain(`Item ${formatUsd(item)}`);
-    expect(body).toContain(`Tax ${formatUsd(tax)}`);
+    expect(body).toContain(`Tax (est.) ${formatUsd(tax)}`);
     expect(body).toContain(`Traveler ${formatUsd(earnings)}`);
     expect(body).toContain(`Total ${formatUsd(total)}`);
     expect(body).toContain("$42.99");
@@ -92,6 +93,12 @@ describe("recap total", () => {
 
   it("uses catalog tax when present instead of the merchant estimate", () => {
     expect(taxCentsFor({ priceCents: 4299, taxCents: 344, storeName: "Apple" })).toBe(344);
+  });
+
+  it("does not add tax when includesTax and never invents earnings", () => {
+    expect(taxCentsFor({ priceCents: 4299, includesTax: true, storeName: "Apple" })).toBe(0);
+    expect(recapTotalCents(4299, 0, 5000)).toBe(9299);
+    expect(inventsThirtyEarnings(EARNINGS_ASK)).toBe(false);
   });
 });
 

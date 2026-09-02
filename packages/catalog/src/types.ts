@@ -8,6 +8,8 @@ export interface ProductListing {
   priceCents: number;
   /** Catalog tax in cents when SerpAPI includes it; recap estimates otherwise. */
   taxCents?: number;
+  /** When true, priceCents already includes tax — recap must not add tax. */
+  includesTax?: boolean;
   currency: string;
   availability: "in_stock" | "pickup_today" | "limited" | "out_of_stock" | "unknown";
   availabilityLabel: string;
@@ -15,6 +17,11 @@ export interface ProductListing {
   imageUrl: string;
   shoppingCity: string;
   category: "electronics" | "clothing_shoes" | "cosmetics_sealed" | "books_media" | "food_sealed_nonperishable";
+  color?: string;
+  storage?: string;
+  size?: string;
+  normalizedName?: string;
+  variants?: ProductListing[];
 }
 
 export interface ProductSearchResult {

@@ -175,6 +175,39 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     expect(byPrice.optionIndex).toBe(1);
   });
 
+  it("picker 1 and pink 512GB resolve on persisted listings", () => {
+    const s = sess({
+      step: "await_listing",
+      searchQuery: "iphone",
+      listings: [
+        {
+          storeName: "Amazon",
+          productTitle: "Apple iPhone 15 Pro Max Pink 256GB",
+          priceCents: 119900,
+          variants: [
+            {
+              productTitle: "Apple iPhone 15 Pro Max Pink 512GB",
+              priceCents: 129900,
+              color: "pink",
+              storage: "512GB",
+            },
+          ],
+        },
+        { storeName: "Target", productTitle: "Apple iPhone 15 128GB", priceCents: 79900 },
+      ],
+      pending: {
+        slot: "listing",
+        proposed: null,
+        kind: "choice",
+        prompt: "Found a few — any of these, or want me to narrow?",
+      },
+    });
+    expect(act(s, "1").act).toBe("CONTINUE");
+    expect(act(s, "1").optionIndex).toBe(0);
+    expect(act(s, "pink 512GB").act).toBe("CONTINUE");
+    expect(act(s, "pink 512GB").optionIndex).toBe(0);
+  });
+
   it("yes on recap wait is CONTINUE pay, not a new search", () => {
     const s = sess({
       step: "await_pay_confirm",

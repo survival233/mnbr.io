@@ -156,7 +156,9 @@ function lastOptions(s: DialogSession): Array<{ id: string; label: string; hayst
     return (s.listings ?? []).map((l, i) => ({
       id: String(i),
       label: `${l.productTitle} · ${l.storeName}`,
-      haystack: `${l.productTitle} ${l.storeName} ${l.priceCents}`,
+      haystack: `${l.productTitle} ${l.storeName} ${l.priceCents} ${(l.variants ?? [])
+        .map((v) => `${v.productTitle} ${v.color ?? ""} ${v.storage ?? ""} ${v.size ?? ""}`)
+        .join(" ")}`,
     }));
   }
   if (s.pending?.slot === "traveler" || s.step === "await_traveler") {
@@ -249,9 +251,12 @@ export function parseListingReply(s: DialogSession, text: string): PendingParse 
   if (idx != null) return { ok: true, optionIndex: idx };
   const needle = t.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
   if (needle.length >= 3) {
-    const hit = s.listings.findIndex((l) =>
-      `${l.productTitle} ${l.storeName}`.toLowerCase().includes(needle),
-    );
+    const hit = s.listings.findIndex((l) => {
+      const bag = `${l.productTitle} ${l.storeName} ${(l.variants ?? [])
+        .map((v) => `${v.productTitle} ${v.color ?? ""} ${v.storage ?? ""} ${v.size ?? ""}`)
+        .join(" ")}`.toLowerCase();
+      return bag.includes(needle);
+    });
     if (hit >= 0) return { ok: true, optionIndex: hit };
   }
   return { ok: false };

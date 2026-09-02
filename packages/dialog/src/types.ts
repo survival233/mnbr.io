@@ -29,7 +29,12 @@ export type DialogSession = {
   deliveryCity?: string;
   deadline?: Date;
   maxFeeCents?: number;
-  listings?: Array<{ productTitle: string; storeName: string; priceCents: number }>;
+  listings?: Array<{
+    productTitle: string;
+    storeName: string;
+    priceCents: number;
+    variants?: Array<{ productTitle: string; priceCents: number; color?: string; storage?: string; size?: string }>;
+  }>;
   selected?: { productTitle?: string } | null;
   ranked?: Array<{ name: string; departs?: string }>;
   chosenTravelerId?: string;

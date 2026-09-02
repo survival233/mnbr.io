@@ -11,23 +11,18 @@ export function recapTotalCents(itemCents: number, taxCents: number, earningsCen
   return itemCents + taxCents + earningsCents;
 }
 
-/** Realistic sales-tax estimate when the catalog row has none. */
-export function estimateTaxCents(itemCents: number, merchant: string): number {
-  const m = merchant.toLowerCase();
-  let bps = 800;
-  if (/\bapple\b/.test(m)) bps = 875;
-  else if (/\bwalmart\b/.test(m)) bps = 725;
-  else if (/\btarget\b/.test(m)) bps = 800;
-  else if (/\bamazon\b/.test(m)) bps = 800;
-  else if (/best\s*buy/.test(m)) bps = 800;
-  return Math.round((itemCents * bps) / 10_000);
+/** Realistic sales-tax estimate when the catalog row has none. Fallback 8%. */
+export function estimateTaxCents(itemCents: number, _merchant?: string): number {
+  return Math.round((itemCents * 800) / 10_000);
 }
 
 export function taxCentsFor(listing: {
   priceCents: number;
   taxCents?: number | null;
   storeName: string;
+  includesTax?: boolean;
 }): number {
+  if (listing.includesTax) return 0;
   if (listing.taxCents != null && Number.isFinite(listing.taxCents) && listing.taxCents >= 0) {
     return listing.taxCents;
   }
@@ -91,10 +86,11 @@ export function listingImageParts(args: {
 }
 
 export function lineTaxCents(
-  listing: { priceCents: number; taxCents?: number | null; storeName: string },
+  listing: { priceCents: number; taxCents?: number | null; storeName: string; includesTax?: boolean },
   qty = 1,
 ): number {
   const q = Math.max(1, qty);
+  if (listing.includesTax) return 0;
   if (listing.taxCents != null && Number.isFinite(listing.taxCents) && listing.taxCents >= 0) {
     return listing.taxCents * q;
   }
@@ -130,12 +126,14 @@ export function recapBody(args: {
   itemCents: number;
   taxCents: number;
   earningsCents: number;
+  taxEstimated?: boolean;
 }): string {
   const total = recapTotalCents(args.itemCents, args.taxCents, args.earningsCents);
+  const taxLabel = args.taxEstimated ? "Tax (est.)" : "Tax";
   return (
     `${args.title} at ${args.merchant}\n` +
     `Item ${formatUsd(args.itemCents)}\n` +
-    `Tax ${formatUsd(args.taxCents)}\n` +
+    `${taxLabel} ${formatUsd(args.taxCents)}\n` +
     `Traveler ${formatUsd(args.earningsCents)}\n` +
     `Total ${formatUsd(total)}`
   );
