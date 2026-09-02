@@ -52,6 +52,7 @@ export type ChatMediaPart = {
   url: string;
   media_kind: "image";
   content_type: string;
+  mime_type: string;
 };
 
 export type ChatTextPart = { type: "text"; text: string };
@@ -71,15 +72,18 @@ export function listingImageParts(args: {
   merchant: string;
   priceCents: number;
   imageUrl?: string | null;
+  contentType?: string | null;
 }): ChatPart[] {
   const url = args.imageUrl?.trim() ?? "";
   if (!listingHasPhoto(url)) return [];
+  const content_type = args.contentType?.trim() || guessImageContentType(url);
   return [
     {
       type: "media",
       url,
       media_kind: "image",
-      content_type: guessImageContentType(url),
+      content_type,
+      mime_type: content_type,
     },
     { type: "text", text: listingCaption(args) },
   ];
@@ -143,6 +147,8 @@ export function recapBody(args: {
 export const RECAP_PAY_ASK = "That’s the total. Say yes and I’ll send the pay sheet.";
 
 export const PAYMENT_UNCONFIGURED = "Payment isn’t configured on this host yet.";
+export const PAYMENT_RETRY =
+  "Payment login failed just now. Say yes again in a minute and I’ll resend the wallet link.";
 
 export type RequestPhase = "funded" | "matching" | "accepted" | "shopping";
 

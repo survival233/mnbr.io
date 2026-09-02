@@ -211,7 +211,7 @@ export type PendingParse =
 
 function listingReplyText(text: string): string {
   return text
-    .replace(/\b(instead|please)\b/gi, " ")
+    .replace(/\b(instead|please|lets?|let'?s|go|with|from)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

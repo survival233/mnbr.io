@@ -48,9 +48,11 @@ import {
   listingCaption,
   listingHasPhoto,
   listingImageParts,
+  guessImageContentType,
   recapBody,
   RECAP_PAY_ASK,
   PAYMENT_UNCONFIGURED,
+  PAYMENT_RETRY,
   requestStatusLine,
   shopperWait,
   shopperNobody,
@@ -283,6 +285,28 @@ async function replyParts(
   await reply(s, caption || "Photo", opts);
 }
 
+async function sniffImageContentType(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    const ct = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (ct?.startsWith("image/")) return ct;
+  } catch {
+    /* HEAD often blocked on CDNs */
+  }
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Range: "bytes=0-64" },
+      redirect: "follow",
+    });
+    const ct = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (ct?.startsWith("image/")) return ct;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 async function replyListing(s: Session, listing: NonNullable<Session["selected"]>): Promise<boolean> {
   const caption = listingCaption({
     title: listing.productTitle,
@@ -290,11 +314,42 @@ async function replyListing(s: Session, listing: NonNullable<Session["selected"]
     priceCents: listing.priceCents,
   });
   if (listingHasPhoto(listing.imageUrl)) {
+    const sniffed = await sniffImageContentType(listing.imageUrl);
+    const guessed = guessImageContentType(listing.imageUrl);
+    const contentType = sniffed ?? guessed;
+    // #region agent log
+    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
+      body: JSON.stringify({
+        sessionId: "ee46bb",
+        runId: "post-fix",
+        hypothesisId: "F",
+        location: "apps/shopper-agent/src/shopper-flow.mts:replyListing",
+        message: "listing image mime",
+        data: {
+          host: (() => {
+            try {
+              return new URL(listing.imageUrl).hostname;
+            } catch {
+              return "bad";
+            }
+          })(),
+          sniffed,
+          guessed,
+          contentType,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    console.warn("[shopper-debug]", JSON.stringify({ imageHost: listing.storeName, sniffed, guessed, contentType }));
+    // #endregion
     const parts = listingImageParts({
       title: listing.productTitle,
       merchant: listing.storeName,
       priceCents: listing.priceCents,
       imageUrl: listing.imageUrl,
+      contentType,
     });
     if (parts.some((p) => p.type === "media")) {
       try {
@@ -1152,6 +1207,28 @@ async function selectListing(s: Session, idx: number, text = ""): Promise<void> 
   const list = s.listings ?? [];
   const parent = list[idx]!;
   const picked = resolveListingPick(parent, text);
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
+    body: JSON.stringify({
+      sessionId: "ee46bb",
+      runId: "post-fix",
+      hypothesisId: "G",
+      location: "apps/shopper-agent/src/shopper-flow.mts:selectListing",
+      message: "listing pick resolved",
+      data: {
+        idx,
+        text: text.slice(0, 80),
+        store: picked.storeName,
+        title: picked.productTitle.slice(0, 72),
+        priceCents: picked.priceCents,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  console.warn("[shopper-debug]", JSON.stringify({ pickIdx: idx, store: picked.storeName, priceCents: picked.priceCents, text: text.slice(0, 80) }));
+  // #endregion
   s.selected = { ...picked };
   s.cart = { listingId: picked.listingId, qty: s.cart?.qty ?? 1 };
   s.category ??= categoryOf(s.selected.productTitle) ?? undefined;
@@ -1671,7 +1748,7 @@ async function confirmRecapPay(s: Session): Promise<void> {
   }
   const total = persistRecapTotal(s).totalCents;
   const started = await startFundingAfterAccept(s, total);
-  if (!started) await say(s, PAYMENT_UNCONFIGURED);
+  if (!started) await say(s, agentcardConfigured() ? PAYMENT_RETRY : PAYMENT_UNCONFIGURED);
 }
 
 /** Hosted pay-sheet after recap confirm. Amount is the recap total — do not recompute. */

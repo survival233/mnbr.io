@@ -208,6 +208,27 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     expect(act(s, "pink 512GB").optionIndex).toBe(0);
   });
 
+  it("merchant name picks the store, including let's-go-with filler", () => {
+    const s = sess({
+      step: "await_listing",
+      searchQuery: "ipad a16",
+      listings: [
+        { storeName: "Target", productTitle: "Apple iPad", priceCents: 39999 },
+        { storeName: "Best Buy", productTitle: "Apple 11-inch iPad A16 chip with Wi-Fi md4", priceCents: 49499 },
+      ],
+      pending: {
+        slot: "listing",
+        proposed: null,
+        kind: "choice",
+        prompt: "Found a few — any of these, or want me to narrow?",
+      },
+    });
+    expect(act(s, "Lets go with Target").act).toBe("CONTINUE");
+    expect(act(s, "Lets go with Target").optionIndex).toBe(0);
+    expect(act(s, "Apple iPad Target").act).toBe("CONTINUE");
+    expect(act(s, "Apple iPad Target").optionIndex).toBe(0);
+  });
+
   it("yes on recap wait is CONTINUE pay, not a new search", () => {
     const s = sess({
       step: "await_pay_confirm",

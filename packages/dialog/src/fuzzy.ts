@@ -33,7 +33,7 @@ export function fuzzyMatchIndex(
   let needle = text
     .toLowerCase()
     .replace(/[^\w\s]/g, " ")
-    .replace(/\b(the|one|option|number|please|store)\b/g, " ")
+    .replace(/\b(the|one|option|number|please|store|lets?|let|go|with|from)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (needle.length < 2) return null;
@@ -55,11 +55,13 @@ export function fuzzyMatchIndex(
       if (!best || score > best.score) best = { i, score };
       continue;
     }
-    if (!labelOnly && hay.includes(needle) && needle.length >= 4) {
-      continue;
-    }
     if (label.includes(needle) && needle.length >= 3) {
       const score = 3 + needle.length / 20;
+      if (!best || score > best.score) best = { i, score };
+      continue;
+    }
+    if (!labelOnly && hay.includes(needle) && needle.length >= 4) {
+      const score = 3.6;
       if (!best || score > best.score) best = { i, score };
       continue;
     }

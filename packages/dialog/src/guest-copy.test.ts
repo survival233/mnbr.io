@@ -134,6 +134,7 @@ describe("listing image parts", () => {
       url: "https://store.example/airpods.jpg",
       media_kind: "image",
       content_type: "image/jpeg",
+      mime_type: "image/jpeg",
     });
     expect(parts[1]).toEqual({
       type: "text",

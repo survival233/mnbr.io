@@ -52,6 +52,7 @@ export {
   recapBody,
   RECAP_PAY_ASK,
   PAYMENT_UNCONFIGURED,
+  PAYMENT_RETRY,
   requestStatusLine,
   shopperWait,
   shopperNobody,
