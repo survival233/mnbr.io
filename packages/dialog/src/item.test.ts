@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseItem, parseMerchant, parseCartQty, extractProductUrl } from "./item";
+import { parseItem, parseMerchant, parseMerchantName, parseMerchantNames, parseCartQty, extractProductUrl } from "./item";
 
 describe("parseItem — product only, never the utterance", () => {
   it("returns null for shop intent without a named product", () => {
@@ -21,6 +21,9 @@ describe("parseItem — product only, never the utterance", () => {
     expect(parseItem("A USB-C charger from Amazon")).toMatch(/^USB-C charger$/i);
     expect(parseMerchant("A USB-C charger from Amazon")).toBe("amazon");
     expect(parseMerchant("hoodie")).toBeNull();
+    expect(parseMerchantName("target")).toBe("target");
+    expect(parseMerchantName("from Target")).toBe("target");
+    expect(parseMerchantNames("Apple iPad Target")).toEqual(["apple", "target"]);
   });
 
   it("parses cart qty from CONTINUE copy", () => {

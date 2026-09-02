@@ -121,14 +121,43 @@ export function parseItem(text: string): string | null {
 const MERCHANT_FROM =
   /\bfrom\s+(amazon|walmart|target|apple|best\s*buy)\b/i;
 
-/** Merchant named in “from Amazon” — catalog filter, not the item name. */
-export function parseMerchant(text: string): "amazon" | "walmart" | "target" | "apple" | "bestbuy" | null {
-  const m = (text ?? "").match(MERCHANT_FROM);
-  if (!m) return null;
-  const n = m[1]!.toLowerCase().replace(/\s+/g, "");
+const MERCHANT_ANY =
+  /\b(amazon|walmart|target|apple(?:\s+store)?|best\s*buy)\b/gi;
+
+export type MerchantSlug = "amazon" | "walmart" | "target" | "apple" | "bestbuy";
+
+function normMerchant(raw: string): MerchantSlug | null {
+  const n = raw.toLowerCase().replace(/\s+/g, "");
   if (n === "bestbuy") return "bestbuy";
+  if (n === "applestore") return "apple";
   if (n === "amazon" || n === "walmart" || n === "target" || n === "apple") return n;
   return null;
+}
+
+/** Merchant named in “from Amazon” — catalog filter, not the item name. */
+export function parseMerchant(text: string): MerchantSlug | null {
+  const m = (text ?? "").match(MERCHANT_FROM);
+  if (!m) return null;
+  return normMerchant(m[1]!);
+}
+
+/** Every store name in the utterance, in order. “target” counts; “from Target” too. */
+export function parseMerchantNames(text: string): MerchantSlug[] {
+  const from = parseMerchant(text);
+  const out: MerchantSlug[] = [];
+  const re = new RegExp(MERCHANT_ANY.source, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text ?? ""))) {
+    const slug = normMerchant(m[1]!);
+    if (slug && !out.includes(slug)) out.push(slug);
+  }
+  if (from && !out.includes(from)) out.push(from);
+  return out;
+}
+
+export function parseMerchantName(text: string): MerchantSlug | null {
+  const all = parseMerchantNames(text);
+  return all[all.length - 1] ?? null;
 }
 
 const QTY_WORDS: Record<string, number> = { two: 2, three: 3, four: 4 };

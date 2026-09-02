@@ -31,7 +31,10 @@ describe("earnings ask", () => {
 
 describe("SKU catalog copy", () => {
   it("is one human line, not a searching interpolator or yes-gate", () => {
-    expect(SKU_FOUND).toBe("Found a few — any of these, or want me to narrow?");
+    expect(SKU_FOUND).toBe("Pick 1–4, or name the store.");
+    expect(listingCaption({ title: "iPad", merchant: "Target", priceCents: 39999, n: 2 })).toBe(
+      "2. iPad · Target · $399.99",
+    );
     expect(SKU_FOUND).not.toMatch(/searching/i);
     expect(SKU_FOUND).not.toMatch(/say yes/i);
     expect(SKU_TOO_FEW).not.toMatch(/say yes/i);
@@ -133,9 +136,9 @@ describe("listing image parts", () => {
       type: "media",
       url: "https://store.example/airpods.jpg",
       media_kind: "image",
-      content_type: "image/jpeg",
       mime_type: "image/jpeg",
     });
+    expect(parts[0]).not.toHaveProperty("content_type");
     expect(parts[1]).toEqual({
       type: "text",
       text: listingCaption({ title: "AirPods Pro", merchant: "Apple", priceCents: 4299 }),

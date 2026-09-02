@@ -4,7 +4,7 @@
  */
 import { normalizeCity } from "@manebra/calendar";
 import { parseDate, parseUsdCents, categoryOf } from "./parse";
-import { parseItem, parseCartQty, extractProductUrl } from "./item";
+import { parseItem, parseCartQty, extractProductUrl, parseMerchantNames, type MerchantSlug } from "./item";
 import { fuzzyMatchIndex } from "./fuzzy";
 import { parseShoppingCity, parseDeliveryTown, parseTripDestination, parseTripOrigin } from "./cities";
 import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
@@ -154,7 +154,7 @@ function lastOptions(s: DialogSession): Array<{ id: string; label: string; hayst
   }
   if (s.pending?.slot === "listing" || s.step === "await_listing") {
     return (s.listings ?? []).map((l, i) => ({
-      id: String(i),
+      id: String(i + 1),
       label: `${l.productTitle} · ${l.storeName}`,
       haystack: `${l.productTitle} ${l.storeName} ${l.priceCents} ${(l.variants ?? [])
         .map((v) => `${v.productTitle} ${v.color ?? ""} ${v.storage ?? ""} ${v.size ?? ""}`)
@@ -216,6 +216,33 @@ function listingReplyText(text: string): string {
     .trim();
 }
 
+function listingMatchesMerchant(
+  listing: NonNullable<DialogSession["listings"]>[number],
+  merchant: MerchantSlug,
+): boolean {
+  const slug = listing.storeSlug?.toLowerCase();
+  if (slug === merchant) return true;
+  const name = (listing.storeName ?? "").toLowerCase();
+  if (merchant === "bestbuy") return /best\s*buy/.test(name);
+  if (merchant === "apple") return /\bapple\b/.test(name);
+  return name.includes(merchant);
+}
+
+function merchantHitsOnList(s: DialogSession, merchant: MerchantSlug): number[] {
+  return (s.listings ?? []).flatMap((l, i) => (listingMatchesMerchant(l, merchant) ? [i] : []));
+}
+
+/** Store named in the utterance that is actually on the open picker. */
+function merchantOnOpenList(s: DialogSession, text: string): MerchantSlug | null {
+  if (!s.listings?.length) return null;
+  const named = parseMerchantNames(text);
+  for (let i = named.length - 1; i >= 0; i--) {
+    const m = named[i]!;
+    if (merchantHitsOnList(s, m).length) return m;
+  }
+  return null;
+}
+
 /** Pick / qty against persisted SKU cards. Bare yes is never a pick. */
 export function parseListingReply(s: DialogSession, text: string): PendingParse {
   const t = listingReplyText(text);
@@ -227,6 +254,12 @@ export function parseListingReply(s: DialogSession, text: string): PendingParse 
   if (qty != null) return { ok: true, value: qty };
   if (/^(that one|the first|first one)\b/i.test(t)) {
     return { ok: true, optionIndex: 0 };
+  }
+  const merchant = merchantOnOpenList(s, text);
+  if (merchant) {
+    const hits = merchantHitsOnList(s, merchant);
+    if (hits.length === 1) return { ok: true, optionIndex: hits[0] };
+    if (hits.length > 1) return { ok: true, value: `merchant:${merchant}` };
   }
   const priceAsk = t.match(/\$?\s*(\d+(?:\.\d{1,2})?)/);
   if (priceAsk) {
@@ -362,6 +395,7 @@ function unmistakableNewItem(s: DialogSession, text: string, hasPhoto: boolean):
   const pending = requestedSlot(s);
   if (pending && parseAgainstPending(s, text).ok) return false;
   if (s.listings?.length && parseListingReply(s, text).ok) return false;
+  if (s.listings?.length && merchantOnOpenList(s, text)) return false;
   if (!open) return true;
   if (replacementItem(text)) return true;
   return Boolean(categoryOf(item) && item.split(/\s+/).length >= 2);

@@ -2,7 +2,7 @@
  * Hosted AgentCard pay-sheet (messaging). Not a store checkout.
  * Amount must be the recap total in cents — do not recompute fees here.
  */
-import { agentcardConfigured, createWalletLink, paySheetUrl } from "./client";
+import { agentcardConfigured, createPaySheetLink, paySheetUrl } from "./client";
 
 export type PaySheetArgs = {
   identity: string;
@@ -22,9 +22,9 @@ export async function PaySheet(args: PaySheetArgs): Promise<PaySheetResult> {
     throw new Error("AGENTCARD_* unset");
   }
   const merchant = args.merchant?.trim() || "Manebra";
-  const link = await createWalletLink(args.identity);
+  const link = await createPaySheetLink(args.identity, merchant, args.amountCents);
   return {
-    url: paySheetUrl(link.url, merchant, args.amountCents),
+    url: link.url,
     amountCents: args.amountCents,
     merchant,
   };

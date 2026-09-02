@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, listingsWithPhotos, formatShopPickList, resolveListingPick, type ProductListing } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, resolveListingPick, type ProductListing } from "@manebra/catalog";
 
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -59,6 +59,7 @@ import {
   shopperAccepted,
   parseShopPlace,
   extractProductUrl,
+  parseMerchantName,
 
   type ClassifiedTurn,
 } from "@manebra/dialog";
@@ -85,7 +86,7 @@ import {
   requestPastDeadline,
   shopperStillWaiting,
 } from "./match-policy.mts";
-import { agentcardConfigured, createWalletLink, PaySheet, nextShopperFundingStep } from "@repo/agentcard";
+import { agentcardConfigured, createWalletLink, dropConnection, isAgentCardLoginError, PaySheet, nextShopperFundingStep } from "@repo/agentcard";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
@@ -307,11 +308,16 @@ async function sniffImageContentType(url: string): Promise<string | null> {
   return null;
 }
 
-async function replyListing(s: Session, listing: NonNullable<Session["selected"]>): Promise<boolean> {
+async function replyListing(
+  s: Session,
+  listing: NonNullable<Session["selected"]>,
+  n?: number,
+): Promise<boolean> {
   const caption = listingCaption({
     title: listing.productTitle,
     merchant: listing.storeName,
     priceCents: listing.priceCents,
+    n,
   });
   if (listingHasPhoto(listing.imageUrl)) {
     const sniffed = await sniffImageContentType(listing.imageUrl);
@@ -350,6 +356,7 @@ async function replyListing(s: Session, listing: NonNullable<Session["selected"]
       priceCents: listing.priceCents,
       imageUrl: listing.imageUrl,
       contentType,
+      n,
     });
     if (parts.some((p) => p.type === "media")) {
       try {
@@ -489,7 +496,12 @@ function lastChoiceOptions(s: Session, field: DialogOffer["field"]): PendingSlot
   if (field === "listing") {
     return (s.listings ?? []).map((l, i) => ({
       id: String(i),
-      label: listingCaption({ title: l.productTitle, merchant: l.storeName, priceCents: l.priceCents }),
+      label: listingCaption({
+        title: l.productTitle,
+        merchant: l.storeName,
+        priceCents: l.priceCents,
+        n: i + 1,
+      }),
     }));
   }
   if (field === "traveler") {
@@ -1042,7 +1054,7 @@ async function searchAndPromptListings(
     headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
     body: JSON.stringify({
       sessionId: "ee46bb",
-      runId: "pre-fix",
+      runId: "post-fix",
       hypothesisId: "E",
       location: "apps/shopper-agent/src/shopper-flow.mts:searchAndPromptListings",
       message: "picker gate",
@@ -1069,32 +1081,26 @@ async function searchAndPromptListings(
     await reply(s, SKU_TOO_FEW);
     return;
   }
-  const photos = listingsWithPhotos(candidates, 4);
-  await reply(s, SKU_FOUND, { thinkMs: 400 });
-  if (photos.length >= 3) {
-    const sent: NonNullable<Session["listings"]> = [];
-    for (const listing of photos.slice(0, 4)) {
-      if (await replyListing(s, listing)) sent.push(listing);
-    }
-    if (sent.length >= 3) {
-      s.listings = sent;
-      parkListingPick(s);
-      return;
-    }
-  }
-  if (photos.length >= 2) {
-    const sent: NonNullable<Session["listings"]> = [];
-    for (const listing of photos) {
-      if (await replyListing(s, listing)) sent.push(listing);
-    }
-    if (sent.length >= 2) {
-      s.listings = sent;
-      parkListingPick(s);
-      return;
-    }
-  }
-  await reply(s, formatShopPickList(candidates), { thinkMs: 400 });
   s.listings = candidates;
+  await reply(s, SKU_FOUND, { thinkMs: 400 });
+  for (let i = 0; i < candidates.length; i++) {
+    const listing = candidates[i]!;
+    const n = i + 1;
+    if (listingHasPhoto(listing.imageUrl)) {
+      await replyListing(s, listing, n);
+    } else {
+      await reply(
+        s,
+        listingCaption({
+          title: listing.productTitle,
+          merchant: listing.storeName,
+          priceCents: listing.priceCents,
+          n,
+        }),
+        { thinkMs: 400 },
+      );
+    }
+  }
   parkListingPick(s);
 }
 
@@ -1107,13 +1113,61 @@ function parkListingPick(s: Session, prompt = SKU_FOUND) {
     kind: "choice",
     prompt,
     options: (s.listings ?? []).map((l, i) => ({
-      id: String(i),
-      label: listingCaption({ title: l.productTitle, merchant: l.storeName, priceCents: l.priceCents }),
+      id: String(i + 1),
+      label: listingCaption({
+        title: l.productTitle,
+        merchant: l.storeName,
+        priceCents: l.priceCents,
+        n: i + 1,
+      }),
     })),
   };
   rememberQuestion(stayOf(s), prompt);
   persistBeforeAsk(persistSessionsNow);
   markSessionDirty();
+}
+
+async function filterOpenListingsToMerchant(s: Session, merchant: string): Promise<void> {
+  const list = s.listings ?? [];
+  const filtered = list.filter((l) => {
+    const slug = l.storeSlug?.toLowerCase();
+    if (slug === merchant) return true;
+    const name = (l.storeName ?? "").toLowerCase();
+    if (merchant === "bestbuy") return /best\s*buy/.test(name);
+    if (merchant === "apple") return /\bapple\b/.test(name);
+    return name.includes(merchant);
+  });
+  if (filtered.length === 1) {
+    const idx = list.findIndex((l) => l.listingId === filtered[0]!.listingId);
+    await selectListing(s, idx >= 0 ? idx : 0, merchant);
+    return;
+  }
+  if (filtered.length >= 2) {
+    s.listings = filtered;
+    markSessionDirty();
+    await reply(s, SKU_FOUND, { thinkMs: 300 });
+    for (let i = 0; i < filtered.length; i++) {
+      const listing = filtered[i]!;
+      const n = i + 1;
+      if (listingHasPhoto(listing.imageUrl)) await replyListing(s, listing, n);
+      else {
+        await reply(
+          s,
+          listingCaption({
+            title: listing.productTitle,
+            merchant: listing.storeName,
+            priceCents: listing.priceCents,
+            n,
+          }),
+          { thinkMs: 300 },
+        );
+      }
+    }
+    parkListingPick(s);
+    return;
+  }
+  parkListingPick(s);
+  await sayHost(s, "REASK", SKU_FOUND);
 }
 
 async function runSearchFlow(
@@ -1392,12 +1446,14 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
     return;
   }
   if (s.step === "await_pay_confirm" && (s.paySheetSent || s.walletLinkSent)) {
+    if (!s.paySheetSent) {
+      await confirmRecapPay(s);
+      return;
+    }
     await sayHost(
       s,
       "META",
-      s.paySheetSent
-        ? `Open the pay link I sent — I’ll lock it once the charge lands.`
-        : `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`,
+      `Open the pay link I sent — I’ll lock it once the charge lands.`,
       turn.meta,
     );
     return;
@@ -1692,50 +1748,80 @@ async function notifyShopperAccepted(s: Session, travelerName: string, totalCent
   void totalCents;
 }
 
+async function sendFreshWalletLink(s: Session, recapTotalCents: number): Promise<boolean> {
+  const identity = sessionKey(s.phone);
+  dropConnection(identity);
+  const link = await createWalletLink(identity);
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
+    body: JSON.stringify({
+      sessionId: "ee46bb",
+      runId: "post-fix",
+      hypothesisId: "P",
+      location: "apps/shopper-agent/src/shopper-flow.mts:sendFreshWalletLink",
+      message: "wallet_links sent",
+      data: { hasUrl: Boolean(link.url), recapTotalCents },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+  s.step = "await_pay_confirm";
+  s.walletLinkSent = true;
+  s.paySheetSent = false;
+  s.paySheetAmountCents = recapTotalCents;
+  s.offer = undefined;
+  s.pending = {
+    slot: "pay",
+    proposed: recapTotalCents,
+    kind: "bool",
+    prompt: `Add a test card (4242…) so you can fund.`,
+  };
+  markSessionDirty();
+  await say(s, `Add a test card (4242…) so you can fund.`, link.url);
+  return true;
+}
+
 /** Wallet first if no card; pay-sheet once a card is on file. Recap confirm, not after accept. */
 async function startFundingAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
   const identity = sessionKey(s.phone);
-  const card = await getConnectedCard(identity);
-  const step = nextShopperFundingStep({
-    configured: agentcardConfigured(),
-    hasCard: Boolean(card),
-    paySheetSent: Boolean(s.paySheetSent),
-    demo: demoLocalChain(),
-  });
-  if (step === "unconfigured") {
+  if (!agentcardConfigured()) {
     s.step = "await_pay_confirm";
     s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_UNCONFIGURED };
     markSessionDirty();
     await say(s, PAYMENT_UNCONFIGURED);
     return true;
   }
+  const card = await getConnectedCard(identity);
+  const step = nextShopperFundingStep({
+    configured: true,
+    hasCard: Boolean(card),
+    paySheetSent: Boolean(s.paySheetSent),
+    demo: demoLocalChain(),
+  });
   if (step === "anvil") {
     await fundAfterAccept(s);
     return true;
   }
-  if (step === "wallet") {
+  if (step === "wallet" || !card) {
     try {
-      const link = await createWalletLink(identity);
-      s.step = "await_pay_confirm";
-      s.walletLinkSent = true;
-      s.paySheetSent = false;
-      s.paySheetAmountCents = recapTotalCents;
-      s.offer = undefined;
-      s.pending = {
-        slot: "pay",
-        proposed: recapTotalCents,
-        kind: "bool",
-        prompt: `Add a test card (4242…) so you can fund.`,
-      };
-      markSessionDirty();
-      await say(s, `Add a test card (4242…) so you can fund.`, link.url);
-      return true;
+      return await sendFreshWalletLink(s, recapTotalCents);
     } catch (e: any) {
       console.warn(`[shopper-agent] wallet link: ${e?.message ?? e}`);
       return false;
     }
   }
-  if (step === "paysheet") return openPaySheetAfterAccept(s, recapTotalCents);
+  if (step === "paysheet") {
+    const opened = await openPaySheetAfterAccept(s, recapTotalCents);
+    if (opened) return true;
+    try {
+      return await sendFreshWalletLink(s, recapTotalCents);
+    } catch (e: any) {
+      console.warn(`[shopper-agent] wallet link after pay-sheet: ${e?.message ?? e}`);
+      return false;
+    }
+  }
   return step === "wait_payment";
 }
 
@@ -1748,10 +1834,15 @@ async function confirmRecapPay(s: Session): Promise<void> {
   }
   const total = persistRecapTotal(s).totalCents;
   const started = await startFundingAfterAccept(s, total);
-  if (!started) await say(s, agentcardConfigured() ? PAYMENT_RETRY : PAYMENT_UNCONFIGURED);
+  if (started) return;
+  if (agentcardConfigured()) {
+    await say(s, PAYMENT_RETRY);
+    return;
+  }
+  await say(s, PAYMENT_UNCONFIGURED);
 }
 
-/** Hosted pay-sheet after recap confirm. Amount is the recap total — do not recompute. */
+/** Hosted pay-sheet after recap confirm. Amount is the recap total — do not recompute. Platform token mints the link. */
 async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
   try {
     const sheet = await PaySheet({
@@ -1778,6 +1869,9 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
     return true;
   } catch (e: any) {
     console.warn(`[shopper-agent] pay-sheet: ${e?.message ?? e}`);
+    if (isAgentCardLoginError(e)) {
+      dropConnection(sessionKey(s.phone));
+    }
     return false;
   }
 }
@@ -1794,7 +1888,14 @@ async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
   });
   if (step === "paysheet") {
     const total = s.paySheetAmountCents ?? persistRecapTotal(s).totalCents;
-    return openPaySheetAfterAccept(s, total);
+    const opened = await openPaySheetAfterAccept(s, total);
+    if (opened) return true;
+    try {
+      return await sendFreshWalletLink(s, total);
+    } catch (e: any) {
+      console.warn(`[shopper-agent] wallet after pay-sheet login fail: ${e?.message ?? e}`);
+      return false;
+    }
   }
   return false;
 }
@@ -1904,6 +2005,10 @@ async function fundAfterAccept(s: Session): Promise<void> {
     return;
   }
   if (!demoLocalChain()) {
+    if (agentcardConfigured()) {
+      console.warn("[shopper-agent] fundAfterAccept skipped — waiting on AgentCard payment webhook");
+      return;
+    }
     await say(s, PAYMENT_UNCONFIGURED);
     return;
   }
@@ -2072,7 +2177,7 @@ async function handleInboundInner(
     text &&
     !hasImages &&
     wantsCardTools(text) &&
-    !(s.step === "await_pay_confirm" && s.paySheetSent)
+    s.step !== "await_pay_confirm"
   ) {
     await handleCardTurn(s.phone, text, (t) => reply(s, t));
     return;
@@ -2174,6 +2279,10 @@ async function handleInboundInner(
     }
     if (await resolveOpenQuestion(s, text, intent)) return;
     if (await applyDialogAffirm(s, text, intent)) return;
+    if (turn.slot === "listing" && typeof turn.value === "string" && turn.value.startsWith("merchant:")) {
+      await filterOpenListingsToMerchant(s, turn.value.slice("merchant:".length));
+      return;
+    }
     if (turn.slot === "listing" && turn.optionIndex != null) {
       await selectListing(s, turn.optionIndex, text);
       return;
@@ -2288,6 +2397,8 @@ async function handleInboundInner(
   if (
     intent.kind === "new_query" &&
     intent.query &&
+    !parseMerchantName(intent.query) &&
+    !parseMerchantName(text) &&
     !isAffirmationOrCloser(intent.query) &&
     s.step !== "await_product" &&
     s.step !== "await_product_confirm" &&
@@ -2381,7 +2492,7 @@ async function handleInboundInner(
         await selectListing(s, intent.index, text);
         return;
       }
-      if (intent.kind === "new_query" && intent.query) {
+      if (intent.kind === "new_query" && intent.query && !parseMerchantName(intent.query) && !parseMerchantName(text)) {
         await applyNewQuery(s, intent.query);
         return;
       }

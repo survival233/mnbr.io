@@ -29,7 +29,7 @@ export function taxCentsFor(listing: {
   return estimateTaxCents(listing.priceCents, listing.storeName);
 }
 
-export const SKU_FOUND = "Found a few — any of these, or want me to narrow?";
+export const SKU_FOUND = "Pick 1–4, or name the store.";
 export const SKU_TOO_FEW =
   "I couldn’t find enough listings. What should I search instead?";
 
@@ -43,15 +43,20 @@ export function listingHasPhoto(imageUrl?: string | null): boolean {
   return /^https?:\/\//i.test(imageUrl?.trim() ?? "");
 }
 
-export function listingCaption(args: { title: string; merchant: string; priceCents: number }): string {
-  return `${shortListingTitle(args.title)} · ${args.merchant} · ${formatUsd(args.priceCents)}`;
+export function listingCaption(args: {
+  title: string;
+  merchant: string;
+  priceCents: number;
+  n?: number;
+}): string {
+  const line = `${shortListingTitle(args.title)} · ${args.merchant} · ${formatUsd(args.priceCents)}`;
+  return args.n != null ? `${args.n}. ${line}` : line;
 }
 
 export type ChatMediaPart = {
   type: "media";
   url: string;
   media_kind: "image";
-  content_type: string;
   mime_type: string;
 };
 
@@ -73,17 +78,17 @@ export function listingImageParts(args: {
   priceCents: number;
   imageUrl?: string | null;
   contentType?: string | null;
+  n?: number;
 }): ChatPart[] {
   const url = args.imageUrl?.trim() ?? "";
   if (!listingHasPhoto(url)) return [];
-  const content_type = args.contentType?.trim() || guessImageContentType(url);
+  const mime_type = args.contentType?.trim() || guessImageContentType(url);
   return [
     {
       type: "media",
       url,
       media_kind: "image",
-      content_type,
-      mime_type: content_type,
+      mime_type,
     },
     { type: "text", text: listingCaption(args) },
   ];

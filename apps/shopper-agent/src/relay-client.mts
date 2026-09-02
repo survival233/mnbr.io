@@ -71,7 +71,11 @@ export async function sendParts(args: {
 }): Promise<{ messageId?: string }> {
   const body: Record<string, unknown> = {
     conversation_id: args.conversationId,
-    parts: args.parts,
+    parts: args.parts.map((p) => {
+      if (p.type !== "media") return p;
+      const { content_type: _drop, ...rest } = p;
+      return rest;
+    }),
   };
   if (args.replyToMessageId) {
     body.reply_to = { message_id: args.replyToMessageId, part_index: 0 };

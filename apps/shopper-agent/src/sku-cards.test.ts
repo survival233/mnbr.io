@@ -56,7 +56,7 @@ describe("named item → photo SKU cards, no yes-gate", () => {
     }),
   ];
 
-  it("keeps ≥2 image SKUs and never a Target 399.99 text row", () => {
+  it("keeps ≥2 image SKUs; picker list still includes a row without a photo", () => {
     const cards = listingsWithPhotos(rows, 4);
     expect(cards.length).toBeGreaterThanOrEqual(2);
     expect(cards.every((c) => listingImageParts({
@@ -65,7 +65,8 @@ describe("named item → photo SKU cards, no yes-gate", () => {
       priceCents: c.priceCents,
       imageUrl: c.imageUrl,
     }).some((p) => p.type === "media"))).toBe(true);
-    expect(cards.some((c) => c.priceCents === 39999 && !c.imageUrl)).toBe(false);
+    const picks = listingsForPicker(rows, 4);
+    expect(picks.some((c) => c.priceCents === 39999 && !c.imageUrl)).toBe(true);
     for (const c of cards) {
       const caption = listingCaption({
         title: c.productTitle,
@@ -79,7 +80,7 @@ describe("named item → photo SKU cards, no yes-gate", () => {
   });
 
   it("does not yes-gate catalog search", () => {
-    expect(SKU_FOUND).not.toMatch(/got it — searching/i);
+    expect(SKU_FOUND).toBe("Pick 1–4, or name the store.");
     expect(SKU_FOUND).not.toMatch(/say yes/i);
     expect(SKU_TOO_FEW).not.toMatch(/say yes/i);
     const s: DialogSession = {

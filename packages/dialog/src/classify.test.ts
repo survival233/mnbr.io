@@ -213,8 +213,8 @@ describe("classifyTurn — open question after a gap is never a search", () => {
       step: "await_listing",
       searchQuery: "ipad a16",
       listings: [
-        { storeName: "Target", productTitle: "Apple iPad", priceCents: 39999 },
-        { storeName: "Best Buy", productTitle: "Apple 11-inch iPad A16 chip with Wi-Fi md4", priceCents: 49499 },
+        { storeName: "Target", storeSlug: "target", productTitle: "Apple iPad", priceCents: 39999 },
+        { storeName: "Best Buy", storeSlug: "bestbuy", productTitle: "Apple 11-inch iPad A16 chip with Wi-Fi md4", priceCents: 49499 },
       ],
       pending: {
         slot: "listing",
@@ -225,8 +225,35 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     });
     expect(act(s, "Lets go with Target").act).toBe("CONTINUE");
     expect(act(s, "Lets go with Target").optionIndex).toBe(0);
+    expect(act(s, "from Target").act).toBe("CONTINUE");
+    expect(act(s, "from Target").optionIndex).toBe(0);
+    expect(act(s, "target").act).toBe("CONTINUE");
+    expect(act(s, "target").optionIndex).toBe(0);
     expect(act(s, "Apple iPad Target").act).toBe("CONTINUE");
     expect(act(s, "Apple iPad Target").optionIndex).toBe(0);
+  });
+
+  it("names a store with two rows as CONTINUE filter, not Best Buy", () => {
+    const s = sess({
+      step: "await_listing",
+      searchQuery: "ipad a16",
+      listings: [
+        { storeName: "Target", storeSlug: "target", productTitle: "Apple iPad", priceCents: 39999 },
+        { storeName: "Target", storeSlug: "target", productTitle: "Apple iPad A16 256GB", priceCents: 49999 },
+        { storeName: "Best Buy", storeSlug: "bestbuy", productTitle: "Apple 11-inch iPad A16", priceCents: 49499 },
+      ],
+      pending: {
+        slot: "listing",
+        proposed: null,
+        kind: "choice",
+        prompt: "Pick 1–4, or name the store.",
+      },
+    });
+    const t = act(s, "from Target");
+    expect(t.act).toBe("CONTINUE");
+    expect(t.slot).toBe("listing");
+    expect(t.value).toBe("merchant:target");
+    expect(t.optionIndex).toBeUndefined();
   });
 
   it("yes on recap wait is CONTINUE pay, not a new search", () => {

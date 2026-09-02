@@ -32,6 +32,7 @@ export type DialogSession = {
   listings?: Array<{
     productTitle: string;
     storeName: string;
+    storeSlug?: string;
     priceCents: number;
     variants?: Array<{ productTitle: string; priceCents: number; color?: string; storage?: string; size?: string }>;
   }>;

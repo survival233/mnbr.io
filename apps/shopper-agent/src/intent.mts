@@ -1,5 +1,8 @@
 /** Fast rule-based intent for mid-flow corrections (no LLM required). */
 
+import { fuzzyMatchIndex, parseMerchantName } from "@manebra/dialog";
+export { fuzzyMatchIndex };
+
 export type IntentKind =
   | "restart"
   | "reject_results"
@@ -36,9 +39,6 @@ export function normalizeSearchQuery(raw: string): string {
   return q;
 }
 
-import { fuzzyMatchIndex } from "@manebra/dialog";
-export { fuzzyMatchIndex };
-
 export function classifyIntent(
   text: string,
   ctx: {
@@ -69,6 +69,8 @@ export function classifyIntent(
 
     const idx = fuzzyMatchIndex(t, ctx.listingLabels ?? [], { labelOnly: true });
     if (idx != null) return { kind: "select", index: idx };
+
+    if (parseMerchantName(t)) return { kind: "slot_answer" };
 
     // Free-text product correction while staring at wrong results
     if (!/^\d+$/.test(t) && !YES_RE.test(t) && t.length >= 3) {
