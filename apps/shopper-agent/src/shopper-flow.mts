@@ -981,6 +981,30 @@ async function searchAndPromptListings(
     merged.push(l);
   }
   const candidates = listingsForPicker(merged, 4);
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
+    body: JSON.stringify({
+      sessionId: "ee46bb",
+      runId: "pre-fix",
+      hypothesisId: "E",
+      location: "apps/shopper-agent/src/shopper-flow.mts:searchAndPromptListings",
+      message: "picker gate",
+      data: {
+        query: q,
+        merchantFilter: s.merchantFilter ?? null,
+        catalogLen: catalog.length,
+        extraLen: extra?.length ?? 0,
+        mergedLen: merged.length,
+        candidatesLen: candidates.length,
+        tooFew: candidates.length < 2,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  console.warn("[shopper-debug]", JSON.stringify({ query: q, catalogLen: catalog.length, candidatesLen: candidates.length, tooFew: candidates.length < 2, merchantFilter: s.merchantFilter ?? null }));
+  // #endregion
   if (candidates.length < 2) {
     s.listings = undefined;
     s.step = "await_product";

@@ -110,6 +110,22 @@ export function merchantDomainAllowed(url: string): boolean {
   return allowedMerchantDomains().includes(got);
 }
 
+const SERP_REDIRECT_DOMAINS = new Set(["google.com", "googleadservices.com"]);
+
+/**
+ * Serp shopping rows are already matched to a verified store by source name,
+ * but `link` is often google.com. Trust that storeSlug; still reject notwalmart.com.
+ */
+export function listingMerchantAllowed(listing: ProductListing): boolean {
+  const host = registrableDomain(listing.productUrl);
+  if (!host) return false;
+  if (allowedMerchantDomains().includes(host)) return true;
+  return (
+    SERP_REDIRECT_DOMAINS.has(host) &&
+    VERIFIED_STORES.some((s) => s.slug === listing.storeSlug)
+  );
+}
+
 export function extractListingVariants(title: string): {
   color?: string;
   storage?: string;
@@ -229,7 +245,7 @@ export function filterCatalogListings(
       drops.push({ listing, reason: "price" });
       continue;
     }
-    if (!merchantDomainAllowed(listing.productUrl)) {
+    if (!listingMerchantAllowed(listing)) {
       drops.push({ listing, reason: "merchant" });
       continue;
     }

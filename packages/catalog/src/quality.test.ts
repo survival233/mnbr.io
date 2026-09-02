@@ -151,6 +151,22 @@ describe("merchant domain allowlist", () => {
     expect(listings).toHaveLength(0);
     expect(drops[0]?.reason).toBe("merchant");
   });
+
+  it("keeps google.com shopping links when the store is already verified", () => {
+    const rows = [
+      listing({
+        listingId: "walmart:g",
+        storeSlug: "walmart",
+        storeName: "Walmart",
+        productTitle: "Apple iPhone 15 128GB",
+        priceCents: 79_900,
+        productUrl: "https://www.google.com/shopping/product/1",
+      }),
+    ];
+    const { listings, drops } = filterCatalogListings(rows, "iphone");
+    expect(listings).toHaveLength(1);
+    expect(drops.some((d) => d.reason === "merchant")).toBe(false);
+  });
 });
 
 describe("variants nest by normalized name + merchant", () => {
