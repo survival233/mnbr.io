@@ -17,6 +17,7 @@ export type AgentCardConnection = {
 type Store = { connections: AgentCardConnection[] };
 
 let orgToken: { value: string; exp: number; clientId: string } | null = null;
+let orgMintCooldown: { until: number; status: number; ids: string } | null = null;
 
 type CredPair = { source: "client" | "oauth"; id: string; secret: string };
 
@@ -96,45 +97,41 @@ async function mintOrgToken(
     client_id: pair.id,
     client_secret: pair.secret,
   });
-  const basic = Buffer.from(`${pair.id}:${pair.secret}`).toString("base64");
-  const attempts: RequestInit[] = [
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form,
-    },
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${basic}`,
-      },
-      body: new URLSearchParams({ grant_type: "client_credentials" }),
-    },
-  ];
-  let lastStatus = 401;
-  for (const init of attempts) {
-    const res = await fetch(tokenUrl, init);
-    const body = (await res.json().catch(() => ({}))) as {
-      access_token?: string;
-      expires_in?: number;
-      error?: string;
-    };
-    if (res.ok && body.access_token) {
-      return { token: body.access_token, exp: Date.now() + (body.expires_in ?? 3600) * 1000 };
-    }
-    lastStatus = res.status;
-    // #region agent log
-    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"A",location:"packages/agentcard/src/client.ts:mintOrgToken",message:"oauth attempt",data:{source:pair.source,attempt:"Authorization" in (init.headers as object) ? "basic" : "body",status:res.status,err:body.error??null,hasToken:Boolean(body.access_token)},timestamp:Date.now()})}).catch(()=>{});
-    console.warn("[agentcard-debug]", JSON.stringify({ hypothesisId: "A", source: pair.source, attempt: "Authorization" in (init.headers as object) ? "basic" : "body", status: res.status, err: body.error ?? null, hasToken: Boolean(body.access_token) }));
-    // #endregion
+  const res = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form,
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    error?: string;
+  };
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"post-fix",hypothesisId:"A",location:"packages/agentcard/src/client.ts:mintOrgToken",message:"oauth attempt",data:{source:pair.source,attempt:"body",status:res.status,err:body.error??null,hasToken:Boolean(body.access_token)},timestamp:Date.now()})}).catch(()=>{});
+  console.warn("[agentcard-debug]", JSON.stringify({ hypothesisId: "A", source: pair.source, attempt: "body", status: res.status, err: body.error ?? null, hasToken: Boolean(body.access_token) }));
+  // #endregion
+  if (res.ok && body.access_token) {
+    return { token: body.access_token, exp: Date.now() + (body.expires_in ?? 3600) * 1000 };
   }
-  return { status: lastStatus };
+  return { status: res.status };
+}
+
+function credFingerprint(): string {
+  return credPairs().map((p) => p.id).join("|");
 }
 
 async function orgAccessToken(): Promise<string> {
   const pairs = credPairs();
   if (!pairs.length) throw new Error("AGENTCARD_CLIENT_ID / AGENTCARD_CLIENT_SECRET unset");
+  const ids = credFingerprint();
+  if (orgMintCooldown && orgMintCooldown.ids === ids && Date.now() < orgMintCooldown.until) {
+    // #region agent log
+    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"post-fix",hypothesisId:"A",location:"packages/agentcard/src/client.ts:orgAccessToken",message:"oauth cooldown",data:{status:orgMintCooldown.status},timestamp:Date.now()})}).catch(()=>{});
+    console.warn("[agentcard-debug]", JSON.stringify({ hypothesisId: "A", cooldown: true, status: orgMintCooldown.status }));
+    // #endregion
+    throw new AgentCardLoginError(`AgentCard oauth failed (${orgMintCooldown.status})`);
+  }
   if (orgToken && pairs.some((p) => p.id === orgToken!.clientId) && orgToken.exp > Date.now() + 30_000) {
     return orgToken.value;
   }
@@ -144,14 +141,16 @@ async function orgAccessToken(): Promise<string> {
     const minted = await mintOrgToken(pair);
     if ("token" in minted) {
       orgToken = { value: minted.token, exp: minted.exp, clientId: pair.id };
+      orgMintCooldown = null;
       // #region agent log
-      fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"A",location:"packages/agentcard/src/client.ts:orgAccessToken",message:"oauth minted",data:{source:pair.source},timestamp:Date.now()})}).catch(()=>{});
+      fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"post-fix",hypothesisId:"A",location:"packages/agentcard/src/client.ts:orgAccessToken",message:"oauth minted",data:{source:pair.source},timestamp:Date.now()})}).catch(()=>{});
       console.warn("[agentcard-debug]", JSON.stringify({ hypothesisId: "A", minted: true, source: pair.source }));
       // #endregion
       return minted.token;
     }
     lastStatus = minted.status;
   }
+  orgMintCooldown = { until: Date.now() + 5 * 60_000, status: lastStatus, ids };
   throw new AgentCardLoginError(`AgentCard oauth failed (${lastStatus})`);
 }
 
@@ -291,7 +290,6 @@ export async function createWalletLink(identity: string): Promise<WalletLink> {
     return link;
   };
 
-  const existing = getConnection(identity);
   if (existing?.userId) {
     try {
       return await mintForUser(existing.userId);

@@ -1959,18 +1959,6 @@ async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
       return false;
     }
   }
-  if ((step === "wallet" || !card) && s.walletHandoffFailed && !s.walletLinkSent) {
-    if (s.walletRetryAt && Date.now() < s.walletRetryAt) return false;
-    const total = s.paySheetAmountCents ?? persistRecapTotal(s).totalCents;
-    try {
-      return await sendFreshWalletLink(s, total);
-    } catch (e: any) {
-      console.warn(`[shopper-agent] wallet retry after login fail: ${e?.message ?? e}`);
-      s.walletRetryAt = Date.now() + 60_000;
-      markSessionDirty();
-      return false;
-    }
-  }
   return false;
 }
 
