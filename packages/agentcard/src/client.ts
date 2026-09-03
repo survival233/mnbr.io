@@ -61,6 +61,17 @@ export function getConnection(identity: string): AgentCardConnection | null {
   return loadStore().connections.find((c) => c.identity === identity) ?? null;
 }
 
+/** Map AgentCard user_id back to the Relay / phone identity we connected. */
+export function identityForAgentCardUser(userId: string): string | null {
+  const id = userId.trim();
+  if (!id) return null;
+  return loadStore().connections.find((c) => c.userId === id)?.identity ?? null;
+}
+
+export function rememberAgentCardUser(identity: string, userId: string): void {
+  rememberUserId(identity, userId);
+}
+
 function putConnection(row: AgentCardConnection): void {
   const store = loadStore();
   const i = store.connections.findIndex((c) => c.identity === row.identity);

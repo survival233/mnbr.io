@@ -94,7 +94,7 @@ const {
   resolveImagesForVision,
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
-const { handleInbound, syncWaitingShoppers, completeAgentCardPayment } = await import("./shopper-flow.mts");
+const { handleInbound, syncWaitingShoppers, completeAgentCardPayment, attachWebhookCardToWaitingShoppers } = await import("./shopper-flow.mts");
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
 const { handleAgentcardOAuth, isAgentcardOAuthRequest, oauthConfigured, agentcardConfigured, mintPlatformToken } = await import("@repo/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
@@ -243,7 +243,11 @@ dispatch = async (req, res) => {
     const result = await handleAgentCardWebhook(raw, hdrs);
     if (result.ok) {
       ok(res, { received: true }, result.status);
-      void syncWaitingShoppers();
+      if (result.type === "connected_card.updated") {
+        void attachWebhookCardToWaitingShoppers(result.identity).then(() => syncWaitingShoppers());
+      } else {
+        void syncWaitingShoppers();
+      }
       if (result.payment) void completeAgentCardPayment(result.identity);
     } else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
     return;

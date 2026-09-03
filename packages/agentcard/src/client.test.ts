@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentcardConfigured, createPaySheetLink, createWalletLink, getConnection, mintPlatformToken } from "./client";
+import { agentcardConfigured, createPaySheetLink, createWalletLink, getConnection, identityForAgentCardUser, mintPlatformToken } from "./client";
 
 const saved = {
   id: process.env.AGENTCARD_CLIENT_ID,
@@ -194,5 +194,6 @@ describe("AgentCard platform token", () => {
     expect(walletBodies[1]).toEqual({ user_id: "user_kept" });
     const connects = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/connect/start"));
     expect(connects.length).toBe(1);
+    expect(identityForAgentCardUser("user_kept")).toBe("usr_once");
   });
 });

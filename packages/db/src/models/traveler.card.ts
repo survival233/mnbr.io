@@ -67,7 +67,7 @@ export async function getConnectedCard(identity: string): Promise<StoredCard | n
   const key = identity.trim();
   if (!key) return null;
   if (!pg()) {
-    return loadFile().find((c) => c.identity === key) ?? null;
+    return loadFile().find((c) => c.identity === key || c.agentcardUserId === key) ?? null;
   }
   await ensurePg();
   const prisma = await getPrisma();
@@ -80,7 +80,7 @@ export async function getConnectedCard(identity: string): Promise<StoredCard | n
       is_default: boolean;
       updated_at: Date;
     }>
-  >(`SELECT identity, agentcard_user_id, last4, brand, is_default, updated_at FROM connected_cards WHERE identity = $1`, key);
+  >(`SELECT identity, agentcard_user_id, last4, brand, is_default, updated_at FROM connected_cards WHERE identity = $1 OR agentcard_user_id = $1`, key);
   const r = rows[0];
   if (!r) return null;
   return {

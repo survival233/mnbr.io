@@ -80,6 +80,7 @@ import {
   getOffer,
   listUpcomingTrips,
   getConnectedCard,
+  setConnectedCard,
 } from "@manebra/db";
 import {
   canConfirmHeadingYourWay,
@@ -90,7 +91,7 @@ import {
   requestPastDeadline,
   shopperStillWaiting,
 } from "./match-policy.mts";
-import { agentcardConfigured, createWalletLink, dropConnection, resetPaymentIdentity, isAgentCardLoginError, PaySheet, nextShopperFundingStep } from "@repo/agentcard";
+import { agentcardConfigured, createWalletLink, dropConnection, getConnection, resetPaymentIdentity, isAgentCardLoginError, PaySheet, nextShopperFundingStep } from "@repo/agentcard";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
@@ -1753,6 +1754,15 @@ async function notifyShopperAccepted(s: Session, travelerName: string, totalCent
 
 const WALLET_LINK_STALE_MS = 10 * 60_000;
 
+async function shopperCard(s: Session) {
+  const id = sessionKey(s.phone);
+  const direct = await getConnectedCard(id);
+  if (direct) return direct;
+  const conn = getConnection(id);
+  if (conn?.userId) return getConnectedCard(conn.userId);
+  return null;
+}
+
 function walletLinkStale(s: Session): boolean {
   if (!s.walletLinkSent) return false;
   const at = s.walletLinkSentAt ?? 0;
@@ -1790,7 +1800,7 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
   const total = s.paySheetAmountCents ?? (s.selected ? persistRecapTotal(s).totalCents : 0);
   const fresh =
     asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
-  const card = await getConnectedCard(sessionKey(s.phone));
+  const card = await shopperCard(s);
   const reset = asksForFreshWallet(text) || Boolean(s.walletHandoffFailed);
   // #region agent log
   fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"C",location:"apps/shopper-agent/src/shopper-flow.mts:continuePayHandoff",message:"pay handoff",data:{fresh,reset,hasCard:Boolean(card),paySheetSent:Boolean(s.paySheetSent),walletLinkSent:Boolean(s.walletLinkSent),walletHandoffFailed:Boolean(s.walletHandoffFailed),askFresh:asksForFreshWallet(text),hasSelected:Boolean(s.selected),total},timestamp:Date.now()})}).catch(()=>{});
@@ -1803,6 +1813,10 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
   if (!s.selected || !total) {
     await reply(s, RECAP_PAY_ASK);
     return;
+  }
+  if (card && !s.paySheetSent) {
+    const opened = await openPaySheetAfterAccept(s, total);
+    if (opened) return;
   }
   if (fresh) {
     try {
@@ -1829,7 +1843,6 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
 
 /** Wallet first if no card; pay-sheet once a card is on file. Recap confirm, not after accept. */
 async function startFundingAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
-  const identity = sessionKey(s.phone);
   if (!agentcardConfigured()) {
     s.step = "await_pay_confirm";
     s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_UNCONFIGURED };
@@ -1837,7 +1850,7 @@ async function startFundingAfterAccept(s: Session, recapTotalCents: number): Pro
     await say(s, PAYMENT_UNCONFIGURED);
     return true;
   }
-  const card = await getConnectedCard(identity);
+  const card = await shopperCard(s);
   const step = nextShopperFundingStep({
     configured: true,
     hasCard: Boolean(card),
@@ -1939,7 +1952,7 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
 async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
   if (s.step !== "await_pay_confirm" || s.handoverCode || s.escrowId) return false;
   if (!agentcardConfigured()) return false;
-  const card = await getConnectedCard(sessionKey(s.phone));
+  const card = await shopperCard(s);
   const step = nextShopperFundingStep({
     configured: true,
     hasCard: Boolean(card),
@@ -1960,6 +1973,21 @@ async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
     }
   }
   return false;
+}
+
+/** Card webhook may only carry AgentCard user_id. Stamp waiting Relay sessions so pay-sheet can open. */
+export async function attachWebhookCardToWaitingShoppers(webhookIdentity?: string): Promise<void> {
+  for (const s of allSessions()) {
+    if (s.step !== "await_pay_confirm" || s.paySheetSent) continue;
+    const id = sessionKey(s.phone);
+    if (await getConnectedCard(id)) continue;
+    await setConnectedCard({
+      identity: id,
+      agentcardUserId: webhookIdentity ?? null,
+      isDefault: true,
+    });
+    console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "G", stamped: true, hasWebhookId: Boolean(webhookIdentity) }));
+  }
 }
 
 /** Trust transaction.* webhooks after the pay-sheet — not the shopper saying done. */
@@ -2275,6 +2303,11 @@ async function handleInboundInner(
     return;
   }
   if (turn.act === "REASK") {
+    if (s.step === "await_pay_confirm") {
+      if (await maybeCompleteAgentCardFund(s)) return;
+      await continuePayHandoff(s, text);
+      return;
+    }
     if (
       (turn.slot === "product" || s.step === "idle" || s.step === "done" || s.step === "await_product") &&
       !s.searchQuery &&

@@ -1,4 +1,4 @@
-export { agentcardConfigured, buyWithUserCard, connectIdentity, createWalletLink, createPaySheetLink, dropConnection, resetPaymentIdentity, getConnection, isAgentCardLoginError, mintPlatformToken, paySheetUrl, AgentCardLoginError } from "./client";
+export { agentcardConfigured, buyWithUserCard, connectIdentity, createWalletLink, createPaySheetLink, dropConnection, resetPaymentIdentity, getConnection, identityForAgentCardUser, rememberAgentCardUser, isAgentCardLoginError, mintPlatformToken, paySheetUrl, AgentCardLoginError } from "./client";
 export type { AgentCardConnection, BuyTurn, WalletLink } from "./client";
 export { PaySheet, nextShopperFundingStep } from "./PaySheet";
 export type { PaySheetArgs, PaySheetResult, ShopperFundingStep } from "./PaySheet";

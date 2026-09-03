@@ -4,6 +4,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { setConnectedCard } from "@manebra/db";
+import { identityForAgentCardUser, rememberAgentCardUser } from "@repo/agentcard";
 
 const seen = new Set<string>();
 
@@ -67,22 +68,56 @@ type Envelope = {
 };
 
 function asString(v: unknown): string | undefined {
-  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return undefined;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+function valKinds(v: Record<string, unknown> | undefined): Record<string, string> {
+  if (!v) return {};
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v).slice(0, 16)) {
+    out[k] = val === null ? "null" : Array.isArray(val) ? "array" : typeof val;
+  }
+  return out;
+}
+
+function bagIdentity(bag: Record<string, unknown> | undefined): string | undefined {
+  if (!bag) return undefined;
+  return asString(bag.external_user_id) ?? asString(bag.externalUserId);
+}
+
+function bagUserId(bag: Record<string, unknown> | undefined): string | undefined {
+  if (!bag) return undefined;
+  const user = asRecord(bag.user);
+  return asString(bag.user_id) ?? asString(bag.userId) ?? asString(user?.id);
 }
 
 /** Persist last4/brand from connected_card.updated. PCI number never lands here. */
 export async function applyConnectedCardUpdated(data: Record<string, unknown> | undefined): Promise<void> {
   if (!data) return;
-  const card = (data.card && typeof data.card === "object" ? data.card : data) as Record<string, unknown>;
-  const identity =
-    asString(data.external_user_id) ?? asString(data.externalUserId) ?? asString(data.user_id) ?? asString(data.userId);
+  const card = asRecord(data.card) ?? asRecord(data.object) ?? data;
+  const user = asRecord(data.user) ?? asRecord(card.user);
+  const rawUserId = bagUserId(data) ?? bagUserId(card) ?? bagUserId(user);
+  const rawExternal = bagIdentity(data) ?? bagIdentity(card) ?? bagIdentity(user);
+  const mapped = rawUserId ? identityForAgentCardUser(rawUserId) : null;
+  const identity = rawExternal ?? mapped ?? rawUserId;
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"card-attach",hypothesisId:"F",location:"packages/webhooks/agentcard.ts:applyConnectedCardUpdated",message:"card webhook shape",data:{dataKinds:valKinds(data),cardKinds:valKinds(asRecord(data.card)??asRecord(data.object)),userKinds:valKinds(user),hasExternal:Boolean(rawExternal),hasUserId:Boolean(rawUserId),mapped:Boolean(mapped),resolved:Boolean(identity)},timestamp:Date.now()})}).catch(()=>{});
+  console.warn("[agentcard-debug]", JSON.stringify({ hypothesisId: "F", dataKinds: valKinds(data), cardKinds: valKinds(asRecord(data.card) ?? asRecord(data.object)), userKinds: valKinds(user), hasExternal: Boolean(rawExternal), hasUserId: Boolean(rawUserId), mapped: Boolean(mapped), resolved: Boolean(identity) }));
+  // #endregion
   if (!identity) {
     console.warn("[webhooks/agentcard] connected_card.updated missing identity");
     return;
   }
+  if (rawExternal && rawUserId) rememberAgentCardUser(rawExternal, rawUserId);
   await setConnectedCard({
     identity,
-    agentcardUserId: asString(data.user_id) ?? asString(data.userId),
+    agentcardUserId: rawUserId ?? mapped ?? undefined,
     last4: asString(card.last4) ?? asString(data.last4),
     brand: asString(card.brand) ?? asString(data.brand) ?? asString(card.network),
     isDefault: true,
@@ -92,12 +127,11 @@ export async function applyConnectedCardUpdated(data: Record<string, unknown> | 
 
 function eventIdentity(data: Record<string, unknown> | undefined): string | undefined {
   if (!data) return undefined;
-  return (
-    asString(data.external_user_id) ??
-    asString(data.externalUserId) ??
-    asString(data.user_id) ??
-    asString(data.userId)
-  );
+  const card = asRecord(data.card) ?? asRecord(data.object);
+  const user = asRecord(data.user);
+  const rawUserId = bagUserId(data) ?? bagUserId(card) ?? bagUserId(user);
+  const rawExternal = bagIdentity(data) ?? bagIdentity(card) ?? bagIdentity(user);
+  return rawExternal ?? (rawUserId ? identityForAgentCardUser(rawUserId) ?? rawUserId : undefined);
 }
 
 export type AgentCardWebhookResult = {
@@ -133,6 +167,11 @@ export async function handleAgentCardWebhook(
 
   if (event.type === "connected_card.updated") {
     await applyConnectedCardUpdated(event.data);
+  }
+  if (event.type === "connection.created" && event.data) {
+    const ext = bagIdentity(event.data);
+    const uid = bagUserId(event.data);
+    if (ext && uid) rememberAgentCardUser(ext, uid);
   }
 
   const identity = eventIdentity(event.data);
