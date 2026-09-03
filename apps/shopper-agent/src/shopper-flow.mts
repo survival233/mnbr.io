@@ -1790,6 +1790,12 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
   const total = s.paySheetAmountCents ?? (s.selected ? persistRecapTotal(s).totalCents : 0);
   const fresh =
     asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
+  const card = await getConnectedCard(sessionKey(s.phone));
+  const reset = asksForFreshWallet(text) || Boolean(s.walletHandoffFailed);
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"C",location:"apps/shopper-agent/src/shopper-flow.mts:continuePayHandoff",message:"pay handoff",data:{fresh,reset,hasCard:Boolean(card),paySheetSent:Boolean(s.paySheetSent),walletLinkSent:Boolean(s.walletLinkSent),walletHandoffFailed:Boolean(s.walletHandoffFailed),askFresh:asksForFreshWallet(text),hasSelected:Boolean(s.selected),total},timestamp:Date.now()})}).catch(()=>{});
+  console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "C", fresh, reset, hasCard: Boolean(card), paySheetSent: Boolean(s.paySheetSent), walletLinkSent: Boolean(s.walletLinkSent), walletHandoffFailed: Boolean(s.walletHandoffFailed), askFresh: asksForFreshWallet(text), total }));
+  // #endregion
   if (s.paySheetSent && !asksForFreshWallet(text)) {
     await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
     return;
@@ -1801,10 +1807,14 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
   if (fresh) {
     try {
       await sendFreshWalletLink(s, total, {
-        reset: asksForFreshWallet(text) || Boolean(s.walletHandoffFailed),
+        reset,
       });
     } catch (e: any) {
       console.warn(`[shopper-agent] wallet link: ${e?.message ?? e}`);
+      // #region agent log
+      fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"A",location:"apps/shopper-agent/src/shopper-flow.mts:continuePayHandoff",message:"wallet throw",data:{err:String(e?.message??e).slice(0,180),login:isAgentCardLoginError(e)},timestamp:Date.now()})}).catch(()=>{});
+      console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "A", err: String(e?.message ?? e).slice(0, 180), login: isAgentCardLoginError(e) }));
+      // #endregion
       s.walletHandoffFailed = true;
       s.walletRetryAt = Date.now() + 60_000;
       s.step = "await_pay_confirm";
@@ -1834,6 +1844,10 @@ async function startFundingAfterAccept(s: Session, recapTotalCents: number): Pro
     paySheetSent: Boolean(s.paySheetSent),
     demo: demoLocalChain(),
   });
+  // #region agent log
+  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"D",location:"apps/shopper-agent/src/shopper-flow.mts:startFundingAfterAccept",message:"funding step",data:{step,hasCard:Boolean(card),paySheetSent:Boolean(s.paySheetSent)},timestamp:Date.now()})}).catch(()=>{});
+  console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "D", step, hasCard: Boolean(card), paySheetSent: Boolean(s.paySheetSent) }));
+  // #endregion
   if (step === "anvil") {
     await fundAfterAccept(s);
     return true;
@@ -1911,6 +1925,10 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
     return true;
   } catch (e: any) {
     console.warn(`[shopper-agent] pay-sheet: ${e?.message ?? e}`);
+    // #region agent log
+    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"D",location:"apps/shopper-agent/src/shopper-flow.mts:openPaySheetAfterAccept",message:"paysheet throw",data:{err:String(e?.message??e).slice(0,180),login:isAgentCardLoginError(e)},timestamp:Date.now()})}).catch(()=>{});
+    console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "D", err: String(e?.message ?? e).slice(0, 180), login: isAgentCardLoginError(e) }));
+    // #endregion
     if (isAgentCardLoginError(e)) {
       dropConnection(sessionKey(s.phone));
     }
