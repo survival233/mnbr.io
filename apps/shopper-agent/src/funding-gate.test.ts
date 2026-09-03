@@ -6,6 +6,9 @@ import {
   SKU_FOUND,
   assignsTravelerBeforeAccept,
   inventsThirtyEarnings,
+  PAYMENT_WAIT,
+  TRAVELER_OVER_CAP,
+  asksForFreshWallet,
   recapBody,
   recapTotalCents,
   shopperAccepted,
@@ -90,5 +93,25 @@ describe("funding on recap confirm, not at needs_pick", () => {
     expect(new URL(url).searchParams.get("amount")).toBe(String(total));
     expect(shopperAccepted("Accra")).toBe("Someone heading to Accra took it.");
     expect(shopperAccepted("Accra")).not.toMatch(/total to fund|pay sheet/i);
+  });
+
+  it("recap yes is a wallet/pay-sheet handoff, not a charge, and login-fail does not ask yes again", () => {
+    expect(nextShopperFundingStep({ configured: true, hasCard: false, paySheetSent: false })).toBe(
+      "wallet",
+    );
+    expect(nextShopperFundingStep({ configured: true, hasCard: true, paySheetSent: false })).toBe(
+      "paysheet",
+    );
+    expect(nextShopperFundingStep({ configured: true, hasCard: true, paySheetSent: true })).toBe(
+      "wait_payment",
+    );
+    expect(PAYMENT_WAIT).not.toMatch(/say yes/i);
+    expect(asksForFreshWallet("Wallet link expired so send new link")).toBe(true);
+    expect(TRAVELER_OVER_CAP).toMatch(/top-up/i);
+    const item = 39999;
+    const tax = taxCentsFor({ priceCents: item, storeName: "Target" });
+    const earn = 5000;
+    const recap = recapTotalCents(item, tax, earn);
+    expect(recap - earn).toBe(item + tax);
   });
 });

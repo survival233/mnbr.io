@@ -3,6 +3,9 @@ import { formatUsd } from "@manebra/shared";
 import {
   EARNINGS_ASK,
   PAYMENT_UNCONFIGURED,
+  PAYMENT_WAIT,
+  PAYMENT_RETRY,
+  asksForFreshWallet,
   RECAP_PAY_ASK,
   SKU_FOUND,
   SKU_TOO_FEW,
@@ -10,6 +13,7 @@ import {
   inventsThirtyEarnings,
   listingCaption,
   listingImageParts,
+  listingRecords,
   recapBody,
   recapHash,
   recapTotalCents,
@@ -47,6 +51,11 @@ describe("recap confirm copy", () => {
     expect(RECAP_PAY_ASK).not.toMatch(/traveler/i);
     expect(SKU_FOUND).not.toMatch(/pay sheet/i);
     expect(PAYMENT_UNCONFIGURED).toMatch(/isn’t configured/i);
+    expect(PAYMENT_WAIT).not.toMatch(/say yes/i);
+    expect(PAYMENT_RETRY).toBe(PAYMENT_WAIT);
+    expect(asksForFreshWallet("Wallet link expired so send new link")).toBe(true);
+    expect(asksForFreshWallet("Send me a new agent card wallet link")).toBe(true);
+    expect(asksForFreshWallet("yes")).toBe(false);
     expect(requestStatusLine("matching")).toBe("Matching.");
     expect(requestStatusLine("funded")).toBe("Funded.");
   });
@@ -155,6 +164,16 @@ describe("listing image parts", () => {
         imageUrl: "",
       }),
     ).toEqual([]);
+  });
+
+  it("exposes numbered host-agnostic listing records", () => {
+    const records = listingRecords([
+      { productTitle: "iPad", storeName: "Target", priceCents: 39999, imageUrl: "https://img.example/1.jpg" },
+      { productTitle: "iPad", storeName: "Best Buy", priceCents: 41499, imageUrl: "" },
+    ]);
+    expect(records.map((r) => r.n)).toEqual([1, 2]);
+    expect(records[0]?.imageUrl).toMatch(/^https:/);
+    expect(records[1]?.imageUrl).toBeNull();
   });
 });
 

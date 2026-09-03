@@ -18,6 +18,7 @@ export { fuzzyMatchIndex } from "./fuzzy";
 export { parseUsShoppingCity, parseShoppingCity, parseShopCountry, parseShopPlace, parseDeliveryTown, parseTripDestination, parseTripOrigin, isDestinationShaped, guestCityName, isCityAdviceQuestion, US_SHOP_HUBS } from "./cities";
 export type { UsShopHub } from "./cities";
 export { HOSPITALITY_PERSONA } from "./persona";
+export { fenceCatalogText, stripHandoffUrls } from "./fence";
 export {
   ensureStay,
   rememberQuestion,
@@ -53,17 +54,22 @@ export {
   recapBody,
   RECAP_PAY_ASK,
   PAYMENT_UNCONFIGURED,
+  PAYMENT_WAIT,
   PAYMENT_RETRY,
+  WALLET_ADD_CARD,
+  asksForFreshWallet,
+  listingRecords,
   requestStatusLine,
   shopperWait,
   shopperNobody,
   shopperAccepted,
   TRAVELER_SKU_GONE,
+  TRAVELER_OVER_CAP,
   travelerAsk,
   assignsTravelerBeforeAccept,
   inventsThirtyEarnings,
 } from "./guest-copy";
-export type { RequestPhase } from "./guest-copy";
+export type { RequestPhase, ListingRecord } from "./guest-copy";
 export type { ChatPart, ChatMediaPart, ChatTextPart } from "./guest-copy";
 export { SHOPPER_SLOT_SCHEMA, TRAVELER_SLOT_SCHEMA } from "./schema";
 export type { SlotDef, SlotKind } from "./schema";

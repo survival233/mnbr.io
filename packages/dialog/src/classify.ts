@@ -7,6 +7,7 @@ import { parseDate, parseUsdCents, categoryOf } from "./parse";
 import { parseItem, parseCartQty, extractProductUrl, parseMerchantNames, type MerchantSlug } from "./item";
 import { fuzzyMatchIndex } from "./fuzzy";
 import { parseShoppingCity, parseDeliveryTown, parseTripDestination, parseTripOrigin } from "./cities";
+import { asksForFreshWallet } from "./guest-copy";
 import type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
 
 export type { ClassifiedTurn, DialogPendingSlot, DialogSession, TurnAct } from "./types";
@@ -303,6 +304,8 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
   // Listing pick is a card (1 / title / price), never a yes-to-search or yes-to-first-SKU.
   if (pending.slot === "listing") {
     return parseListingReply(s, t);
+  } else if (pending.slot === "pay" && asksForFreshWallet(t)) {
+    return { ok: true, applyProposed: true };
   } else if (/^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that works|sounds good|that one|the first|first one)\b/i.test(t)) {
     return { ok: true, applyProposed: true };
   }
@@ -389,6 +392,7 @@ function detectRepair(s: DialogSession, text: string): ClassifiedTurn | null {
 function unmistakableNewItem(s: DialogSession, text: string, hasPhoto: boolean): boolean {
   if (hasPhoto) return true;
   if (isRecapLeftover(s, text)) return false;
+  if (s.step === "await_pay_confirm" && asksForFreshWallet(text)) return false;
   const item = parseItem(text);
   if (!item) return false;
   const open = isFormOpen(s);

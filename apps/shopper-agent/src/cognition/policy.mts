@@ -94,6 +94,11 @@ export async function runPolicyTurn(args: {
   const images = args.imageUrls.filter(Boolean);
   const hasMedia = images.length > 0;
 
+  // Picker + pay handoff are host-side. Model never talks to catalog or payment.
+  if ((step === "await_listing" && s.listings?.length) || step === "await_pay_confirm") {
+    return { bubbles: [], fallthrough: true };
+  }
+
   // Affirm pending product without needing LLM
   if (cog.pending?.kind === "confirm_product" && /^(y|yes|ok|okay|sure|yeah|yep|yup)\b/i.test(text) && !hasMedia) {
     const product = parseItem(cog.pending.hypothesis);

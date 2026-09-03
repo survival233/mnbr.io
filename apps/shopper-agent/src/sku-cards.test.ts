@@ -5,6 +5,7 @@ import {
   SKU_TOO_FEW,
   listingCaption,
   listingImageParts,
+  listingRecords,
 } from "@manebra/dialog";
 import { formatShopPickList, listingsForPicker, listingsWithPhotos, type ProductListing } from "@manebra/catalog";
 
@@ -123,6 +124,33 @@ describe("named item → photo SKU cards, no yes-gate", () => {
     };
     expect(classifyTurn(s, { text: "1" }).optionIndex).toBe(0);
     expect(classifyTurn(s, { text: "yes" }).act).toBe("REASK");
+  });
+
+  it("named item shortlist is 3–4 (cap 5); number is the id", () => {
+    const picks = listingsForPicker(rows, 5);
+    expect(picks.length).toBeGreaterThanOrEqual(3);
+    expect(picks.length).toBeLessThanOrEqual(5);
+    const records = listingRecords(picks);
+    expect(records.map((r) => r.n)).toEqual(picks.map((_, i) => i + 1));
+    const s: DialogSession = {
+      step: "await_listing",
+      searchQuery: "USB-C charger",
+      pending: {
+        slot: "listing",
+        proposed: null,
+        kind: "choice",
+        prompt: SKU_FOUND,
+      },
+      listings: picks.map((l) => ({
+        productTitle: l.productTitle,
+        storeName: l.storeName,
+        storeSlug: l.storeSlug,
+        priceCents: l.priceCents,
+      })),
+    };
+    expect(classifyTurn(s, { text: "2" }).optionIndex).toBe(1);
+    expect(classifyTurn(s, { text: "the Target one" }).act).toBe("CONTINUE");
+    expect(classifyTurn(s, { text: "from Target" }).act).toBe("CONTINUE");
   });
 });
 

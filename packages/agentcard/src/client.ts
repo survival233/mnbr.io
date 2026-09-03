@@ -90,37 +90,42 @@ export function isAgentCardLoginError(e: unknown): boolean {
 async function mintOrgToken(
   pair: CredPair,
 ): Promise<{ token: string; exp: number } | { status: number }> {
-  const res = await fetch(`${API_BASE()}/api/v2/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: pair.id,
-      client_secret: pair.secret,
-    }),
+  const tokenUrl = `${API_BASE()}/api/v2/oauth/token`;
+  const form = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: pair.id,
+    client_secret: pair.secret,
   });
-  const body = (await res.json().catch(() => ({}))) as {
-    access_token?: string;
-    expires_in?: number;
-    error?: string;
-  };
-  // #region agent log
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-    body: JSON.stringify({
-      sessionId: "ee46bb",
-      runId: "post-fix",
-      hypothesisId: "P",
-      location: "packages/agentcard/src/client.ts:mintOrgToken",
-      message: "platform oauth mint",
-      data: { source: pair.source, status: res.status, ok: Boolean(body.access_token), err: body.error ?? null },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  if (!res.ok || !body.access_token) return { status: res.status };
-  return { token: body.access_token, exp: Date.now() + (body.expires_in ?? 3600) * 1000 };
+  const basic = Buffer.from(`${pair.id}:${pair.secret}`).toString("base64");
+  const attempts: RequestInit[] = [
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+    },
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${basic}`,
+      },
+      body: new URLSearchParams({ grant_type: "client_credentials" }),
+    },
+  ];
+  let lastStatus = 401;
+  for (const init of attempts) {
+    const res = await fetch(tokenUrl, init);
+    const body = (await res.json().catch(() => ({}))) as {
+      access_token?: string;
+      expires_in?: number;
+      error?: string;
+    };
+    if (res.ok && body.access_token) {
+      return { token: body.access_token, exp: Date.now() + (body.expires_in ?? 3600) * 1000 };
+    }
+    lastStatus = res.status;
+  }
+  return { status: lastStatus };
 }
 
 async function orgAccessToken(): Promise<string> {
@@ -203,10 +208,21 @@ export async function buyWithUserCard(identity: string, ask: string): Promise<Bu
   });
 }
 
+function rememberUserId(identity: string, userId: string): void {
+  if (!userId) return;
+  const existing = getConnection(identity);
+  putConnection({
+    identity,
+    userId,
+    accessToken: existing?.accessToken ?? "",
+    refreshToken: existing?.refreshToken ?? "",
+  });
+}
+
 /** Connect (sandbox verify 111111) + consent. Idempotent per identity. */
 export async function connectIdentity(identity: string): Promise<AgentCardConnection> {
   const existing = getConnection(identity);
-  if (existing?.userId) return existing;
+  if (existing?.userId && existing.accessToken) return existing;
 
   const startBody = looksLikePhone(identity)
     ? { phone: identity.startsWith("+") ? identity : `+${identity}`, external_user_id: identity }
@@ -250,16 +266,31 @@ async function postWalletLinks(body: Record<string, string>): Promise<WalletLink
   return { id: link.id, url, user_id: link.user_id };
 }
 
-/** Fresh wallet_links every call. Platform token only — never a user connection token. */
+/** Fresh wallet_links. Platform token + user_id. Keep the user so the card sticks. */
 export async function createWalletLink(identity: string): Promise<WalletLink> {
-  dropConnection(identity);
-  try {
-    return await postWalletLinks({ external_user_id: identity });
-  } catch (e) {
-    if (isAgentCardLoginError(e)) throw e;
-    const conn = await connectIdentity(identity);
-    return await postWalletLinks({ user_id: conn.userId });
+  const mintForUser = async (userId: string): Promise<WalletLink> => {
+    const link = await postWalletLinks({ user_id: userId });
+    rememberUserId(identity, link.user_id || userId);
+    return link;
+  };
+
+  const existing = getConnection(identity);
+  if (existing?.userId) {
+    try {
+      return await mintForUser(existing.userId);
+    } catch (e) {
+      if (isAgentCardLoginError(e)) throw e;
+      dropConnection(identity);
+    }
   }
+
+  const conn = await connectIdentity(identity);
+  return await mintForUser(conn.userId);
+}
+
+/** Drop the stored AgentCard user so the next wallet_links is a clean attach. */
+export function resetPaymentIdentity(identity: string): void {
+  dropConnection(identity);
 }
 
 /** Hosted pay-sheet: platform token mints the wallet_link; user token never goes on this call. */

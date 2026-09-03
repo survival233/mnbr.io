@@ -152,8 +152,49 @@ export function recapBody(args: {
 export const RECAP_PAY_ASK = "That’s the total. Say yes and I’ll send the pay sheet.";
 
 export const PAYMENT_UNCONFIGURED = "Payment isn’t configured on this host yet.";
-export const PAYMENT_RETRY =
-  "Payment login failed just now. Say yes again in a minute and I’ll resend the wallet link.";
+/** Login failed after recap yes. Host retries wallet_links; do not ask them to say yes again. */
+export const PAYMENT_WAIT =
+  "Payment login failed. I’ll send a fresh wallet link when it’s back.";
+/** @deprecated Use PAYMENT_WAIT — recap yes must not loop mint. */
+export const PAYMENT_RETRY = PAYMENT_WAIT;
+
+export const WALLET_ADD_CARD = "Add a test card (4242…) so you can fund. That’s once — I’ll reuse it after.";
+
+/** Fresh wallet_links: expired link, resend, or first attach. */
+export function asksForFreshWallet(text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  return (
+    /\b(wallet|pay[\s-]?sheet|agent\s*card)\b/i.test(t) &&
+    /\b(new|fresh|another|resend|send|expir|again|link)\b/i.test(t)
+  );
+}
+
+/** Host-agnostic picker row. Relay: image-if-url else numbered 1..n. A future app can render cards. */
+export type ListingRecord = {
+  n: number;
+  title: string;
+  merchant: string;
+  priceCents: number;
+  imageUrl?: string | null;
+};
+
+export function listingRecords(
+  listings: Array<{
+    productTitle: string;
+    storeName: string;
+    priceCents: number;
+    imageUrl?: string | null;
+  }>,
+): ListingRecord[] {
+  return listings.map((l, i) => ({
+    n: i + 1,
+    title: l.productTitle,
+    merchant: l.storeName,
+    priceCents: l.priceCents,
+    imageUrl: l.imageUrl?.trim() || null,
+  }));
+}
 
 export type RequestPhase = "funded" | "matching" | "accepted" | "shopping";
 
@@ -175,6 +216,9 @@ export function shopperAccepted(handoverCity: string): string {
 
 export const TRAVELER_SKU_GONE =
   "That item’s gone. Similar listing, cancel, or text the shopper?";
+
+export const TRAVELER_OVER_CAP =
+  "Live price is over what they funded. Need a top-up before I buy — or I skip it.";
 
 export function travelerAsk(args: {
   city: string;

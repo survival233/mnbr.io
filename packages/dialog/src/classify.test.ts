@@ -256,6 +256,31 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     expect(t.optionIndex).toBeUndefined();
   });
 
+  it("picker provenance: a number not on this session’s list is REASK", () => {
+    const s = sess({
+      step: "await_listing",
+      searchQuery: "ipad a16",
+      listings: [
+        { storeName: "Target", storeSlug: "target", productTitle: "Apple iPad", priceCents: 39999 },
+        { storeName: "Best Buy", storeSlug: "bestbuy", productTitle: "Apple iPad A16", priceCents: 49499 },
+      ],
+      pending: {
+        slot: "listing",
+        proposed: null,
+        kind: "choice",
+        prompt: "Pick 1–4, or name the store.",
+        options: [
+          { id: "1", label: "1. Apple iPad · Target · $399.99" },
+          { id: "2", label: "2. Apple iPad A16 · Best Buy · $494.99" },
+        ],
+      },
+    });
+    expect(act(s, "2").act).toBe("CONTINUE");
+    expect(act(s, "2").optionIndex).toBe(1);
+    expect(act(s, "99").act).toBe("REASK");
+    expect(act(s, "99").optionIndex).toBeUndefined();
+  });
+
   it("yes on recap wait is CONTINUE pay, not a new search", () => {
     const s = sess({
       step: "await_pay_confirm",
@@ -271,6 +296,23 @@ describe("classifyTurn — open question after a gap is never a search", () => {
     const t = act(s, "yes");
     expect(t.act).toBe("CONTINUE");
     expect(t.slot).toBe("pay");
+  });
+
+  it("expired / resend wallet on recap wait is CONTINUE pay, not a new shop", () => {
+    const s = sess({
+      step: "await_pay_confirm",
+      searchQuery: "USB-C charger",
+      selected: { productTitle: "USB-C Charger 25W" },
+      pending: {
+        slot: "pay",
+        proposed: "abc123",
+        kind: "bool",
+        prompt: "That’s the total. Say yes and I’ll send the pay sheet.",
+      },
+    });
+    expect(act(s, "Wallet link expired so send new link").act).toBe("CONTINUE");
+    expect(act(s, "Send me a new agent card wallet link").slot).toBe("pay");
+    expect(act(s, "Yes resend wallet link").act).toBe("CONTINUE");
   });
 
   it("2 of those continues the cart, not a new search", () => {

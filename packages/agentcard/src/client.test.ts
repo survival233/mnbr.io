@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentcardConfigured, createPaySheetLink, mintPlatformToken } from "./client";
+import { agentcardConfigured, createPaySheetLink, createWalletLink, getConnection, mintPlatformToken } from "./client";
 
 const saved = {
   id: process.env.AGENTCARD_CLIENT_ID,
@@ -71,6 +71,33 @@ describe("AgentCard platform token", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("retries oauth with HTTP Basic when the body mint returns 401", async () => {
+    const clientId = "ac_basic_id";
+    process.env.AGENTCARD_CLIENT_ID = clientId;
+    process.env.AGENTCARD_CLIENT_SECRET = "ac_basic_secret";
+    process.env.AGENTCARD_API_BASE = "https://api.agentcard.sh";
+    delete process.env.AGENTCARD_OAUTH_CLIENT_ID;
+    delete process.env.AGENTCARD_OAUTH_CLIENT_SECRET;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("127.0.0.1")) return new Response("{}", { status: 204 });
+      expect(url).toBe("https://api.agentcard.sh/api/v2/oauth/token");
+      const headers = init?.headers as Record<string, string>;
+      if (headers.Authorization?.startsWith("Basic ")) {
+        return new Response(JSON.stringify({ access_token: "at_basic", expires_in: 3600 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await mintPlatformToken()).toBe(true);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("mints pay-sheet wallet_links with the platform token, not the user connection token", async () => {
     process.env.AGENTCARD_CLIENT_ID = "ac_pay_id";
     process.env.AGENTCARD_CLIENT_SECRET = "ac_pay_secret";
@@ -113,5 +140,61 @@ describe("AgentCard platform token", () => {
     const link = await createPaySheetLink("usr_test", "Manebra", 12345);
     expect(new URL(link.url).searchParams.get("amount")).toBe("12345");
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("mints wallet_links with user_id and keeps that user for the next attach", async () => {
+    process.env.AGENTCARD_CLIENT_ID = "ac_wallet_id";
+    process.env.AGENTCARD_CLIENT_SECRET = "ac_wallet_secret";
+    process.env.AGENTCARD_API_BASE = "https://api.agentcard.sh";
+    process.env.AGENTCARD_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ac-wl-")), "store.json");
+    writeFileSync(process.env.AGENTCARD_STORE_PATH, JSON.stringify({ connections: [] }));
+
+    const walletBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("127.0.0.1")) return new Response("{}", { status: 204 });
+      if (url.endsWith("/api/v2/oauth/token")) {
+        return new Response(JSON.stringify({ access_token: "platform_token", expires_in: 3600 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/v2/connect/start")) {
+        return new Response(JSON.stringify({ id: "ca_1" }), { status: 200 });
+      }
+      if (url.endsWith("/api/v2/connect/verify")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "user_tok",
+            refresh_token: "user_ref",
+            user: { id: "user_kept" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith("/api/v2/connect/consent")) {
+        return new Response("{}", { status: 200 });
+      }
+      if (url.endsWith("/api/v2/wallet_links")) {
+        walletBodies.push(JSON.parse(String(init?.body ?? "{}")));
+        return new Response(
+          JSON.stringify({ id: "wl_1", url: "https://app.agentcard.sh/w/wl_1.tok", user_id: "user_kept" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await createWalletLink("usr_once");
+    expect(first.url).toContain("wl_1");
+    expect(walletBodies[0]).toEqual({ user_id: "user_kept" });
+    expect(getConnection("usr_once")?.userId).toBe("user_kept");
+
+    const second = await createWalletLink("usr_once");
+    expect(second.url).toContain("wl_1");
+    expect(walletBodies[1]).toEqual({ user_id: "user_kept" });
+    const connects = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/connect/start"));
+    expect(connects.length).toBe(1);
   });
 });

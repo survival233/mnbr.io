@@ -35,6 +35,7 @@ import {
   travelerAsk,
   guestCityName,
   TRAVELER_SKU_GONE,
+  TRAVELER_OVER_CAP,
   type DialogSession,
 } from "@manebra/dialog";
 import { offerBelongsToTraveler } from "./offer-fit.mts";
@@ -168,10 +169,37 @@ function requestInvite(s: Session, offer: {
   });
 }
 
+/** Recap quote is item+tax+earnings. Live register may only spend item+tax. */
+function fundedItemAndTaxCap(offer: {
+  totalCents?: number;
+  travelerFeeCents?: number;
+  itemCostCents?: number;
+}): number {
+  if (offer.totalCents != null && offer.travelerFeeCents != null) {
+    return Math.max(0, offer.totalCents - offer.travelerFeeCents);
+  }
+  return offer.itemCostCents ?? 0;
+}
+
+function parseLiveCartCents(reply: string): number | null {
+  let best: number | null = null;
+  for (const m of reply.matchAll(/\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2})/g)) {
+    const n = Math.round(Number(m[1]!.replace(/,/g, "")) * 100);
+    if (Number.isFinite(n) && n > 0 && (best == null || n > best)) best = n;
+  }
+  return best;
+}
+
 /** Traveler store checkout AFTER shopper funded. Never the shopper catalog, never at recap. */
 async function startTravelerBuy(
   s: Session,
-  carry: { item: string; nextTravelerName?: string | null },
+  carry: {
+    item: string;
+    nextTravelerName?: string | null;
+    totalCents?: number;
+    travelerFeeCents?: number;
+    itemCostCents?: number;
+  },
   similar = false,
 ): Promise<void> {
   if (s.travelerBuyStarted && !similar) return;
@@ -182,6 +210,7 @@ async function startTravelerBuy(
   const ask = similar
     ? `Buy a similar listing to ${carry.item} at ${merchant}`
     : `Buy ${carry.item} at ${merchant}`;
+  const cap = fundedItemAndTaxCap(carry);
   try {
     const turn = await buyWithUserCard(s.phone, ask);
     const replyText = turn.reply?.trim() ?? "";
@@ -190,6 +219,13 @@ async function startTravelerBuy(
       s.skuGoneAsk = true;
       markSessionDirty();
       await say(s, TRAVELER_SKU_GONE);
+      return;
+    }
+    const live = parseLiveCartCents(replyText);
+    if (cap > 0 && live != null && live > cap) {
+      s.travelerBuyStarted = false;
+      markSessionDirty();
+      await say(s, TRAVELER_OVER_CAP);
       return;
     }
     if (replyText) await say(s, replyText);

@@ -48,11 +48,14 @@ import {
   listingCaption,
   listingHasPhoto,
   listingImageParts,
+  listingRecords,
   guessImageContentType,
   recapBody,
   RECAP_PAY_ASK,
   PAYMENT_UNCONFIGURED,
-  PAYMENT_RETRY,
+  PAYMENT_WAIT,
+  WALLET_ADD_CARD,
+  asksForFreshWallet,
   requestStatusLine,
   shopperWait,
   shopperNobody,
@@ -60,6 +63,7 @@ import {
   parseShopPlace,
   extractProductUrl,
   parseMerchantName,
+  stripHandoffUrls,
 
   type ClassifiedTurn,
 } from "@manebra/dialog";
@@ -86,7 +90,7 @@ import {
   requestPastDeadline,
   shopperStillWaiting,
 } from "./match-policy.mts";
-import { agentcardConfigured, createWalletLink, dropConnection, isAgentCardLoginError, PaySheet, nextShopperFundingStep } from "@repo/agentcard";
+import { agentcardConfigured, createWalletLink, dropConnection, resetPaymentIdentity, isAgentCardLoginError, PaySheet, nextShopperFundingStep } from "@repo/agentcard";
 import { handleCardTurn, wantsCardTools } from "./agentcard-cards.mts";
 import { runPolicyTurn } from "./cognition/policy.mts";
 import { appendEpisode, ensureCognition } from "./cognition/state.mts";
@@ -1082,10 +1086,11 @@ async function searchAndPromptListings(
     return;
   }
   s.listings = candidates;
+  const records = listingRecords(candidates);
   await reply(s, SKU_FOUND, { thinkMs: 400 });
-  for (let i = 0; i < candidates.length; i++) {
-    const listing = candidates[i]!;
-    const n = i + 1;
+  for (const rec of records) {
+    const listing = candidates[rec.n - 1]!;
+    const n = rec.n;
     if (listingHasPhoto(listing.imageUrl)) {
       await replyListing(s, listing, n);
     } else {
@@ -1259,6 +1264,11 @@ async function applyNewQuery(s: Session, query: string): Promise<void> {
 
 async function selectListing(s: Session, idx: number, text = ""): Promise<void> {
   const list = s.listings ?? [];
+  if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
+    parkListingPick(s);
+    await sayHost(s, "REASK", SKU_FOUND);
+    return;
+  }
   const parent = list[idx]!;
   const picked = resolveListingPick(parent, text);
   // #region agent log
@@ -1395,7 +1405,9 @@ function reaskPrompt(s: Session): string {
                   : s.step === "await_pay_confirm"
                     ? s.paySheetSent || s.walletLinkSent
                       ? `Open the pay link I sent — I’ll lock it once the charge lands.`
-                      : RECAP_PAY_ASK
+                      : s.walletHandoffFailed
+                        ? PAYMENT_WAIT
+                        : RECAP_PAY_ASK
                     : s.pending?.prompt || "Say yes to the suggestion, or send the value.")
   );
 }
@@ -1445,17 +1457,16 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
     await sayHost(s, "META", requestStatusLine(phase), turn.meta);
     return;
   }
-  if (s.step === "await_pay_confirm" && (s.paySheetSent || s.walletLinkSent)) {
-    if (!s.paySheetSent) {
-      await confirmRecapPay(s);
+  if (s.step === "await_pay_confirm") {
+    if (s.paySheetSent) {
+      await sayHost(s, "META", `Open the pay link I sent — I’ll lock it once the charge lands.`, turn.meta);
       return;
     }
-    await sayHost(
-      s,
-      "META",
-      `Open the pay link I sent — I’ll lock it once the charge lands.`,
-      turn.meta,
-    );
+    if (s.walletLinkSent || s.walletHandoffFailed) {
+      await continuePayHandoff(s, "");
+      return;
+    }
+    await sayHost(s, "META", RECAP_PAY_ASK, turn.meta);
     return;
   }
   if (s.step === "await_traveler_decision") {
@@ -1540,16 +1551,8 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
       return true;
     }
   }
-  if (s.step === "await_pay_confirm" && acceptsOffer(text, intent)) {
-    if (s.paySheetSent) {
-      await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
-      return true;
-    }
-    if (s.walletLinkSent) {
-      await reply(s, `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`);
-      return true;
-    }
-    await confirmRecapPay(s);
+  if (s.step === "await_pay_confirm" && (acceptsOffer(text, intent) || asksForFreshWallet(text))) {
+    await continuePayHandoff(s, text);
     return true;
   }
   if (!acceptsOffer(text, intent) || !s.offer) return false;
@@ -1748,39 +1751,70 @@ async function notifyShopperAccepted(s: Session, travelerName: string, totalCent
   void totalCents;
 }
 
-async function sendFreshWalletLink(s: Session, recapTotalCents: number): Promise<boolean> {
+const WALLET_LINK_STALE_MS = 10 * 60_000;
+
+function walletLinkStale(s: Session): boolean {
+  if (!s.walletLinkSent) return false;
+  const at = s.walletLinkSentAt ?? 0;
+  return !at || Date.now() - at > WALLET_LINK_STALE_MS;
+}
+
+async function sendFreshWalletLink(
+  s: Session,
+  recapTotalCents: number,
+  opts?: { reset?: boolean },
+): Promise<boolean> {
   const identity = sessionKey(s.phone);
-  dropConnection(identity);
+  if (opts?.reset) resetPaymentIdentity(identity);
   const link = await createWalletLink(identity);
-  // #region agent log
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-    body: JSON.stringify({
-      sessionId: "ee46bb",
-      runId: "post-fix",
-      hypothesisId: "P",
-      location: "apps/shopper-agent/src/shopper-flow.mts:sendFreshWalletLink",
-      message: "wallet_links sent",
-      data: { hasUrl: Boolean(link.url), recapTotalCents },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   s.step = "await_pay_confirm";
   s.walletLinkSent = true;
+  s.walletLinkSentAt = Date.now();
   s.paySheetSent = false;
+  s.walletHandoffFailed = undefined;
+  s.walletRetryAt = undefined;
   s.paySheetAmountCents = recapTotalCents;
   s.offer = undefined;
   s.pending = {
     slot: "pay",
     proposed: recapTotalCents,
     kind: "bool",
-    prompt: `Add a test card (4242…) so you can fund.`,
+    prompt: WALLET_ADD_CARD,
   };
   markSessionDirty();
-  await say(s, `Add a test card (4242…) so you can fund.`, link.url);
+  await say(s, WALLET_ADD_CARD, link.url);
   return true;
+}
+
+async function continuePayHandoff(s: Session, text: string): Promise<void> {
+  const total = s.paySheetAmountCents ?? (s.selected ? persistRecapTotal(s).totalCents : 0);
+  const fresh =
+    asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
+  if (s.paySheetSent && !asksForFreshWallet(text)) {
+    await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
+    return;
+  }
+  if (!s.selected || !total) {
+    await reply(s, RECAP_PAY_ASK);
+    return;
+  }
+  if (fresh) {
+    try {
+      await sendFreshWalletLink(s, total, {
+        reset: asksForFreshWallet(text) || Boolean(s.walletHandoffFailed),
+      });
+    } catch (e: any) {
+      console.warn(`[shopper-agent] wallet link: ${e?.message ?? e}`);
+      s.walletHandoffFailed = true;
+      s.walletRetryAt = Date.now() + 60_000;
+      s.step = "await_pay_confirm";
+      s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_WAIT };
+      markSessionDirty();
+      await say(s, PAYMENT_WAIT);
+    }
+    return;
+  }
+  await reply(s, `Still the same wallet link — I’ll continue when the card’s on file.`);
 }
 
 /** Wallet first if no card; pay-sheet once a card is on file. Recap confirm, not after accept. */
@@ -1836,7 +1870,13 @@ async function confirmRecapPay(s: Session): Promise<void> {
   const started = await startFundingAfterAccept(s, total);
   if (started) return;
   if (agentcardConfigured()) {
-    await say(s, PAYMENT_RETRY);
+    s.walletHandoffFailed = true;
+    s.walletRetryAt = Date.now() + 60_000;
+    s.step = "await_pay_confirm";
+    s.offer = undefined;
+    s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_WAIT };
+    markSessionDirty();
+    await say(s, PAYMENT_WAIT);
     return;
   }
   await say(s, PAYMENT_UNCONFIGURED);
@@ -1852,6 +1892,8 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
     });
     s.step = "await_pay_confirm";
     s.paySheetSent = true;
+    s.walletHandoffFailed = undefined;
+    s.walletRetryAt = undefined;
     s.paySheetAmountCents = sheet.amountCents;
     s.offer = undefined;
     s.pending = {
@@ -1894,6 +1936,20 @@ async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
       return await sendFreshWalletLink(s, total);
     } catch (e: any) {
       console.warn(`[shopper-agent] wallet after pay-sheet login fail: ${e?.message ?? e}`);
+      s.walletHandoffFailed = true;
+      s.walletRetryAt = Date.now() + 60_000;
+      return false;
+    }
+  }
+  if ((step === "wallet" || !card) && s.walletHandoffFailed && !s.walletLinkSent) {
+    if (s.walletRetryAt && Date.now() < s.walletRetryAt) return false;
+    const total = s.paySheetAmountCents ?? persistRecapTotal(s).totalCents;
+    try {
+      return await sendFreshWalletLink(s, total);
+    } catch (e: any) {
+      console.warn(`[shopper-agent] wallet retry after login fail: ${e?.message ?? e}`);
+      s.walletRetryAt = Date.now() + 60_000;
+      markSessionDirty();
       return false;
     }
   }
@@ -1913,7 +1969,7 @@ export async function completeAgentCardPayment(identity?: string): Promise<void>
 /** When Traveler accepts/declines, ping waiting Shopper (same process as Relay long-poll). */
 export async function syncWaitingShoppers(): Promise<void> {
   for (const s of allSessions()) {
-    if ((s.step === "await_pay_confirm" || s.step === "await_traveler_decision") && s.bidId) {
+    if (s.step === "await_pay_confirm") {
       if (await maybeCompleteAgentCardFund(s)) continue;
     }
     if (s.step !== "await_traveler_decision") continue;
@@ -2359,6 +2415,7 @@ async function handleInboundInner(
     let decision;
     try {
       decision = await runPolicyTurn({ session: s, text: inbound, imageUrls });
+      decision.bubbles = decision.bubbles.map(stripHandoffUrls).filter(Boolean);
     } catch (e: any) {
       console.warn(`[shopper-agent] cognition failed: ${e?.message ?? e}`);
       s.step = "await_product";
@@ -2648,15 +2705,7 @@ async function handleInboundInner(
       await syncWaitingShoppers();
       const afterWait = s.step as string;
       if (afterWait === "await_pay_confirm") {
-        if (s.paySheetSent) {
-          await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
-          return;
-        }
-        if (s.walletLinkSent) {
-          await reply(s, `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`);
-          return;
-        }
-        await confirmRecapPay(s);
+        await continuePayHandoff(s, text);
         return;
       }
       if (s.offer?.field === "traveler" && (isYes(text) || intent.kind === "yes" || acceptsOffer(text, intent))) {
@@ -2687,26 +2736,25 @@ async function handleInboundInner(
       return;
     }
     case "await_pay_confirm": {
-      if (s.paySheetSent || s.walletLinkSent) {
-        if (await maybeCompleteAgentCardFund(s)) return;
-        await reply(
-          s,
-          s.paySheetSent
-            ? `Open the pay link I sent — I’ll lock it once the charge lands.`
-            : `Add a test card (4242…) on the wallet link I sent — I’ll continue when it’s on file.`,
-        );
+      if (await maybeCompleteAgentCardFund(s)) return;
+      const qty = parseCartQty(text);
+      if (qty != null && s.selected && !asksForFreshWallet(text) && intent.kind !== "yes") {
+        await applyCartQty(s, qty);
         return;
       }
-      if (!isYes(text) && intent.kind !== "yes" && !acceptsOffer(text, intent)) {
-        const qty = parseCartQty(text);
-        if (qty != null && s.selected) {
-          await applyCartQty(s, qty);
-          return;
-        }
-        await reply(s, RECAP_PAY_ASK);
+      if (
+        asksForFreshWallet(text) ||
+        isYes(text) ||
+        intent.kind === "yes" ||
+        acceptsOffer(text, intent) ||
+        s.walletLinkSent ||
+        s.paySheetSent ||
+        s.walletHandoffFailed
+      ) {
+        await continuePayHandoff(s, text);
         return;
       }
-      await confirmRecapPay(s);
+      await reply(s, RECAP_PAY_ASK);
       return;
     }
     case "await_handover_done": {

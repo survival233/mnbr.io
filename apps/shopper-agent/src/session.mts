@@ -93,9 +93,13 @@ export type Session = {
   totalCents?: number;
   /** Wallet attach link already texted after recap confirm (AgentCard). */
   walletLinkSent?: boolean;
+  walletLinkSentAt?: number;
   /** Pay-sheet already texted after recap confirm (AgentCard). */
   paySheetSent?: boolean;
   paySheetAmountCents?: number;
+  /** Recap yes already tried wallet_links; host retries without asking yes again. */
+  walletHandoffFailed?: boolean;
+  walletRetryAt?: number;
   /** Multimodal cognition: persona, episodic memory, pending product confirm. */
   cognition?: CognitionState;
   updatedAt: number;
@@ -201,8 +205,11 @@ export function resetSession(s: Session) {
   s.fundTxHash = undefined;
   s.totalCents = undefined;
   s.walletLinkSent = undefined;
+  s.walletLinkSentAt = undefined;
   s.paySheetSent = undefined;
   s.paySheetAmountCents = undefined;
+  s.walletHandoffFailed = undefined;
+  s.walletRetryAt = undefined;
   s.stay = { openedAt: Date.now() };
   // Keep long-horizon persona/memory; clear only in-flight confirm.
   if (s.cognition) {

@@ -1,4 +1,5 @@
 import type { StayMemory } from "./types";
+import { fenceCatalogText, stripHandoffUrls } from "./fence";
 
 export type { StayMemory };
 
@@ -56,7 +57,7 @@ function waitLabel(ms: number): string {
 export function staySummary(stay: StayMemory, now = Date.now()): string {
   const wait = waitingMs(stay, now);
   return [
-    stay.lastItem && `item=${stay.lastItem}`,
+    stay.lastItem && `item=${fenceCatalogText(stay.lastItem)}`,
     stay.lastQuoteCents != null && `quote_cents=${stay.lastQuoteCents}`,
     stay.lastTravelerName && `counterparty=${stay.lastTravelerName}`,
     stay.lastOfferId && `offer=${stay.lastOfferId}`,
@@ -71,7 +72,7 @@ export function staySummary(stay: StayMemory, now = Date.now()): string {
 export function recentTurnsText(turns: DialogTurn[] | undefined, n = 8): string {
   const rows = (turns ?? []).slice(-n);
   if (!rows.length) return "";
-  return rows.map((t) => `${t.role}: ${t.text}`).join("\n");
+  return rows.map((t) => `${t.role}: ${stripHandoffUrls(t.text)}`).join("\n");
 }
 
 export function llmStayBlock(stay: StayMemory | undefined, turns?: DialogTurn[]): string {

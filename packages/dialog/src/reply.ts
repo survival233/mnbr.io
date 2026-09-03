@@ -32,7 +32,6 @@ export function composeHostReply(args: {
       ? guestCityName(itemRaw) ?? itemRaw
       : itemRaw
     : undefined;
-  const who = stay.lastTravelerName;
   const follow = args.next?.trim() || undefined;
 
   let lead: string | undefined;
@@ -40,13 +39,13 @@ export function composeHostReply(args: {
     lead = "Alright — we’ll leave that.";
   } else if (args.act === "META") {
     lead = item
-      ? `${item}${who ? ` — waiting on ${who}` : ""}${waitBit(stay, now)}.`
+      ? `${item}${waitBit(stay, now)}.`
       : `This is still open${waitBit(stay, now)}.`;
   } else if (args.act === "REPAIR") {
     lead = item ? `Updated — ${item}.` : "Updated.";
   } else if (args.act === "REASK") {
     lead = stay.waitingSince && item
-      ? `${item}${who ? ` with ${who}` : ""}${waitBit(stay, now)}.`
+      ? `${item}${waitBit(stay, now)}.`
       : undefined;
   } else if (args.act === "CONTINUE") {
     lead = "Got it.";
