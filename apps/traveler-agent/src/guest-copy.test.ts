@@ -32,6 +32,7 @@ describe("traveler hi + opt-in + wallet", () => {
     expect(TRAVELER_HI).toMatch(/city/i);
     expect(TRAVELER_HI).not.toMatch(/calendar/i);
     expect(TRAVELER_HI).not.toMatch(/earn/i);
+    expect(TRAVELER_HI).not.toMatch(/Where are you (headed|travelling|traveling)/i);
   });
 
   it("asks Shop & Deliver opt-in explicitly and only after a funded match is possible", () => {

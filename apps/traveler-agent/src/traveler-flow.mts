@@ -39,7 +39,6 @@ import {
   TRAVELER_SKU_GONE,
   TRAVELER_OVER_CAP,
   TRAVELER_HI,
-  TRAVELER_DEST_ASK,
   TRAVELER_WALLET_ADD,
   type DialogSession,
 } from "@manebra/dialog";
@@ -432,7 +431,18 @@ export async function handleInbound(args: {
     s.trip = blankTrip();
     s.step = "await_travel_intent";
     markSessionDirty();
-  } else if (!isTravelIntent(text)) {
+  }
+
+  // Greeting is the menu — never the dest slot. classifyTurn treats hi as REASK.
+  if (greetingOnly || restart) {
+    s.step = "await_travel_intent";
+    s.pending = null;
+    markSessionDirty();
+    await say(s, TRAVELER_HI);
+    return;
+  }
+
+  if (!isTravelIntent(text)) {
     if (await tryHandleMarketplaceOffer(s, text, { reply, say })) return;
   }
 
@@ -445,7 +455,7 @@ export async function handleInbound(args: {
     s.trip = blankTrip();
     s.step = "await_travel_intent";
     markSessionDirty();
-    await sayHost(s, "META", TRAVELER_DEST_ASK, "cancel");
+    await say(s, TRAVELER_HI);
     return;
   }
   if (turn.act === "META") {
@@ -459,8 +469,8 @@ export async function handleInbound(args: {
     return;
   }
 
-  if ((restart || (greetingOnly && !midTrip) || s.step === "done" || (s.step === "idle" && !midTrip)) && turn.act === "NEW") {
-    if (restart || s.step === "done") {
+  if ((s.step === "done" || (s.step === "idle" && !midTrip)) && turn.act === "NEW") {
+    if (s.step === "done") {
       resetSession(s);
       s.trip = blankTrip();
       s.step = "await_travel_intent";
@@ -470,23 +480,6 @@ export async function handleInbound(args: {
       s.step = "await_travel_intent";
       markSessionDirty();
     }
-
-    if (greetingOnly || restart || !text) {
-      await sayHost(s, turn.act, TRAVELER_HI);
-      if (greetingOnly || restart) {
-        const rest = text
-          .replace(/^(hi|hello|hey|start|restart|menu|start over|reset)\b[,!.\s]*/i, "")
-          .trim();
-        if (!rest) return;
-        await handleTravelInbound(s, rest, { reply, say });
-      }
-      return;
-    }
-  }
-
-  if (greetingOnly && midTrip) {
-    await sayHost(s, turn.act, TRAVELER_HI);
-    return;
   }
 
   await handleTravelInbound(s, text, { reply, say });
