@@ -53,7 +53,6 @@ describe("AgentCard platform token", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("127.0.0.1")) return new Response("{}", { status: 204 });
       expect(url).toBe("https://api.agentcard.sh/api/v2/oauth/token");
       expect(init?.method).toBe("POST");
       const body = new URLSearchParams(String(init?.body ?? ""));
@@ -81,7 +80,6 @@ describe("AgentCard platform token", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("127.0.0.1")) return new Response("{}", { status: 204 });
       expect(url).toBe("https://api.agentcard.sh/api/v2/oauth/token");
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBeUndefined();
@@ -117,7 +115,6 @@ describe("AgentCard platform token", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("127.0.0.1")) return new Response("{}", { status: 204 });
       if (url.endsWith("/api/v2/oauth/token")) {
         return new Response(JSON.stringify({ access_token: "platform_token", expires_in: 3600 }), {
           status: 200,
@@ -150,7 +147,6 @@ describe("AgentCard platform token", () => {
     const walletBodies: unknown[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("127.0.0.1")) return new Response("{}", { status: 204 });
       if (url.endsWith("/api/v2/oauth/token")) {
         return new Response(JSON.stringify({ access_token: "platform_token", expires_in: 3600 }), {
           status: 200,

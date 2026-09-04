@@ -110,21 +110,13 @@ export async function searchGoogleShoppingLive(args: {
 
   const verified: ProductListing[] = [];
   const seenIds = new Set<string>();
-  let skippedNoStore = 0;
-  let skippedNoPrice = 0;
   for (const item of data.shopping_results ?? []) {
     const url = item.link || item.product_link;
     if (!url || !item.title) continue;
     const store = matchVerifiedStore(item.source ?? "", url);
-    if (!store) {
-      skippedNoStore += 1;
-      continue;
-    }
+    if (!store) continue;
     const priceCents = parsePriceToCents(item.extracted_price ?? item.price);
-    if (priceCents == null) {
-      skippedNoPrice += 1;
-      continue;
-    }
+    if (priceCents == null) continue;
     const extParts = [...(item.extensions ?? []), item.delivery ?? ""].filter(Boolean);
     const ext = extParts.join(" ");
     const avail = availabilityFrom(ext);
@@ -150,39 +142,5 @@ export async function searchGoogleShoppingLive(args: {
 
   const returned = verified.filter((l) => l.availability !== "out_of_stock");
   const capped = args.limit != null ? returned.slice(0, args.limit) : returned;
-  // #region agent log
-  const serpPayload = {
-    sessionId: "ee46bb",
-    runId: "pre-fix",
-    hypothesisId: "D",
-    location: "packages/catalog/src/serp-shopping.ts:searchGoogleShoppingLive",
-    message: "serp map after HTTP",
-    data: {
-      query: args.query,
-      shoppingResults: data.shopping_results?.length ?? 0,
-      skippedNoStore,
-      skippedNoPrice,
-      storesKept: [...new Set(capped.map((l) => l.storeSlug))],
-      returnedCount: capped.length,
-      sampleSources: (data.shopping_results ?? []).slice(0, 6).map((item) => ({
-        source: item.source ?? "",
-        host: (() => {
-          try {
-            return new URL(item.link || item.product_link || "http://invalid").hostname;
-          } catch {
-            return "bad";
-          }
-        })(),
-      })),
-    },
-    timestamp: Date.now(),
-  };
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-    body: JSON.stringify(serpPayload),
-  }).catch(() => {});
-  console.warn("[catalog-debug]", JSON.stringify({ shoppingResults: serpPayload.data.shoppingResults, skippedNoStore, skippedNoPrice, returnedCount: capped.length, storesKept: serpPayload.data.storesKept }));
-  // #endregion
   return capped;
 }

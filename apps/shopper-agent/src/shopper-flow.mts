@@ -328,33 +328,6 @@ async function replyListing(
     const sniffed = await sniffImageContentType(listing.imageUrl);
     const guessed = guessImageContentType(listing.imageUrl);
     const contentType = sniffed ?? guessed;
-    // #region agent log
-    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-      body: JSON.stringify({
-        sessionId: "ee46bb",
-        runId: "post-fix",
-        hypothesisId: "F",
-        location: "apps/shopper-agent/src/shopper-flow.mts:replyListing",
-        message: "listing image mime",
-        data: {
-          host: (() => {
-            try {
-              return new URL(listing.imageUrl).hostname;
-            } catch {
-              return "bad";
-            }
-          })(),
-          sniffed,
-          guessed,
-          contentType,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    console.warn("[shopper-debug]", JSON.stringify({ imageHost: listing.storeName, sniffed, guessed, contentType }));
-    // #endregion
     const parts = listingImageParts({
       title: listing.productTitle,
       merchant: listing.storeName,
@@ -1053,30 +1026,6 @@ async function searchAndPromptListings(
     merged.push(l);
   }
   const candidates = listingsForPicker(merged, 4);
-  // #region agent log
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-    body: JSON.stringify({
-      sessionId: "ee46bb",
-      runId: "post-fix",
-      hypothesisId: "E",
-      location: "apps/shopper-agent/src/shopper-flow.mts:searchAndPromptListings",
-      message: "picker gate",
-      data: {
-        query: q,
-        merchantFilter: s.merchantFilter ?? null,
-        catalogLen: catalog.length,
-        extraLen: extra?.length ?? 0,
-        mergedLen: merged.length,
-        candidatesLen: candidates.length,
-        tooFew: candidates.length < 2,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  console.warn("[shopper-debug]", JSON.stringify({ query: q, catalogLen: catalog.length, candidatesLen: candidates.length, tooFew: candidates.length < 2, merchantFilter: s.merchantFilter ?? null }));
-  // #endregion
   if (candidates.length < 2) {
     s.listings = undefined;
     s.step = "await_product";
@@ -1272,28 +1221,6 @@ async function selectListing(s: Session, idx: number, text = ""): Promise<void> 
   }
   const parent = list[idx]!;
   const picked = resolveListingPick(parent, text);
-  // #region agent log
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-    body: JSON.stringify({
-      sessionId: "ee46bb",
-      runId: "post-fix",
-      hypothesisId: "G",
-      location: "apps/shopper-agent/src/shopper-flow.mts:selectListing",
-      message: "listing pick resolved",
-      data: {
-        idx,
-        text: text.slice(0, 80),
-        store: picked.storeName,
-        title: picked.productTitle.slice(0, 72),
-        priceCents: picked.priceCents,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  console.warn("[shopper-debug]", JSON.stringify({ pickIdx: idx, store: picked.storeName, priceCents: picked.priceCents, text: text.slice(0, 80) }));
-  // #endregion
   s.selected = { ...picked };
   s.cart = { listingId: picked.listingId, qty: s.cart?.qty ?? 1 };
   s.category ??= categoryOf(s.selected.productTitle) ?? undefined;
@@ -1802,10 +1729,6 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
     asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
   const card = await shopperCard(s);
   const reset = asksForFreshWallet(text) || Boolean(s.walletHandoffFailed);
-  // #region agent log
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"C",location:"apps/shopper-agent/src/shopper-flow.mts:continuePayHandoff",message:"pay handoff",data:{fresh,reset,hasCard:Boolean(card),paySheetSent:Boolean(s.paySheetSent),walletLinkSent:Boolean(s.walletLinkSent),walletHandoffFailed:Boolean(s.walletHandoffFailed),askFresh:asksForFreshWallet(text),hasSelected:Boolean(s.selected),total},timestamp:Date.now()})}).catch(()=>{});
-  console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "C", fresh, reset, hasCard: Boolean(card), paySheetSent: Boolean(s.paySheetSent), walletLinkSent: Boolean(s.walletLinkSent), walletHandoffFailed: Boolean(s.walletHandoffFailed), askFresh: asksForFreshWallet(text), total }));
-  // #endregion
   if (s.paySheetSent && !asksForFreshWallet(text)) {
     await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
     return;
@@ -1825,10 +1748,6 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
       });
     } catch (e: any) {
       console.warn(`[shopper-agent] wallet link: ${e?.message ?? e}`);
-      // #region agent log
-      fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"A",location:"apps/shopper-agent/src/shopper-flow.mts:continuePayHandoff",message:"wallet throw",data:{err:String(e?.message??e).slice(0,180),login:isAgentCardLoginError(e)},timestamp:Date.now()})}).catch(()=>{});
-      console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "A", err: String(e?.message ?? e).slice(0, 180), login: isAgentCardLoginError(e) }));
-      // #endregion
       s.walletHandoffFailed = true;
       s.walletRetryAt = Date.now() + 60_000;
       s.step = "await_pay_confirm";
@@ -1857,10 +1776,6 @@ async function startFundingAfterAccept(s: Session, recapTotalCents: number): Pro
     paySheetSent: Boolean(s.paySheetSent),
     demo: demoLocalChain(),
   });
-  // #region agent log
-  fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"D",location:"apps/shopper-agent/src/shopper-flow.mts:startFundingAfterAccept",message:"funding step",data:{step,hasCard:Boolean(card),paySheetSent:Boolean(s.paySheetSent)},timestamp:Date.now()})}).catch(()=>{});
-  console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "D", step, hasCard: Boolean(card), paySheetSent: Boolean(s.paySheetSent) }));
-  // #endregion
   if (step === "anvil") {
     await fundAfterAccept(s);
     return true;
@@ -1938,10 +1853,6 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
     return true;
   } catch (e: any) {
     console.warn(`[shopper-agent] pay-sheet: ${e?.message ?? e}`);
-    // #region agent log
-    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c",{method:"POST",headers:{"Content-Type":"application/json","X-Debug-Session-Id":"ee46bb"},body:JSON.stringify({sessionId:"ee46bb",runId:"pay-debug",hypothesisId:"D",location:"apps/shopper-agent/src/shopper-flow.mts:openPaySheetAfterAccept",message:"paysheet throw",data:{err:String(e?.message??e).slice(0,180),login:isAgentCardLoginError(e)},timestamp:Date.now()})}).catch(()=>{});
-    console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "D", err: String(e?.message ?? e).slice(0, 180), login: isAgentCardLoginError(e) }));
-    // #endregion
     if (isAgentCardLoginError(e)) {
       dropConnection(sessionKey(s.phone));
     }
@@ -1986,7 +1897,6 @@ export async function attachWebhookCardToWaitingShoppers(webhookIdentity?: strin
       agentcardUserId: webhookIdentity ?? null,
       isDefault: true,
     });
-    console.warn("[shopper-debug]", JSON.stringify({ hypothesisId: "G", stamped: true, hasWebhookId: Boolean(webhookIdentity) }));
   }
 }
 

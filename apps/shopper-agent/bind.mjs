@@ -55,21 +55,6 @@ await new Promise((resolve, reject) => {
     const addr = server.address();
     const port = typeof addr === "object" && addr ? addr.port : PORT;
     console.log(`[shopper-agent] listening on ${HOST}:${port}`);
-    // #region agent log
-    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-      body: JSON.stringify({
-        sessionId: "ee46bb",
-        runId: "post-fix",
-        hypothesisId: "H",
-        location: "apps/shopper-agent/bind.mjs",
-        message: "port bound before tsx",
-        data: { port, host: HOST },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     resolve();
   });
   server.once("error", reject);

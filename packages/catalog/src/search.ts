@@ -7,9 +7,7 @@ import {
   classifySearchQuery,
   filterCatalogListings,
   flattenCatalogListings,
-  merchantDomainAllowed,
   normalizeListing,
-  registrableDomain,
 } from "./quality.js";
 
 export { supportedShoppingCities, hasSerpApiKey, shopMarketForCity, nationalShopMarket, NoShopMarketError };
@@ -52,46 +50,11 @@ export async function searchProducts(args: {
     }),
     args.merchant,
   );
-  const { listings: filtered, drops } = filterCatalogListings(
+  const { listings: filtered } = filterCatalogListings(
     listings.map(normalizeListing),
     query,
     queryKind,
   );
-  // #region agent log
-  {
-    const reasonCounts: Record<string, number> = {};
-    for (const d of drops) reasonCounts[d.reason] = (reasonCounts[d.reason] ?? 0) + 1;
-    const payload = {
-      sessionId: "ee46bb",
-      runId: "pre-fix",
-      hypothesisId: "A",
-      location: "packages/catalog/src/search.ts:searchProducts",
-      message: "catalog wrap after HTTP",
-      data: {
-        query,
-        queryKind,
-        merchant: args.merchant ?? null,
-        rawCount: listings.length,
-        filteredCount: filtered.length,
-        reasonCounts,
-        samples: listings.slice(0, 8).map((l) => ({
-          slug: l.storeSlug,
-          host: registrableDomain(l.productUrl),
-          merchantOk: merchantDomainAllowed(l.productUrl),
-          priceCents: l.priceCents,
-          title: (l.productTitle ?? "").slice(0, 72),
-        })),
-      },
-      timestamp: Date.now(),
-    };
-    fetch("http://127.0.0.1:7792/ingest/af7dba43-916f-44eb-8996-041bf3055f0c", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ee46bb" },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
-    console.warn("[catalog-debug]", JSON.stringify({ rawCount: listings.length, filteredCount: filtered.length, reasonCounts, queryKind }));
-  }
-  // #endregion
   cacheListings(flattenCatalogListings(filtered));
 
   return {
