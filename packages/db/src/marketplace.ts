@@ -408,6 +408,23 @@ export async function listOpenOffers(): Promise<StoredOffer[]> {
   return rows.map(rowToOffer).filter((o) => !isStaleDemoItem(o.item));
 }
 
+/** Funded matching requests only — never tease Shop & Deliver on an unfunded offer. */
+export async function listFundedOffers(): Promise<StoredOffer[]> {
+  if (!marketplaceConfigured()) {
+    return loadFile()
+      .offers.filter((o) => o.status === "funded" && !isStaleDemoItem(o.item))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const rows = await prisma.marketplaceOffer.findMany({
+    where: { status: "funded" },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  return rows.map(rowToOffer).filter((o) => !isStaleDemoItem(o.item));
+}
+
 export async function latestOpenOffer(): Promise<StoredOffer | null> {
   const open = await listOpenOffers();
   return open[0] ?? null;
@@ -516,7 +533,7 @@ export async function upsertLiveTrip(input: {
     originCity: input.originCity || "",
     destinationCity: input.destinationCity,
     departureDate: input.departureDate,
-    optedIn: input.optedIn ?? true,
+    optedIn: input.optedIn ?? false,
     status: "upcoming",
   };
   if (!marketplaceConfigured()) {

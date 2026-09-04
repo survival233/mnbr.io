@@ -27,6 +27,8 @@ const FORM_STEPS = new Set([
   "await_pay_confirm",
   "await_handover_done",
   "await_travel_intent",
+  "await_shop_opt_in",
+  "await_traveler_card",
   "await_flight_pick",
   "await_book_confirm",
   "trip_confirmed",
@@ -346,7 +348,7 @@ export function parseAgainstPending(s: DialogSession, text: string): PendingPars
     const item = parseItem(t);
     if (item) return { ok: true, value: item };
   }
-  if (pending.kind === "bool" || pending.slot === "pay" || pending.slot === "brief") {
+  if (pending.kind === "bool" || pending.slot === "pay" || pending.slot === "brief" || pending.slot === "shop_opt_in" || pending.slot === "traveler_card") {
     if (/^(n|no|nope|nah)\b/i.test(t)) return { ok: true, value: "no" };
   }
   return { ok: false };

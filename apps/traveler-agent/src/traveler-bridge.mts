@@ -4,9 +4,9 @@
 import { createHash } from "node:crypto";
 import { suggestedTravelerFeeCents, computeFees } from "@manebra/shared";
 import { cityFromAirport, type FlightBooking } from "@manebra/flights";
-import { inferDirection, normalizeCity } from "@manebra/calendar";
+import { normalizeCity } from "@manebra/calendar";
 import { hubCity, sameMetro } from "@manebra/geo";
-import { upsertLiveTrip, listOpenOffers, updateOffer, getOffer } from "@manebra/db";
+import { upsertLiveTrip, listFundedOffers, updateOffer, getOffer } from "@manebra/db";
 
 export type EarnOffer = {
   proposalId: string;
@@ -74,7 +74,6 @@ export async function persistBookedTrip(args: {
     hubCity(cityFromAirport(booking.offer.destination)) ??
     normalizeCity(cityFromAirport(booking.offer.destination)) ??
     cityFromAirport(booking.offer.destination);
-  const direction = inferDirection(depCity, destCity);
 
   try {
     await upsertLiveTrip({
@@ -83,100 +82,30 @@ export async function persistBookedTrip(args: {
       originCity: depCity,
       destinationCity: destCity,
       departureDate: booking.offer.departAt,
-      optedIn: true,
+      optedIn: false,
     });
   } catch (e: any) {
     console.warn(`[traveler-bridge] marketplace trip skipped: ${e?.message ?? e}`);
   }
 
-  if (!dbConfigured() || !direction) {
-    try {
-      const open = (await listOpenOffers()).filter((o) => sameMetro(o.destinationCity, destCity));
-      return {
-        tripId: null,
-        earnOffers: open.slice(0, 3).map((o) => ({
-          proposalId: `mkt-${o.id}`,
-          itemRequestId: o.id,
-          itemName: o.item,
-          destinationCity: o.destinationCity ?? destCity,
-          feeCents: o.travelerFeeCents || o.totalCents,
-          merchant: o.nextTravelerName ?? undefined,
-          itemCostCents: o.itemCostCents,
-          score: 90,
-        })),
-      };
-    } catch {
-      return { tripId: null, earnOffers: [] };
-    }
-  }
-
   try {
-    const prisma = await getPrisma();
-    const user = await ensureTravelerUser(args.identity);
-    const trip = await prisma.travelerTrip.create({
-      data: {
-        travelerId: user.id,
-        direction,
-        departureCity: depCity,
-        destinationCity: destCity,
-        departureDate: booking.offer.departAt,
-        luggageCapacityKg: 23,
-        status: "upcoming",
-        source: "manual",
-        externalEventId: `booking:${booking.bookingRef}`,
-        confidence: 1,
-        syncedAt: new Date(),
-      },
-    });
-
-    let earnOffers: EarnOffer[] = [];
-    try {
-      const open = (await listOpenOffers()).filter((o) => sameMetro(o.destinationCity, destCity));
-      for (const o of open.slice(0, 3)) {
-        earnOffers.push({
-          proposalId: `mkt-${o.id}`,
-          itemRequestId: o.id,
-          itemName: o.item,
-          destinationCity: o.destinationCity ?? destCity,
-          feeCents: o.travelerFeeCents || o.totalCents,
-          merchant: o.nextTravelerName ?? undefined,
-          itemCostCents: o.itemCostCents,
-          score: 90,
-        });
-      }
-    } catch (e: any) {
-      console.warn(`[traveler-bridge] marketplace offers: ${e?.message ?? e}`);
-    }
-    try {
-      if (earnOffers.length === 0) {
-        const { proposeMatchesForTrip } = await import("@manebra/agents/matching");
-        await proposeMatchesForTrip(trip.id);
-        const proposals = await prisma.matchProposal.findMany({
-          where: { tripId: trip.id, status: "proposed" },
-          orderBy: { score: "desc" },
-          take: 3,
-        });
-        for (const p of proposals) {
-          const item = await prisma.itemRequest.findUnique({ where: { id: p.itemRequestId } });
-          if (!item) continue;
-          earnOffers.push({
-            proposalId: p.id,
-            itemRequestId: item.id,
-            itemName: item.itemName,
-            destinationCity: item.destinationCity,
-            feeCents: suggestedTravelerFeeCents(item.itemCostCents),
-            itemCostCents: item.itemCostCents,
-            score: p.score,
-          });
-        }
-      }
-    } catch (e: any) {
-      console.warn(`[traveler-bridge] match failed: ${e?.message ?? e}`);
-    }
-
-    return { tripId: trip.id, earnOffers };
-  } catch (e: any) {
-    console.warn(`[traveler-bridge] persist trip failed: ${e?.message ?? e}`);
+    const open = (await listFundedOffers()).filter(
+      (o) => o.destinationCity && sameMetro(o.destinationCity, destCity),
+    );
+    return {
+      tripId: null,
+      earnOffers: open.slice(0, 3).map((o) => ({
+        proposalId: `mkt-${o.id}`,
+        itemRequestId: o.id,
+        itemName: o.item,
+        destinationCity: o.destinationCity ?? destCity,
+        feeCents: o.travelerFeeCents || o.totalCents,
+        merchant: o.nextTravelerName ?? undefined,
+        itemCostCents: o.itemCostCents,
+        score: 90,
+      })),
+    };
+  } catch {
     return { tripId: null, earnOffers: [] };
   }
 }
@@ -188,13 +117,15 @@ export async function acceptEarnOffer(args: {
   if (args.proposalId.startsWith("mkt-")) {
     const id = args.proposalId.slice(4);
     const offer = await getOffer(id);
-    if (!offer || offer.status !== "offered") {
+    if (!offer || (offer.status !== "offered" && offer.status !== "funded" && offer.status !== "accepted")) {
       return { ok: false, message: "That request isn’t available anymore." };
     }
-    await updateOffer(id, { status: "accepted", notifiedShopper: false });
+    if (offer.status === "offered") {
+      await updateOffer(id, { status: "accepted", notifiedShopper: false });
+    }
     return {
       ok: true,
-      message: `Accepted. Waiting for the shopper to fund — no Shop & Deliver until then.`,
+      message: `Accepted. Shop with your card — never the shopper’s.`,
     };
   }
   if (!dbConfigured() || args.proposalId.startsWith("local-") || args.proposalId.startsWith("hint-")) {

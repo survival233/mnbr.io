@@ -110,7 +110,7 @@ const {
   relayWebhookSecrets,
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
-const { handleInbound, syncTravelerMarketplace } = await import("./traveler-flow.mts");
+const { handleInbound, syncTravelerMarketplace, attachWebhookCardToWaitingTravelers } = await import("./traveler-flow.mts");
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
 const { agentcardConfigured, mintPlatformToken } = await import("@repo/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
@@ -246,7 +246,11 @@ dispatch = async (req, res) => {
     const result = await handleAgentCardWebhook(raw, hdrs);
     if (result.ok) {
       ok(res, { received: true }, result.status);
-      void syncTravelerMarketplace();
+      if (result.type === "connected_card.updated") {
+        void attachWebhookCardToWaitingTravelers(result.identity).then(() => syncTravelerMarketplace());
+      } else {
+        void syncTravelerMarketplace();
+      }
     } else fail(res, result.status, result.status === 401 ? "invalid signature" : "webhook error");
     return;
   }

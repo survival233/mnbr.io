@@ -13,6 +13,8 @@ export type DialogPendingSlot = {
     | "origin"
     | "destination"
     | "departure_date"
+    | "shop_opt_in"
+    | "traveler_card"
     | "flight"
     | "carry";
   proposed: string | number | null;

@@ -15,6 +15,21 @@ describe("traveler trip destination — any geo city", () => {
     expect(ask?.text ?? "").not.toMatch(/Still on/i);
   });
 
+  it("is destination + date; origin is optional; opt-in is never inferred", () => {
+    const trip = blankTrip();
+    mergeTripState(trip, "I'm going to Lagos next Friday");
+    expect(trip.destination).toBe("Lagos");
+    expect(missingFields(trip)).not.toContain("origin");
+    expect(missingFields(trip)).not.toContain("destination");
+    expect(trip.optedIn).toBeUndefined();
+    if (missingFields(trip).includes("departure_date")) {
+      mergeTripState(trip, "next Friday");
+    }
+    expect(missingFields(trip)).toEqual([]);
+    expect(trip.optedIn).toBeUndefined();
+    expect(nextQuestion(trip)).toBeNull();
+  });
+
   it("commits London, Kumasi, and New York the same way", () => {
     for (const [utterance, city] of [
       ["London", "London"],

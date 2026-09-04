@@ -7,9 +7,10 @@ import {
   hasTripProgress,
   allSessions,
   appendDialogTurn,
+  sessionKey,
   type Session,
 } from "./session.mts";
-import { handleTravelInbound } from "./travel-flow.mts";
+import { handleTravelInbound, sendTravelerWallet, resumeAfterTravelerCard } from "./travel-flow.mts";
 import { blankTrip } from "./trip-state.mts";
 import {
   getOpenOfferForTraveler,
@@ -17,8 +18,9 @@ import {
   acceptOfferIfOpen,
   updateOffer,
   getTravelerCard,
+  setConnectedCard,
 } from "@manebra/db";
-import { agentcardConfigured, buyWithUserCard, createWalletLink } from "@repo/agentcard";
+import { agentcardConfigured, buyWithUserCard } from "@repo/agentcard";
 import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
 import { isTravelIntent } from "@manebra/flights";
 import { hubCity, sameMetro } from "@manebra/geo";
@@ -36,6 +38,9 @@ import {
   guestCityName,
   TRAVELER_SKU_GONE,
   TRAVELER_OVER_CAP,
+  TRAVELER_HI,
+  TRAVELER_DEST_ASK,
+  TRAVELER_WALLET_ADD,
   type DialogSession,
 } from "@manebra/dialog";
 import { offerBelongsToTraveler } from "./offer-fit.mts";
@@ -212,7 +217,7 @@ async function startTravelerBuy(
     : `Buy ${carry.item} at ${merchant}`;
   const cap = fundedItemAndTaxCap(carry);
   try {
-    const turn = await buyWithUserCard(s.phone, ask);
+    const turn = await buyWithUserCard(sessionKey(s.phone), ask);
     const replyText = turn.reply?.trim() ?? "";
     if (/out of stock|unavailable|sold out|no longer available|couldn'?t find|not found/i.test(replyText)) {
       s.travelerBuyStarted = false;
@@ -255,7 +260,7 @@ export async function syncTravelerMarketplace(): Promise<void> {
     const carry = await getActiveOfferForTraveler(s.phone);
     if (carry?.status !== "funded") continue;
 
-    const onFile = await getTravelerCard(s.phone);
+    const onFile = await getTravelerCard(sessionKey(s.phone));
     if (!carry.notifiedTravelerFunded) {
       await updateOffer(carry.id, { notifiedTravelerFunded: true });
       await say(
@@ -266,17 +271,28 @@ export async function syncTravelerMarketplace(): Promise<void> {
           : `When you meet, enter their 6-digit handover code.`,
       );
       if (agentcardConfigured() && !onFile) {
-        try {
-          const link = await createWalletLink(s.phone);
-          await say(s, `Add a test card (4242…) so you can shop with yours.`, link.url);
-        } catch (e: any) {
-          console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
-        }
+        await sendTravelerWallet(s, { say });
       }
     }
     if (agentcardConfigured() && onFile) {
       await startTravelerBuy(s, carry);
     }
+  }
+}
+
+/** Card webhook may only carry AgentCard user_id. Stamp waiting Relay sessions so the traveler's own card is on file. */
+export async function attachWebhookCardToWaitingTravelers(webhookIdentity?: string): Promise<void> {
+  for (const s of allSessions()) {
+    if (s.step !== "await_traveler_card") continue;
+    const id = sessionKey(s.phone);
+    if (!(await getTravelerCard(id))) {
+      await setConnectedCard({
+        identity: id,
+        agentcardUserId: webhookIdentity ?? null,
+        isDefault: true,
+      });
+    }
+    await resumeAfterTravelerCard(s, { reply, say });
   }
 }
 
@@ -338,18 +354,9 @@ async function tryHandleMarketplaceOffer(
       rememberWait(stayOf(s));
       await io.say(s, `Accepted.`);
       if (agentcardConfigured()) {
-        const onFile = await getTravelerCard(s.phone);
+        const onFile = await getTravelerCard(sessionKey(s.phone));
         if (!onFile) {
-          try {
-            const link = await createWalletLink(s.phone);
-            await io.say(
-              s,
-              `Add a test card (4242…) so you can shop with yours — never the shopper’s.`,
-              link.url,
-            );
-          } catch (e: any) {
-            console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
-          }
+          await sendTravelerWallet(s, io);
         } else {
           await startTravelerBuy(s, accepted);
         }
@@ -373,9 +380,9 @@ async function tryHandleMarketplaceOffer(
 
   if (carry.status === "accepted") {
     if (agentcardConfigured()) {
-      const onFile = await getTravelerCard(s.phone);
+      const onFile = await getTravelerCard(sessionKey(s.phone));
       if (onFile) await startTravelerBuy(s, carry);
-      else await io.reply(s, `Add a test card so you can shop with yours.`);
+      else await io.reply(s, TRAVELER_WALLET_ADD);
     } else {
       await io.reply(s, `Accepted.`);
     }
@@ -418,10 +425,9 @@ export async function handleInbound(args: {
   });
   if (text) appendDialogTurn(s, "user", text);
 
-  const greetingOnly = /^(hi|hello|hey|start|restart|menu)\b[,!.\s]*$/i.test(text);
-  const restart = /^(restart|start over|reset|menu)\b/i.test(text);
-  // Flights first. Leftover accepted offers must not swallow “hi”.
-  if (greetingOnly || restart) {
+  const greetingOnly = /^(hi|hello|hey|start|menu)\b[,!.\s]*$/i.test(text);
+  const restart = /^(restart|start over|reset)\b/i.test(text);
+  if (restart) {
     resetSession(s);
     s.trip = blankTrip();
     s.step = "await_travel_intent";
@@ -439,7 +445,7 @@ export async function handleInbound(args: {
     s.trip = blankTrip();
     s.step = "await_travel_intent";
     markSessionDirty();
-    await sayHost(s, "META", "Where are you flying?", "cancel");
+    await sayHost(s, "META", TRAVELER_DEST_ASK, "cancel");
     return;
   }
   if (turn.act === "META") {
@@ -466,11 +472,7 @@ export async function handleInbound(args: {
     }
 
     if (greetingOnly || restart || !text) {
-      await sayHost(
-        s,
-        turn.act,
-        "Where are you flying? Origin, destination, and day — I’ll find options, then Shop & Deliver requests on that route.",
-      );
+      await sayHost(s, turn.act, TRAVELER_HI);
       if (greetingOnly || restart) {
         const rest = text
           .replace(/^(hi|hello|hey|start|restart|menu|start over|reset)\b[,!.\s]*/i, "")
@@ -480,6 +482,11 @@ export async function handleInbound(args: {
       }
       return;
     }
+  }
+
+  if (greetingOnly && midTrip) {
+    await sayHost(s, turn.act, TRAVELER_HI);
+    return;
   }
 
   await handleTravelInbound(s, text, { reply, say });

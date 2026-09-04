@@ -5,6 +5,7 @@ export {
   updateOffer,
   getOffer,
   listOpenOffers,
+  listFundedOffers,
   latestOpenOffer,
   latestActiveOffer,
   getOpenOfferForTraveler,

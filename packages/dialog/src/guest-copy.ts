@@ -220,6 +220,45 @@ export const TRAVELER_SKU_GONE =
 export const TRAVELER_OVER_CAP =
   "Live price is over what they funded. Need a top-up before I buy — or I skip it.";
 
+/** Phase 0 hi — no calendar, no speculative Shop & Deliver. */
+export const TRAVELER_HI =
+  "Two things I can do: (1) book a flight — that’s coming — or (2) save where you’re headed. Name a city and roughly when.";
+
+export const TRAVELER_FLIGHT_STUB =
+  "Flight booking’s coming. Tell me a city and roughly when and I’ll keep the trip.";
+
+export const TRAVELER_DEST_ASK = "Where are you headed?";
+
+export const TRAVELER_WHEN_ASK = "Roughly when do you arrive?";
+
+export const TRAVELER_OPT_IN_ASK =
+  "Want Shop & Deliver on this trip? I’ll only ping you when a shopper already funded a matching request. Yes or no.";
+
+export const TRAVELER_TRIP_SAVED = "Trip’s on file.";
+
+export const TRAVELER_OPTED_OUT =
+  "Got it — no Shop & Deliver on this trip. Ping me if you change your mind.";
+
+export const TRAVELER_WALLET_ADD =
+  "Add a test card (4242…) so you can shop with yours. That’s once — I’ll reuse it after.";
+
+export const TRAVELER_CARD_ON_FILE = "Card’s on file. I’ll use it when you shop.";
+
+export function asksToBookFlight(text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  if (/^(1|one)\b/.test(t) && !/\b(2|two|headed|going|city)\b/i.test(t)) return true;
+  return /\b(book( a)? flight|flight booking|buy( a)? (ticket|flight))\b/i.test(t);
+}
+
+export function travelerMarketplaceLine(args: {
+  earningsCents: number;
+  title: string;
+  metro: string;
+}): string {
+  return `You can earn ${formatUsd(args.earningsCents)} by Shop & Deliver of ${args.title} to a verified shopper in ${args.metro}.`;
+}
+
 export function travelerAsk(args: {
   city: string;
   title: string;

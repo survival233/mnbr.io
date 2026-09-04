@@ -23,6 +23,9 @@ import {
   shopperWait,
   taxCentsFor,
   travelerAsk,
+  TRAVELER_HI,
+  TRAVELER_WALLET_ADD,
+  asksToBookFlight,
 } from "./guest-copy";
 
 describe("earnings ask", () => {
@@ -195,5 +198,17 @@ describe("traveler ask", () => {
       ].join("\n"),
     );
     expect(lines.join(" ")).not.toMatch(/\b(Ama|Kofi|Nana)\b/);
+  });
+});
+
+describe("traveler hi and wallet", () => {
+  it("does not tease Shop & Deliver on hi", () => {
+    expect(TRAVELER_HI).not.toMatch(/Shop & Deliver/i);
+    expect(TRAVELER_HI).toMatch(/flight/i);
+  });
+
+  it("asks the traveler to shop with their own card", () => {
+    expect(TRAVELER_WALLET_ADD).toMatch(/yours/i);
+    expect(asksToBookFlight("book a flight")).toBe(true);
   });
 });

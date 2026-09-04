@@ -17,9 +17,11 @@ export const SHOPPER_SLOT_SCHEMA: readonly SlotDef[] = [
 ];
 
 export const TRAVELER_SLOT_SCHEMA: readonly SlotDef[] = [
-  { id: "origin", kind: "text" },
   { id: "destination", kind: "text" },
   { id: "departure_date", kind: "date" },
+  { id: "shop_opt_in", kind: "bool" },
+  { id: "traveler_card", kind: "bool" },
+  { id: "origin", kind: "text" },
   { id: "flight", kind: "choice" },
   { id: "carry", kind: "bool" },
 ];

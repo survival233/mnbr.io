@@ -9,7 +9,7 @@ import {
   parseDepartDate,
   isoDate,
 } from "@manebra/flights";
-import { guestCityName, isDestinationShaped, parseTripDestination, parseTripOrigin } from "@manebra/dialog";
+import { guestCityName, isDestinationShaped, parseTripDestination, parseTripOrigin, TRAVELER_DEST_ASK, TRAVELER_WHEN_ASK } from "@manebra/dialog";
 
 export type TripField = "origin" | "destination" | "departure_date";
 
@@ -21,6 +21,9 @@ export type TripState = {
   confirmed: TripField[];
   arrive_by?: string;
   note?: string;
+  /** Shop & Deliver opt-in. Undefined until asked. Never inferred. */
+  optedIn?: boolean;
+  optedInAt?: number;
   updated_at: number;
 };
 
@@ -31,7 +34,6 @@ export function blankTrip(): TripState {
 export function missingFields(trip: TripState): TripField[] {
   const missing: TripField[] = [];
   if (!trip.destination) missing.push("destination");
-  if (!trip.origin) missing.push("origin");
   if (!trip.departure_date) missing.push("departure_date");
   return missing;
 }
@@ -181,7 +183,7 @@ export function nextQuestion(trip: TripState): { field: TripField; text: string 
     case "destination":
       return {
         field,
-        text: `Where are you flying? City is fine.`,
+        text: TRAVELER_DEST_ASK,
       };
     case "origin":
       return {
@@ -193,7 +195,7 @@ export function nextQuestion(trip: TripState): { field: TripField; text: string 
     case "departure_date":
       return {
         field,
-        text: `Got ${origin} → ${dest}. What day do you want to depart?`,
+        text: dest ? `Roughly when do you arrive in ${dest}?` : TRAVELER_WHEN_ASK,
       };
   }
 }

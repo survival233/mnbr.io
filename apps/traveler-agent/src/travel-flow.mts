@@ -3,17 +3,15 @@
  * extract → merge trip state → missing_fields → ask or search → pick → book → earn.
  */
 import {
-  searchFlights,
-  bookFlight,
-  formatFlightOption,
   parseDepartDate,
   cityFromAirport,
-  type FlightOption,
 } from "@manebra/flights";
 import { normalizeCity } from "@manebra/calendar";
-import { hubCity } from "@manebra/geo";
-import { upsertLiveTrip } from "@manebra/db";
+import { hubCity, sameMetro } from "@manebra/geo";
+import { upsertLiveTrip, listFundedOffers, getTravelerCard } from "@manebra/db";
+import { agentcardConfigured, createWalletLink } from "@repo/agentcard";
 import type { Session } from "./session.mts";
+import { sessionKey, markSessionDirty, persistSessionsNow } from "./session.mts";
 import {
   persistBeforeAsk,
   composeHostReply,
@@ -23,27 +21,29 @@ import {
   rememberQuestion,
   rememberItem,
   travelerAsk,
+  travelerMarketplaceLine,
+  TRAVELER_OPT_IN_ASK,
+  TRAVELER_TRIP_SAVED,
+  TRAVELER_OPTED_OUT,
+  TRAVELER_WALLET_ADD,
+  TRAVELER_CARD_ON_FILE,
+  TRAVELER_FLIGHT_STUB,
+  asksToBookFlight,
+  asksForFreshWallet,
   type DialogPendingSlot,
 } from "@manebra/dialog";
-import { markSessionDirty, persistSessionsNow } from "./session.mts";
-import { persistBookedTrip, acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
+import { acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
 import {
   ensureTrip,
   mergeTripState,
   missingFields,
   nextQuestion,
-  isTripComplete,
   tripSnapshot,
   mirrorTripToLegacy,
-  blankTrip,
 } from "./trip-state.mts";
 
 type ReplyFn = (s: Session, text: string, opts?: { thinkMs?: number }) => Promise<void>;
 type SayFn = (s: Session, ...bubbles: string[]) => Promise<void>;
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 void TRAVELER_SLOT_SCHEMA;
 void HOSPITALITY_PERSONA;
@@ -90,23 +90,104 @@ function tripDate(raw?: string): Date {
   return d;
 }
 
-async function publishLiveTrip(s: Session): Promise<void> {
+async function publishLiveTrip(s: Session, optedIn: boolean): Promise<void> {
   const trip = s.trip;
-  if (!trip?.destination) return;
+  if (!trip?.destination || !trip.departure_date) return;
   const dest = tripCity(trip.destination);
   if (!dest) return;
   try {
     await upsertLiveTrip({
-      travelerId: s.phone,
-      travelerName: `Traveler ${s.phone.slice(-4)}`,
+      travelerId: sessionKey(s.phone),
+      travelerName: `Traveler ${sessionKey(s.phone).slice(-4)}`,
       originCity: tripCity(trip.origin) ?? "",
       destinationCity: dest,
       departureDate: tripDate(trip.departure_date),
-      optedIn: true,
+      optedIn,
     });
   } catch (e: any) {
     console.warn(`[traveler-agent] marketplace trip upsert skipped: ${e?.message ?? e}`);
   }
+}
+
+async function matchingFundedAsk(s: Session) {
+  const dest = tripCity(s.trip?.destination);
+  if (!dest) return null;
+  try {
+    const funded = await listFundedOffers();
+    return funded.find((o) => {
+      if (!o.destinationCity || !sameMetro(o.destinationCity, dest)) return false;
+      const owner = o.travelerId?.trim();
+      return !owner || owner === sessionKey(s.phone);
+    }) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function sendTravelerWallet(s: Session, deps: { say: SayFn }): Promise<boolean> {
+  if (!agentcardConfigured()) return false;
+  const id = sessionKey(s.phone);
+  const onFile = await getTravelerCard(id);
+  if (onFile) return false;
+  try {
+    const link = await createWalletLink(id);
+    s.step = "await_traveler_card";
+    parkAsk(s, "traveler_card", TRAVELER_WALLET_ADD, null, "bool");
+    await deps.say(s, TRAVELER_WALLET_ADD, link.url);
+    return true;
+  } catch (e: any) {
+    console.warn(`[traveler-agent] wallet link: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+async function afterTripCommitted(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<void> {
+  if (await sendTravelerWallet(s, deps)) return;
+  await maybePingFundedAsk(s, deps);
+}
+
+async function maybePingFundedAsk(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<void> {
+  if (stayOf(s).lastOfferId) {
+    s.step = "trip_confirmed";
+    persistTrip(s);
+    return;
+  }
+  const dest = tripCity(s.trip?.destination) ?? s.trip?.destination ?? "your city";
+  if (s.trip?.optedIn) {
+    const match = await matchingFundedAsk(s);
+    if (match) {
+      await deps.say(
+        s,
+        travelerMarketplaceLine({
+          earningsCents: match.travelerFeeCents || 0,
+          title: match.item,
+          metro: dest,
+        }),
+        ...travelerAsk({
+          city: dest,
+          title: match.item,
+          merchant: match.nextTravelerName?.trim() || "the store",
+          itemCents: match.itemCostCents ?? 0,
+          earningsCents: match.travelerFeeCents || 0,
+        }),
+      );
+      s.step = "await_earn_opt_in";
+      persistTrip(s);
+      return;
+    }
+  }
+  await deps.reply(s, TRAVELER_TRIP_SAVED);
+  s.step = "trip_confirmed";
+  persistTrip(s);
+}
+
+/** Webhook stamped a card while the traveler was waiting on the wallet link. */
+export async function resumeAfterTravelerCard(
+  s: Session,
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<void> {
+  await deps.reply(s, TRAVELER_CARD_ON_FILE);
+  await maybePingFundedAsk(s, deps);
 }
 
 export async function handleTravelInbound(
@@ -116,21 +197,20 @@ export async function handleTravelInbound(
 ): Promise<boolean> {
   const t = text.trim();
 
+  if (s.step === "await_traveler_card") {
+    return handleTravelerCard(s, t, deps);
+  }
+
+  if (s.step === "await_shop_opt_in") {
+    return handleShopOptIn(s, t, deps);
+  }
+
   if (s.step === "await_earn_opt_in" || s.step === "await_job_pick") {
     return handleEarn(s, t, deps);
   }
 
   if (s.step === "await_flight_pick" || s.step === "await_book_confirm") {
     return handlePickOrBook(s, t, deps);
-  }
-
-  if (s.step === "trip_confirmed" || s.step === "done") {
-    // New trip request after completion — keep history cleared via caller reset, or soft-reset trip.
-    if (!s.trip || isTripComplete(s.trip)) {
-      s.trip = blankTrip();
-    }
-    s.step = "await_travel_intent";
-    persistTrip(s);
   }
 
   return handleCollectAndSearch(s, t, deps);
@@ -152,6 +232,30 @@ async function handleCollectAndSearch(
   const trip = ensureTrip(s);
   const before = tripSnapshot(trip);
 
+  if (asksToBookFlight(text)) {
+    await reply(s, TRAVELER_FLIGHT_STUB);
+    const missingFlight = missingFields(trip);
+    if (missingFlight.length) {
+      const ask = nextQuestion(trip);
+      if (ask) {
+        parkAsk(
+          s,
+          ask.field,
+          ask.text,
+          null,
+          ask.field === "departure_date" ? "date" : "text",
+        );
+        await reply(s, ask.text);
+      }
+      return true;
+    }
+    if (trip.optedIn === undefined) {
+      return askShopOptIn(s, deps);
+    }
+    await afterTripCommitted(s, deps);
+    return true;
+  }
+
   if (acceptsOffer(text) && s.offer && s.offer.field !== "flight") {
     if (s.offer.field === "origin") trip.origin = s.offer.value;
     else if (s.offer.field === "destination") trip.destination = s.offer.value;
@@ -165,7 +269,6 @@ async function handleCollectAndSearch(
   mirrorTripToLegacy(s);
   s.step = "await_travel_intent";
   persistTrip(s);
-  void publishLiveTrip(s);
 
   const after = tripSnapshot(trip);
   const missing = missingFields(trip);
@@ -197,37 +300,77 @@ async function handleCollectAndSearch(
     return true;
   }
 
-  // All required slots present → search.
-  await reply(s, `Searching ${trip.origin} → ${trip.destination} on ${trip.departure_date}…`, {
-    thinkMs: 500,
-  });
-
-  try {
-    const options = await searchFlights({
-      origin: trip.origin!,
-      destination: trip.destination!,
-      departDate: trip.departure_date!,
-      arriveBy: trip.arrive_by ? new Date(trip.arrive_by) : undefined,
-      limit: 3,
-    });
-    if (!options.length) {
-      await reply(s, `No flights found for that route/date. Try another day or airports?`);
-      return true;
-    }
-    s.flightOptions = options;
-    s.step = "await_flight_pick";
-    s.offer = { field: "flight", value: "0" };
-    parkAsk(s, "flight", `Reply with 1–${options.length}, or name a departure.`, "0", "choice");
-    const lines = options.map((o, i) => formatFlightOption(o, i)).join("\n\n");
-    await say(
-      s,
-      `Here are solid options:`,
-      `${lines}\n\nReply with 1–${options.length}, or say something like “book the 8:30 PM”.`,
-    );
-  } catch (e: any) {
-    console.warn(`[traveler-agent] search failed: ${e?.message ?? e}`);
-    await reply(s, `Flight search hiccupped — try again in a moment, or tweak the airports/date.`);
+  if (trip.optedIn === undefined) {
+    return askShopOptIn(s, deps);
   }
+
+  await afterTripCommitted(s, deps);
+  return true;
+}
+
+async function askShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
+  s.step = "await_shop_opt_in";
+  parkAsk(s, "shop_opt_in", TRAVELER_OPT_IN_ASK, null, "bool");
+  await deps.reply(s, TRAVELER_OPT_IN_ASK);
+  return true;
+}
+
+function yesNo(text: string): boolean | null {
+  const t = text.trim();
+  if (/^(n|no|nope|nah|skip|not now|later)\b/i.test(t)) return false;
+  if (/^(y|yes|ok|okay|sure|yeah|yep|yup)\b/i.test(t)) return true;
+  return null;
+}
+
+async function handleShopOptIn(
+  s: Session,
+  text: string,
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<boolean> {
+  const trip = ensureTrip(s);
+  const answer = yesNo(text);
+  if (answer == null) {
+    parkAsk(s, "shop_opt_in", TRAVELER_OPT_IN_ASK, null, "bool");
+    await deps.reply(s, TRAVELER_OPT_IN_ASK);
+    return true;
+  }
+  trip.optedIn = answer;
+  trip.optedInAt = Date.now();
+  persistTrip(s);
+  await publishLiveTrip(s, answer);
+  if (!answer) {
+    await deps.reply(s, TRAVELER_OPTED_OUT);
+    if (await sendTravelerWallet(s, deps)) return true;
+    s.step = "trip_confirmed";
+    persistTrip(s);
+    return true;
+  }
+  await afterTripCommitted(s, deps);
+  return true;
+}
+
+async function handleTravelerCard(
+  s: Session,
+  text: string,
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<boolean> {
+  const id = sessionKey(s.phone);
+  if (asksForFreshWallet(text)) {
+    const sent = await sendTravelerWallet(s, deps);
+    if (sent) return true;
+  }
+  const onFile = await getTravelerCard(id);
+  if (onFile) {
+    await deps.reply(s, TRAVELER_CARD_ON_FILE);
+    await maybePingFundedAsk(s, deps);
+    return true;
+  }
+  const skip = yesNo(text) === false;
+  if (skip) {
+    await maybePingFundedAsk(s, deps);
+    return true;
+  }
+  await deps.reply(s, TRAVELER_WALLET_ADD);
   return true;
 }
 
@@ -236,91 +379,24 @@ async function handlePickOrBook(
   text: string,
   deps: { reply: ReplyFn; say: SayFn },
 ): Promise<boolean> {
-  const { reply, say } = deps;
-  const options = s.flightOptions ?? [];
-  if (!options.length) {
+  void text;
+  await deps.reply(s, TRAVELER_FLIGHT_STUB);
+  const trip = ensureTrip(s);
+  const ask = nextQuestion(trip);
+  if (ask) {
     s.step = "await_travel_intent";
-    persistTrip(s);
-    await reply(s, `Let’s start over — where and when do you want to fly?`);
-    return true;
-  }
-
-  let idx = pickIndex(text, options);
-  if (idx == null && acceptsOffer(text)) {
-    idx = s.offer?.field === "flight" ? parseInt(s.offer.value, 10) : 0;
-    if (!Number.isFinite(idx) || idx < 0 || idx >= options.length) idx = 0;
-  }
-  if (idx == null) {
-    await reply(
+    parkAsk(
       s,
-      `Pick 1–${options.length}, or describe the time (e.g. “book the 8:30 PM”).`,
+      ask.field,
+      ask.text,
+      null,
+      ask.field === "departure_date" ? "date" : "text",
     );
+    await deps.reply(s, ask.text);
     return true;
   }
-
-  const offer = options[idx]!;
-  s.selectedFlight = offer;
-  s.step = "await_book_confirm";
-  persistTrip(s);
-
-  await reply(s, `Booking ${offer.airline} ${offer.flightNumber ?? ""}…`, { thinkMs: 600 });
-
-  const paymentMethodId = process.env.FLIGHT_PAYMENT_METHOD_ID?.trim() || null;
-  try {
-    const booking = await bookFlight(
-      {
-        offerId: offer.offerId,
-        passengerName: s.phone.slice(-4) ? `Traveler ${s.phone.slice(-4)}` : "Manebra Traveler",
-        paymentMethodId,
-        allowDemo: true,
-      },
-      offer,
-    );
-
-    if (booking.status === "pending_payment") {
-      await say(
-        s,
-        booking.message,
-        `Once payment is linked on your account, say “book it” again and I’ll ticket this fare.`,
-      );
-      return true;
-    }
-
-    s.flightBookingRef = booking.bookingRef;
-    s.step = "trip_confirmed";
-    persistTrip(s);
-    void publishLiveTrip(s);
-    await say(s, booking.message, `I’ll watch for the confirmation and keep this trip on file.`);
-
-    const { earnOffers } = await persistBookedTrip({ identity: s.phone, booking });
-    s.earnOffers = earnOffers;
-    if (earnOffers.length) {
-      s.step = "await_earn_opt_in";
-      persistTrip(s);
-      await sleep(400);
-      const top = earnOffers[0]!;
-      await say(
-        s,
-        ...travelerAsk({
-          city: top.destinationCity,
-          title: top.itemName,
-          merchant: top.merchant ?? "the store",
-          itemCents: top.itemCostCents ?? 0,
-          earningsCents: top.feeCents,
-        }),
-      );
-    } else {
-      s.step = "done";
-      persistTrip(s);
-      await reply(
-        s,
-        `No open Shop & Deliver requests on that route yet — I’ll ping you if one shows up. Say hi anytime to search another flight.`,
-      );
-    }
-  } catch (e: any) {
-    console.warn(`[traveler-agent] book failed: ${e?.message ?? e}`);
-    await reply(s, `Couldn’t complete booking — ${e?.message ?? "try again"}.`);
-  }
+  if (trip.optedIn === undefined) return askShopOptIn(s, deps);
+  await afterTripCommitted(s, deps);
   return true;
 }
 
@@ -356,35 +432,4 @@ async function handleEarn(
   persistTrip(s);
   await say(s, res.message);
   return true;
-}
-
-function pickIndex(text: string, options: FlightOption[]): number | null {
-  const bare = text.trim().match(/^(\d+)\.?$/);
-  if (bare) {
-    const i = parseInt(bare[1]!, 10) - 1;
-    if (i >= 0 && i < options.length) return i;
-  }
-  const time = text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
-  if (time) {
-    let h = parseInt(time[1]!, 10);
-    const m = parseInt(time[2]!, 10);
-    const ap = time[3]?.toLowerCase();
-    if (ap === "pm" && h < 12) h += 12;
-    if (ap === "am" && h === 12) h = 0;
-    for (let i = 0; i < options.length; i++) {
-      const d = options[i]!.departAt;
-      if (d.getHours() === h && d.getMinutes() === m) return i;
-    }
-    for (let i = 0; i < options.length; i++) {
-      if (options[i]!.departAt.getHours() === h) return i;
-    }
-  }
-  if (/\b(first|1st)\b/i.test(text)) return 0;
-  if (/\b(second|2nd)\b/i.test(text) && options.length > 1) return 1;
-  if (/\b(third|3rd)\b/i.test(text) && options.length > 2) return 2;
-  for (let i = 0; i < options.length; i++) {
-    const a = options[i]!.airline.toLowerCase();
-    if (text.toLowerCase().includes(a)) return i;
-  }
-  return null;
 }
