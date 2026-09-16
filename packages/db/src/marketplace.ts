@@ -202,6 +202,32 @@ function rowToOffer(r: {
 async function ensurePg(): Promise<void> {
   if (ensured) return;
   const prisma = await getPrisma();
+  // #region agent log
+  try {
+    const raw = process.env.DATABASE_URL ?? "";
+    const u = raw ? new URL(raw) : null;
+    fetch("http://127.0.0.1:7854/ingest/a231508e-92f8-412b-a181-535e3ce153db", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "38c5c9" },
+      body: JSON.stringify({
+        sessionId: "38c5c9",
+        runId: "pre-fix",
+        hypothesisId: "D",
+        location: "marketplace.ts:ensurePg",
+        message: "connecting",
+        data: {
+          hasUrl: Boolean(raw),
+          host: u?.hostname ?? "",
+          port: u?.port ?? "",
+          protocol: u?.protocol ?? "",
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  } catch {
+    /* ignore */
+  }
+  // #endregion
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS "marketplace_offers" (
       "id" VARCHAR(128) NOT NULL,

@@ -102,6 +102,7 @@ const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature
   "./linq-client.mts"
 );
 const {
+  debugProbeRelayAuth,
   ensureCloudWebhook,
   extractRelayInbound,
   pollEvents,
@@ -366,6 +367,9 @@ console.log(`[traveler-agent] webhook POST /webhooks/relay (optional)`);
 console.log(
   `[traveler-agent] linq=${linqOff ? "off" : process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "set" : "MISSING"} relay=${relayConfigured() ? "set" : "off"} keys=${relayTokenKeyNames().join(",") || "none"}`,
 );
+void debugProbeRelayAuth().catch((e: any) => {
+  console.warn(`[relay] debug probe: ${e?.message ?? e}`);
+});
 void ensureCloudWebhook();
 if (agentcardConfigured()) {
   void mintPlatformToken()

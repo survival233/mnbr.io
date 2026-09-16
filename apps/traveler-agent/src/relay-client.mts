@@ -1,4 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /**
  * Optional Relay chat pipe (same env names as shopper).
@@ -33,41 +35,119 @@ function token(): string {
   return first.value;
 }
 
+function relayErrorMeta(text: string): { errorCode?: number; errorMessage?: string } {
+  try {
+    const body = JSON.parse(text);
+    return { errorCode: body?.error?.code, errorMessage: body?.error?.message };
+  } catch {
+    return {};
+  }
+}
+
+async function probeRelayPath(
+  path: string,
+  tokenValue: string,
+): Promise<{ status: number; ok: boolean; errorCode?: number; errorMessage?: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8_000);
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${tokenValue}`, "user-agent": "relay-docs/1.0" },
+    });
+    const text = await res.text();
+    return { status: res.status, ok: res.ok, ...relayErrorMeta(text) };
+  } catch (e: any) {
+    return { status: 0, ok: false, errorMessage: e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function agentLog(
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+  runId = "pre-fix",
+) {
+  // #region agent log
+  fetch("http://127.0.0.1:7854/ingest/a231508e-92f8-412b-a181-535e3ce153db", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "38c5c9" },
+    body: JSON.stringify({
+      sessionId: "38c5c9",
+      runId,
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
+/** Probe /v1/agents/me vs /v1/chats without accepting a token. */
+export async function debugProbeRelayAuth(): Promise<void> {
+  const candidates = tokenCandidates();
+  agentLog("A", "relay-client.mts:debugProbeRelayAuth", "token candidates", {
+    keys: candidates.map((c) => c.key),
+    lens: candidates.map((c) => c.value.length),
+    prefixes: candidates.map((c) => c.value.slice(0, 8)),
+    base: BASE,
+  });
+  for (const c of candidates) {
+    const me = await probeRelayPath("/v1/agents/me", c.value);
+    const chats = await probeRelayPath("/v1/chats?limit=1", c.value);
+    const subs = await probeRelayPath("/v1/webhook-subscriptions", c.value);
+    agentLog("A", "relay-client.mts:debugProbeRelayAuth", "endpoint compare", {
+      key: c.key,
+      me,
+      chats,
+      subs,
+    });
+    console.log(
+      `[relay] probe key=${c.key} agents/me=${me.status}/${me.errorCode ?? "-"} chats=${chats.status}/${chats.errorCode ?? "-"} subs=${subs.status}/${subs.errorCode ?? "-"}`,
+    );
+  }
+}
+
 /** Prefer RELAY_TRAVELER_AGENT_TOKEN; fall back if RELAY_AGENT_TOKEN is stale. */
 export async function resolveAgentToken(): Promise<void> {
   const candidates = tokenCandidates();
   if (candidates.length === 0) return;
   for (const c of candidates) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8_000);
-    try {
-      const res = await fetch(`${BASE}/v1/agents/me`, {
-        signal: ctrl.signal,
-        headers: { authorization: `Bearer ${c.value}` },
-      });
-      const text = await res.text();
-      if (!res.ok) {
-        console.warn(`[relay] token key=${c.key} → ${res.status}`);
-        continue;
-      }
-      resolvedToken = c.value;
-      let handle = "?";
-      let id = "?";
-      try {
-        const body = JSON.parse(text);
-        const agent = body?.agent ?? body;
-        handle = agent?.handle ?? "?";
-        id = agent?.id ?? "?";
-      } catch {
-        /* ignore */
-      }
-      console.log(`[relay] token key=${c.key} handle=${handle} id=${id}`);
-      return;
-    } catch (e: any) {
-      console.warn(`[relay] token key=${c.key} failed: ${e?.message ?? e}`);
-    } finally {
-      clearTimeout(timer);
+    const me = await probeRelayPath("/v1/agents/me", c.value);
+    agentLog("B", "relay-client.mts:resolveAgentToken", "agents/me result", {
+      key: c.key,
+      status: me.status,
+      ok: me.ok,
+      errorCode: me.errorCode,
+      errorMessage: me.errorMessage,
+    });
+    const chats = await probeRelayPath("/v1/chats?limit=1", c.value);
+    agentLog(
+      "A",
+      "relay-client.mts:resolveAgentToken",
+      "chats verify",
+      {
+        key: c.key,
+        status: chats.status,
+        ok: chats.ok,
+        errorCode: chats.errorCode,
+        errorMessage: chats.errorMessage,
+        meStatus: me.status,
+      },
+      "post-fix",
+    );
+    if (!chats.ok) {
+      console.warn(`[relay] token key=${c.key} chats=${chats.status} me=${me.status}`);
+      continue;
     }
+    resolvedToken = c.value;
+    console.log(`[relay] token key=${c.key} chats=ok me=${me.status}`);
+    return;
   }
 }
 
@@ -117,26 +197,25 @@ export async function sendText(args: {
   idempotencyKey: string;
   replyToMessageId?: string | null;
 }): Promise<{ messageId?: string }> {
-  const body: Record<string, unknown> = {
-    conversation_id: args.conversationId,
-    parts: [{ type: "text", text: args.text }],
+  const message: Record<string, unknown> = {
+    parts: [{ type: "text", value: args.text }],
+    idempotency_key: args.idempotencyKey,
   };
   if (args.replyToMessageId) {
-    body.reply_to = { message_id: args.replyToMessageId, part_index: 0 };
+    message.reply_to = { message_id: args.replyToMessageId, part_index: 0 };
   }
-  const out = await api<any>("/v1/messages", {
+  const out = await api<any>(`/v1/chats/${args.conversationId}/messages`, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ message }),
     idempotencyKey: args.idempotencyKey,
   });
   return { messageId: out?.message?.id ?? out?.id };
 }
 
-export async function startTyping(conversationId: string, label?: string): Promise<void> {
+export async function startTyping(conversationId: string, _label?: string): Promise<void> {
   try {
-    await api(`/v1/conversations/${conversationId}/typing`, {
+    await api(`/v1/chats/${conversationId}/typing`, {
       method: "POST",
-      body: JSON.stringify({ started: true, ...(label ? { label: label.slice(0, 80) } : {}) }),
       timeoutMs: 4_000,
     });
   } catch {
@@ -146,9 +225,8 @@ export async function startTyping(conversationId: string, label?: string): Promi
 
 export async function stopTyping(conversationId: string): Promise<void> {
   try {
-    await api(`/v1/conversations/${conversationId}/typing`, {
-      method: "POST",
-      body: JSON.stringify({ started: false }),
+    await api(`/v1/chats/${conversationId}/typing`, {
+      method: "DELETE",
       timeoutMs: 4_000,
     });
   } catch {
@@ -156,11 +234,10 @@ export async function stopTyping(conversationId: string): Promise<void> {
   }
 }
 
-export async function markRead(conversationId: string, messageId: string): Promise<void> {
+export async function markRead(conversationId: string, _messageId?: string): Promise<void> {
   try {
-    await api(`/v1/conversations/${conversationId}/responding`, {
+    await api(`/v1/chats/${conversationId}/read`, {
       method: "POST",
-      body: JSON.stringify({ message_id: messageId }),
       timeoutMs: 4_000,
     });
   } catch {
@@ -209,30 +286,35 @@ export function extractRelayInbound(event: any): {
   text: string;
 } | null {
   const eventId = String(event?.event_id ?? "");
-  const msg = event?.data?.message ?? event?.message;
-  if (!msg) return null;
-  const conversationId = String(msg.conversation_id ?? "");
-  const messageId = String(msg.id ?? "");
-  const userId = String(msg.sender?.id ?? "");
-  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+  const data = event?.data ?? event;
+  const msg = data?.message ?? data;
+  const conversationId = String(data?.chat?.id ?? msg?.conversation_id ?? msg?.chat_id ?? "");
+  const messageId = String(data?.id ?? msg?.id ?? "");
+  const userId = String(
+    data?.sender_handle?.id ?? msg?.sender_handle?.id ?? msg?.sender?.id ?? "",
+  );
+  const parts = Array.isArray(data?.parts) ? data.parts : Array.isArray(msg?.parts) ? msg.parts : [];
   const text =
     parts
       .filter((p: any) => p?.type === "text")
-      .map((p: any) => String(p.text ?? "").trim())
+      .map((p: any) => String(p.value ?? p.text ?? "").trim())
       .filter(Boolean)
-      .join("\n") || String(msg.fallback_text ?? "").trim();
+      .join("\n") || String(msg?.fallback_text ?? data?.fallback_text ?? "").trim();
   if (!eventId || !conversationId || !userId || !text) return null;
   return { eventId, userId, conversationId, messageId, text };
 }
 
-export async function registerWebhook(url: string): Promise<{ id?: string; signingSecret?: string }> {
-  const out = await api<any>("/v1/webhooks", {
+export async function registerWebhook(
+  url: string,
+  events: string[],
+): Promise<{ id?: string; signingSecret?: string }> {
+  const out = await api<any>("/v1/webhook-subscriptions", {
     method: "POST",
-    body: JSON.stringify({ url, events: ["message.received"] }),
+    body: JSON.stringify({ target_url: url, subscribed_events: events }),
   });
   return {
-    id: out?.webhook?.id ?? out?.id,
-    signingSecret: out?.signing_secret ?? out?.signingSecret ?? out?.webhook?.signing_secret,
+    id: out?.id,
+    signingSecret: out?.signing_secret ?? out?.signingSecret,
   };
 }
 
@@ -243,6 +325,18 @@ function rememberSigningSecret(secret?: string) {
   if (!s) return;
   runtimeSigningSecret = s;
   process.env.RELAY_WEBHOOK_SECRET = s;
+  try {
+    const p = fileURLToPath(new URL("./../.env", import.meta.url));
+    let text = readFileSync(p, "utf8");
+    if (/^RELAY_WEBHOOK_SECRET=/m.test(text)) {
+      text = text.replace(/^RELAY_WEBHOOK_SECRET=.*$/m, `RELAY_WEBHOOK_SECRET=${s}`);
+    } else {
+      text = `${text.trimEnd()}\nRELAY_WEBHOOK_SECRET=${s}\n`;
+    }
+    writeFileSync(p, text);
+  } catch {
+    /* local persist best-effort */
+  }
 }
 
 /** Env secret plus the one Relay returned at boot (create / rotate). */
@@ -265,58 +359,95 @@ async function rotateSigningSecret(id: string): Promise<void> {
 
 /** On Render, register our HTTPS receiver with the agent token. Phone chat has no webhook UI. */
 export async function ensureCloudWebhook(): Promise<void> {
-  if (process.env.DEMO_RELAY_POLL === "1") return;
-  if (!relayConfigured()) return;
-  const base = (process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
-  if (!base.startsWith("https://")) return;
+  const renderBase = (process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
+  const skip = {
+    demoPoll: process.env.DEMO_RELAY_POLL === "1",
+    configured: relayConfigured(),
+    renderHttps: renderBase.startsWith("https://"),
+  };
+  agentLog("C", "relay-client.mts:ensureCloudWebhook", "entry", {
+    ...skip,
+    renderHost: renderBase ? new URL(renderBase).host : "",
+  });
+  if (skip.demoPoll) return;
+  if (!skip.configured) return;
+  if (!skip.renderHttps) return;
   await resolveAgentToken();
+  agentLog("C", "relay-client.mts:ensureCloudWebhook", "after resolve", {
+    accepted: Boolean(resolvedToken),
+  });
   if (!resolvedToken) {
     console.warn("[relay] no valid agent token — phone messages will not deliver");
     return;
   }
+  const base = renderBase;
   // Rolling deploy starts the new box before the old one dies; wait so we
-  // register/rotate on the instance that will actually receive traffic.
+  // register on the instance that will actually receive traffic.
   await new Promise((r) => setTimeout(r, 15_000));
   const want = `${base}/webhooks/relay`;
   try {
-    const me = await api<any>("/v1/agents/me", { method: "GET", timeoutMs: 8_000 });
-    const agent = me?.agent ?? me;
-    console.log(`[relay] agent handle=${agent?.handle ?? "?"} id=${agent?.id ?? "?"}`);
-    const out = await api<{ webhooks?: { id: string; url: string; events?: string[]; enabled: boolean }[] }>(
-      "/v1/webhooks",
+    const catalog = await api<{ events?: string[] }>("/v1/webhook-events", { method: "GET", timeoutMs: 8_000 });
+    const subscribed =
+      catalog.events?.filter((e) => typeof e === "string") ?? ["message.received", "contact.added"];
+    const listed = await api<{ subscriptions?: { id: string; target_url: string; subscribed_events?: string[]; is_active: boolean }[] }>(
+      "/v1/webhook-subscriptions",
       { method: "GET", timeoutMs: 8_000 },
     );
-    const hooks = out?.webhooks ?? [];
-    console.log(`[relay] webhooks ${hooks.length} want=${want}`);
-    for (const w of hooks) {
-      console.log(`[relay] ${w.id} enabled=${w.enabled} url=${w.url} events=${(w.events ?? []).join(",")}`);
-    }
-    let mine = hooks.find((w) => w.url.replace(/\/$/, "") === want) ?? hooks[0];
+    const hooks = listed.subscriptions ?? [];
+    agentLog(
+      "C",
+      "relay-client.mts:ensureCloudWebhook",
+      "subscriptions",
+      {
+        want,
+        count: hooks.length,
+        urls: hooks.map((w) => w.target_url),
+        active: hooks.map((w) => w.is_active),
+        catalog: subscribed.length,
+      },
+      "post-fix",
+    );
+    console.log(`[relay] subscriptions ${hooks.length} want=${want}`);
+    const wantHost = new URL(want).host;
+    let mine =
+      hooks.find((w) => w.target_url.replace(/\/$/, "") === want) ??
+      hooks.find((w) => {
+        try {
+          return new URL(w.target_url).host === wantHost;
+        } catch {
+          return false;
+        }
+      });
     if (!mine) {
-      const created = await registerWebhook(want);
+      const created = await registerWebhook(want, subscribed);
       rememberSigningSecret(created.signingSecret);
-      console.log(`[relay] created webhook ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`);
+      console.log(`[relay] created subscription ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`);
       return;
     }
-    const events = mine.events ?? [];
-    const needEvents = !events.includes("message.received");
-    const needEnable = mine.enabled === false;
-    const needUrl = mine.url.replace(/\/$/, "") !== want;
+    const events = mine.subscribed_events ?? [];
+    const needEvents = subscribed.some((e) => !events.includes(e));
+    const needEnable = mine.is_active === false;
+    const needUrl = mine.target_url.replace(/\/$/, "") !== want;
     if (needEvents || needEnable || needUrl) {
-      await api(`/v1/webhooks/${mine.id}`, {
-        method: "PATCH",
+      await api(`/v1/webhook-subscriptions/${mine.id}`, {
+        method: "PUT",
         body: JSON.stringify({
-          ...(needUrl ? { url: want } : {}),
-          ...(needEnable ? { enabled: true } : {}),
-          ...(needEvents ? { events: ["message.received"] } : {}),
+          ...(needUrl ? { target_url: want } : {}),
+          ...(needEnable ? { is_active: true } : {}),
+          ...(needEvents ? { subscribed_events: subscribed } : {}),
         }),
         timeoutMs: 8_000,
       });
-      console.log(`[relay] patched ${mine.id} url=${needUrl} enabled=${needEnable} events=${needEvents}`);
+      console.log(`[relay] updated ${mine.id} url=${needUrl} active=${needEnable} events=${needEvents}`);
     }
-    // List never returns the secret; rotate so this process can verify inbound.
-    await rotateSigningSecret(mine.id);
   } catch (e: any) {
+    agentLog(
+      "C",
+      "relay-client.mts:ensureCloudWebhook",
+      "subscription error",
+      { error: String(e?.message ?? e).slice(0, 240) },
+      "post-fix",
+    );
     console.warn(`[relay] webhook check: ${e?.message ?? e}`);
   }
 }
