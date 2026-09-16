@@ -56,7 +56,7 @@ export async function sendText(args: {
 }): Promise<{ messageId?: string }> {
   return sendParts({
     conversationId: args.conversationId,
-    parts: [{ type: "text", text: args.text }],
+    parts: [{ type: "text", value: args.text }],
     idempotencyKey: args.idempotencyKey,
     replyToMessageId: args.replyToMessageId,
   });
@@ -69,30 +69,33 @@ export async function sendParts(args: {
   idempotencyKey: string;
   replyToMessageId?: string | null;
 }): Promise<{ messageId?: string }> {
-  const body: Record<string, unknown> = {
-    conversation_id: args.conversationId,
-    parts: args.parts.map((p) => {
-      if (p.type !== "media") return p;
-      const { content_type: _drop, ...rest } = p;
-      return rest;
-    }),
+  const parts = args.parts.map((p) => {
+    if (p.type === "text") {
+      return { type: "text", value: String(p.value ?? p.text ?? "") };
+    }
+    if (p.type !== "media") return p;
+    const { content_type: _drop, ...rest } = p;
+    return rest;
+  });
+  const message: Record<string, unknown> = {
+    parts,
+    idempotency_key: args.idempotencyKey,
   };
   if (args.replyToMessageId) {
-    body.reply_to = { message_id: args.replyToMessageId, part_index: 0 };
+    message.reply_to = { message_id: args.replyToMessageId, part_index: 0 };
   }
-  const out = await api<any>("/v1/messages", {
+  const out = await api<any>(`/v1/chats/${args.conversationId}/messages`, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ message }),
     idempotencyKey: args.idempotencyKey,
   });
   return { messageId: out?.message?.id ?? out?.id };
 }
 
-export async function startTyping(conversationId: string, label?: string): Promise<void> {
+export async function startTyping(conversationId: string, _label?: string): Promise<void> {
   try {
-    await api(`/v1/conversations/${conversationId}/typing`, {
+    await api(`/v1/chats/${conversationId}/typing`, {
       method: "POST",
-      body: JSON.stringify({ started: true, ...(label ? { label: label.slice(0, 80) } : {}) }),
       timeoutMs: 4_000,
     });
   } catch {
@@ -102,9 +105,8 @@ export async function startTyping(conversationId: string, label?: string): Promi
 
 export async function stopTyping(conversationId: string): Promise<void> {
   try {
-    await api(`/v1/conversations/${conversationId}/typing`, {
-      method: "POST",
-      body: JSON.stringify({ started: false }),
+    await api(`/v1/chats/${conversationId}/typing`, {
+      method: "DELETE",
       timeoutMs: 4_000,
     });
   } catch {
@@ -112,16 +114,14 @@ export async function stopTyping(conversationId: string): Promise<void> {
   }
 }
 
-export async function markRead(conversationId: string, messageId: string): Promise<void> {
+export async function markRead(conversationId: string, _messageId?: string): Promise<void> {
   try {
-    // Official receive loop: Read (implies Delivered) then typing.
-    await api(`/v1/conversations/${conversationId}/responding`, {
+    await api(`/v1/chats/${conversationId}/read`, {
       method: "POST",
-      body: JSON.stringify({ message_id: messageId }),
       timeoutMs: 4_000,
     });
   } catch {
-    /* best-effort — path may vary */
+    /* best-effort */
   }
 }
 
@@ -206,8 +206,9 @@ function isMediaImagePart(p: any): boolean {
 
 /** Collect HTTPS / capability URLs from inbound media + image artifact parts. */
 export function extractRelayImageUrls(event: any): string[] {
-  const msg = event?.data?.message ?? event?.message;
-  const parts = Array.isArray(msg?.parts) ? msg.parts : [];
+  const data = event?.data ?? event;
+  const msg = data?.message ?? data;
+  const parts = Array.isArray(data?.parts) ? data.parts : Array.isArray(msg?.parts) ? msg.parts : [];
   const urls: string[] = [];
   for (const p of parts) {
     const fromData = imageRefFromDataPart(p);
@@ -335,22 +336,24 @@ export function extractRelayInbound(event: any): {
   imageRefs: string[];
 } | null {
   const eventId = String(event?.event_id ?? "");
-  const msg = event?.data?.message ?? event?.message;
-  if (!msg) return null;
-  const conversationId = String(msg.conversation_id ?? "");
-  const messageId = String(msg.id ?? "");
-  const userId = String(msg.sender?.id ?? "");
-  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+  const data = event?.data ?? event;
+  const msg = data?.message ?? data;
+  const conversationId = String(data?.chat?.id ?? msg?.conversation_id ?? msg?.chat_id ?? "");
+  const messageId = String(data?.id ?? msg?.id ?? "");
+  const userId = String(
+    data?.sender_handle?.id ?? msg?.sender_handle?.id ?? msg?.sender?.id ?? "",
+  );
+  const parts = Array.isArray(data?.parts) ? data.parts : Array.isArray(msg?.parts) ? msg.parts : [];
   const textParts = parts
     .filter((p: any) => p?.type === "text")
-    .map((p: any) => String(p.text ?? "").trim())
+    .map((p: any) => String(p.value ?? p.text ?? "").trim())
     .filter(Boolean)
     .join("\n");
   const imageRefs = extractRelayImageUrls(event);
   // Phone photo uploads often only have fallback_text "Photo" + a data artifact.
   let text = textParts;
   if (!text && imageRefs.length === 0) {
-    text = String(msg.fallback_text ?? "").trim();
+    text = String(msg?.fallback_text ?? data?.fallback_text ?? "").trim();
   } else if (!text && imageRefs.length > 0) {
     text = ""; // ignore Photo/[attachment] fallback when we have the image
   }
@@ -359,14 +362,17 @@ export function extractRelayInbound(event: any): {
   return { eventId, userId, conversationId, messageId, text, imageRefs };
 }
 
-export async function registerWebhook(url: string): Promise<{ id?: string; signingSecret?: string }> {
-  const out = await api<any>("/v1/webhooks", {
+export async function registerWebhook(
+  url: string,
+  events: string[],
+): Promise<{ id?: string; signingSecret?: string }> {
+  const out = await api<any>("/v1/webhook-subscriptions", {
     method: "POST",
-    body: JSON.stringify({ url, events: ["message.received"] }),
+    body: JSON.stringify({ target_url: url, subscribed_events: events }),
   });
   return {
-    id: out?.webhook?.id ?? out?.id,
-    signingSecret: out?.signing_secret,
+    id: out?.id,
+    signingSecret: out?.signing_secret ?? out?.signingSecret,
   };
 }
 
@@ -391,10 +397,15 @@ export function relayWebhookSecrets(): string[] {
   return out;
 }
 
-async function rotateSigningSecret(id: string): Promise<void> {
-  const out = await api<any>(`/v1/webhooks/${id}/rotate-secret`, { method: "POST", timeoutMs: 8_000 });
-  rememberSigningSecret(out?.signing_secret);
-  console.log(`[relay] rotated signing secret for ${id}`);
+async function verifyRelayToken(): Promise<boolean> {
+  try {
+    await api("/v1/chats?limit=1", { method: "GET", timeoutMs: 8_000 });
+    console.log("[relay] token chats=ok");
+    return true;
+  } catch (e: any) {
+    console.warn(`[relay] token chats failed: ${e?.message ?? e}`);
+    return false;
+  }
 }
 
 /** On Render, register our HTTPS receiver with the agent token. Phone chat has no webhook UI. */
@@ -403,53 +414,62 @@ export async function ensureCloudWebhook(): Promise<void> {
   if (!relayConfigured()) return;
   const base = (process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
   if (!base.startsWith("https://")) return;
+  if (!(await verifyRelayToken())) {
+    console.warn("[relay] no valid agent token — phone messages will not deliver");
+    return;
+  }
   const want = `${base}/webhooks/relay`;
+  await new Promise((r) => setTimeout(r, 15_000));
   try {
-    const me = await api<any>("/v1/agents/me", { method: "GET", timeoutMs: 8_000 });
-    const agent = me?.agent ?? me;
-    console.log(`[relay] agent handle=${agent?.handle ?? "?"} id=${agent?.id ?? "?"}`);
-    const out = await api<{ webhooks?: { id: string; url: string; events?: string[]; enabled: boolean }[] }>(
-      "/v1/webhooks",
-      { method: "GET", timeoutMs: 8_000 },
-    );
-    const hooks = out?.webhooks ?? [];
-    console.log(`[relay] webhooks ${hooks.length} want=${want}`);
-    for (const w of hooks) {
-      console.log(`[relay] ${w.id} enabled=${w.enabled} url=${w.url} events=${(w.events ?? []).join(",")}`);
-    }
-    let mine = hooks.find((w) => w.url.replace(/\/$/, "") === want) ?? hooks[0];
+    const catalog = await api<{ events?: string[] }>("/v1/webhook-events", { method: "GET", timeoutMs: 8_000 });
+    const subscribed =
+      catalog.events?.filter((e) => typeof e === "string") ?? ["message.received", "contact.added"];
+    const listed = await api<{
+      subscriptions?: { id: string; target_url: string; subscribed_events?: string[]; is_active: boolean }[];
+    }>("/v1/webhook-subscriptions", { method: "GET", timeoutMs: 8_000 });
+    const hooks = listed.subscriptions ?? [];
+    console.log(`[relay] subscriptions ${hooks.length} want=${want}`);
+    const wantHost = new URL(want).host;
+    let mine =
+      hooks.find((w) => w.target_url.replace(/\/$/, "") === want) ??
+      hooks.find((w) => {
+        try {
+          return new URL(w.target_url).host === wantHost;
+        } catch {
+          return false;
+        }
+      });
     if (!mine) {
-      const created = await registerWebhook(want);
+      const created = await registerWebhook(want, subscribed);
       rememberSigningSecret(created.signingSecret);
-      console.log(`[relay] created webhook ${created.id ?? "?"} for ${want}`);
+      console.log(
+        `[relay] created subscription ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`,
+      );
       return;
     }
-    const events = mine.events ?? [];
-    const needEvents = !events.includes("message.received");
-    const needEnable = mine.enabled === false;
-    const needUrl = mine.url.replace(/\/$/, "") !== want;
+    const events = mine.subscribed_events ?? [];
+    const needEvents = subscribed.some((e) => !events.includes(e));
+    const needEnable = mine.is_active === false;
+    const needUrl = mine.target_url.replace(/\/$/, "") !== want;
     if (needEvents || needEnable || needUrl) {
-      await api(`/v1/webhooks/${mine.id}`, {
-        method: "PATCH",
+      await api(`/v1/webhook-subscriptions/${mine.id}`, {
+        method: "PUT",
         body: JSON.stringify({
-          ...(needUrl ? { url: want } : {}),
-          ...(needEnable ? { enabled: true } : {}),
-          ...(needEvents ? { events: ["message.received"] } : {}),
+          ...(needUrl ? { target_url: want } : {}),
+          ...(needEnable ? { is_active: true } : {}),
+          ...(needEvents ? { subscribed_events: subscribed } : {}),
         }),
         timeoutMs: 8_000,
       });
-      console.log(`[relay] patched ${mine.id} url=${needUrl} enabled=${needEnable} events=${needEvents}`);
+      console.log(`[relay] updated ${mine.id} url=${needUrl} active=${needEnable} events=${needEvents}`);
     }
-    // List never returns the secret; rotate so this process can verify inbound.
-    await rotateSigningSecret(mine.id);
   } catch (e: any) {
     console.warn(`[relay] webhook check: ${e?.message ?? e}`);
   }
 }
 
-export async function verifyAgentToken(): Promise<{ id?: string; name?: string }> {
-  const out = await api<any>("/v1/agents/me", { method: "GET" });
-  return { id: out?.agent?.id ?? out?.id, name: out?.agent?.name ?? out?.name };
+export async function verifyAgentToken(): Promise<{ ok: boolean }> {
+  return { ok: await verifyRelayToken() };
 }
 
 /** Telegram-style long poll. 409 if a webhook is still enabled on this token. */
