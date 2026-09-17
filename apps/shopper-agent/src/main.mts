@@ -88,8 +88,11 @@ const { extractChatId, extractInboundText, extractSender, verifyWebhookSignature
 const {
   ensureCloudWebhook,
   extractRelayInbound,
+  noteRelayWebhook,
   pollEvents,
+  refreshCloudWebhook,
   relayConfigured,
+  relayDiag,
   relayWebhookSecrets,
   resolveImagesForVision,
   verifyRelayWebhookSignature,
@@ -274,6 +277,7 @@ dispatch = async (req, res) => {
       sessions: stats.count,
       inboundCount,
       relay: relayConfigured() ? "configured" : "off",
+      relayDiag: relayDiag(),
       agentcard: agentcardConfigured() ? "configured" : "off",
       agentcardOauth: agentcardConfigured() || oauthConfigured() ? "configured" : "off",
       vision: process.env.OPENAI_API_KEY ? "openai" : "off",
@@ -292,23 +296,27 @@ dispatch = async (req, res) => {
     const raw = await readBody(req);
     console.log(`[shopper-agent] relay POST bytes=${raw.length}`);
     const secrets = relayWebhookSecrets();
-    if (secrets.length) {
-      const headers: Record<string, string | string[] | undefined> = {};
-      for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
-      if (!secrets.some((secret) => verifyRelayWebhookSignature(secret, raw, headers))) {
-        const signed = ["webhook-id", "webhook-timestamp", "webhook-signature"].filter(
-          (k) => headers[k] ?? headers[k.toLowerCase()],
-        );
-        console.warn(`[shopper-agent] relay webhook 401 headers=${signed.join(",") || "none"}`);
-        fail(res, 401, "invalid signature");
-        return;
-      }
-    } else if (process.env.NODE_ENV === "production") {
-      fail(res, 500, "RELAY_WEBHOOK_SECRET not set");
+    if (!secrets.length) {
+      noteRelayWebhook(503, raw.length);
+      void refreshCloudWebhook();
+      fail(res, 503, "webhook secret not ready");
+      return;
+    }
+    const headers: Record<string, string | string[] | undefined> = {};
+    for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
+    if (!secrets.some((secret) => verifyRelayWebhookSignature(secret, raw, headers))) {
+      const signed = ["webhook-id", "webhook-timestamp", "webhook-signature"].filter(
+        (k) => headers[k] ?? headers[k.toLowerCase()],
+      );
+      console.warn(`[shopper-agent] relay webhook signature miss headers=${signed.join(",") || "none"}`);
+      noteRelayWebhook(503, raw.length);
+      void refreshCloudWebhook();
+      fail(res, 503, "webhook secret rotating");
       return;
     }
 
-    // Ack fast (Relay wants 2xx within 10s)
+    // Ack fast (Relay retries 401 as terminal; 2xx within 10s)
+    noteRelayWebhook(202, raw.length);
     ok(res, { received: true }, 202);
 
     try {

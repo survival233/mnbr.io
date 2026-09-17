@@ -244,7 +244,7 @@ async function replyParts(
 ): Promise<void> {
   const caption = parts
     .filter((p) => p.type === "text")
-    .map((p) => String(p.text ?? ""))
+    .map((p) => String(p.value ?? p.text ?? ""))
     .join("\n")
     .trim();
   const hasMedia = parts.some((p) => p.type === "media");

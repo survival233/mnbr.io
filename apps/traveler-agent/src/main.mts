@@ -331,12 +331,14 @@ dispatch = async (req, res) => {
         const signed = ["webhook-id", "webhook-timestamp", "webhook-signature"].filter(
           (k) => headers[k] ?? headers[k.toLowerCase()],
         );
-        console.warn(`[traveler-agent] relay webhook 401 headers=${signed.join(",") || "none"}`);
-        fail(res, 401, "invalid signature");
+        console.warn(`[traveler-agent] relay webhook signature miss headers=${signed.join(",") || "none"}`);
+        void ensureCloudWebhook();
+        fail(res, 503, "webhook secret rotating");
         return;
       }
-    } else if (process.env.NODE_ENV === "production" && relayConfigured()) {
-      fail(res, 500, "RELAY_WEBHOOK_SECRET not set");
+    } else if (relayConfigured()) {
+      void ensureCloudWebhook();
+      fail(res, 503, "webhook secret not ready");
       return;
     }
 

@@ -381,9 +381,6 @@ export async function ensureCloudWebhook(): Promise<void> {
     return;
   }
   const base = renderBase;
-  // Rolling deploy starts the new box before the old one dies; wait so we
-  // register on the instance that will actually receive traffic.
-  await new Promise((r) => setTimeout(r, 15_000));
   const want = `${base}/webhooks/relay`;
   try {
     const catalog = await api<{ events?: string[] }>("/v1/webhook-events", { method: "GET", timeoutMs: 8_000 });
@@ -409,37 +406,24 @@ export async function ensureCloudWebhook(): Promise<void> {
     );
     console.log(`[relay] subscriptions ${hooks.length} want=${want}`);
     const wantHost = new URL(want).host;
-    let mine =
-      hooks.find((w) => w.target_url.replace(/\/$/, "") === want) ??
-      hooks.find((w) => {
-        try {
-          return new URL(w.target_url).host === wantHost;
-        } catch {
-          return false;
-        }
-      });
-    if (!mine) {
-      const created = await registerWebhook(want, subscribed);
-      rememberSigningSecret(created.signingSecret);
-      console.log(`[relay] created subscription ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`);
-      return;
+    const mine = hooks.filter((w) => {
+      try {
+        return w.target_url.replace(/\/$/, "") === want || new URL(w.target_url).host === wantHost;
+      } catch {
+        return false;
+      }
+    });
+    for (const w of mine) {
+      try {
+        await api(`/v1/webhook-subscriptions/${w.id}`, { method: "DELETE", timeoutMs: 8_000 });
+        console.log(`[relay] deleted subscription ${w.id}`);
+      } catch (e: any) {
+        console.warn(`[relay] delete ${w.id}: ${e?.message ?? e}`);
+      }
     }
-    const events = mine.subscribed_events ?? [];
-    const needEvents = subscribed.some((e) => !events.includes(e));
-    const needEnable = mine.is_active === false;
-    const needUrl = mine.target_url.replace(/\/$/, "") !== want;
-    if (needEvents || needEnable || needUrl) {
-      await api(`/v1/webhook-subscriptions/${mine.id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          ...(needUrl ? { target_url: want } : {}),
-          ...(needEnable ? { is_active: true } : {}),
-          ...(needEvents ? { subscribed_events: subscribed } : {}),
-        }),
-        timeoutMs: 8_000,
-      });
-      console.log(`[relay] updated ${mine.id} url=${needUrl} active=${needEnable} events=${needEvents}`);
-    }
+    const created = await registerWebhook(want, subscribed);
+    rememberSigningSecret(created.signingSecret);
+    console.log(`[relay] created subscription ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`);
   } catch (e: any) {
     agentLog(
       "C",

@@ -48,6 +48,43 @@ export function relayConfigured(): boolean {
   return Boolean(process.env.RELAY_AGENT_TOKEN?.trim());
 }
 
+type RelayDiag = {
+  tokenOk: boolean | null;
+  webhookLastStatus: number | null;
+  webhookLastAt: string | null;
+  webhookLastBytes: number | null;
+  sendLastOk: boolean | null;
+  sendLastAt: string | null;
+  sendLastChatId: string | null;
+  sendLastError: string | null;
+  subscriptionUrl: string | null;
+};
+
+const diag: RelayDiag = {
+  tokenOk: null,
+  webhookLastStatus: null,
+  webhookLastAt: null,
+  webhookLastBytes: null,
+  sendLastOk: null,
+  sendLastAt: null,
+  sendLastChatId: null,
+  sendLastError: null,
+  subscriptionUrl: null,
+};
+
+export function relayDiag(): RelayDiag & { secretConfigured: boolean } {
+  return {
+    ...diag,
+    secretConfigured: relayWebhookSecrets().length > 0,
+  };
+}
+
+export function noteRelayWebhook(status: number, bytes: number): void {
+  diag.webhookLastStatus = status;
+  diag.webhookLastBytes = bytes;
+  diag.webhookLastAt = new Date().toISOString();
+}
+
 export async function sendText(args: {
   conversationId: string;
   text: string;
@@ -74,8 +111,10 @@ export async function sendParts(args: {
       return { type: "text", value: String(p.value ?? p.text ?? "") };
     }
     if (p.type !== "media") return p;
-    const { content_type: _drop, ...rest } = p;
-    return rest;
+    const out: Record<string, unknown> = { type: "media" };
+    if (typeof p.url === "string" && p.url.startsWith("https://")) out.url = p.url;
+    if (typeof p.attachment_id === "string") out.attachment_id = p.attachment_id;
+    return out;
   });
   const message: Record<string, unknown> = {
     parts,
@@ -84,12 +123,27 @@ export async function sendParts(args: {
   if (args.replyToMessageId) {
     message.reply_to = { message_id: args.replyToMessageId, part_index: 0 };
   }
-  const out = await api<any>(`/v1/chats/${args.conversationId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ message }),
-    idempotencyKey: args.idempotencyKey,
-  });
-  return { messageId: out?.message?.id ?? out?.id };
+  try {
+    const out = await api<any>(`/v1/chats/${args.conversationId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+      idempotencyKey: args.idempotencyKey,
+    });
+    diag.sendLastOk = true;
+    diag.sendLastAt = new Date().toISOString();
+    diag.sendLastChatId = args.conversationId;
+    diag.sendLastError = null;
+    console.log(`[relay] send ok chat=${args.conversationId} id=${out?.message?.id ?? out?.id ?? "?"}`);
+    return { messageId: out?.message?.id ?? out?.id };
+  } catch (e: any) {
+    const err = String(e?.message ?? e).slice(0, 240);
+    diag.sendLastOk = false;
+    diag.sendLastAt = new Date().toISOString();
+    diag.sendLastChatId = args.conversationId;
+    diag.sendLastError = err;
+    console.warn(`[relay] send fail chat=${args.conversationId}: ${err}`);
+    throw e;
+  }
 }
 
 export async function startTyping(conversationId: string, _label?: string): Promise<void> {
@@ -400,16 +454,31 @@ export function relayWebhookSecrets(): string[] {
 async function verifyRelayToken(): Promise<boolean> {
   try {
     await api("/v1/chats?limit=1", { method: "GET", timeoutMs: 8_000 });
+    diag.tokenOk = true;
     console.log("[relay] token chats=ok");
     return true;
   } catch (e: any) {
+    diag.tokenOk = false;
     console.warn(`[relay] token chats failed: ${e?.message ?? e}`);
     return false;
   }
 }
 
+let refreshing: Promise<void> | null = null;
+
+/** Drop the saved subscription and create one this process can verify. */
+export function refreshCloudWebhook(): Promise<void> {
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    await ensureCloudWebhook({ replace: true });
+  })().finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
+}
+
 /** On Render, register our HTTPS receiver with the agent token. Phone chat has no webhook UI. */
-export async function ensureCloudWebhook(): Promise<void> {
+export async function ensureCloudWebhook(opts?: { replace?: boolean }): Promise<void> {
   if (process.env.DEMO_RELAY_POLL === "1") return;
   if (!relayConfigured()) return;
   const base = (process.env.RENDER_EXTERNAL_URL ?? "").replace(/\/$/, "");
@@ -419,7 +488,7 @@ export async function ensureCloudWebhook(): Promise<void> {
     return;
   }
   const want = `${base}/webhooks/relay`;
-  await new Promise((r) => setTimeout(r, 15_000));
+  diag.subscriptionUrl = want;
   try {
     const catalog = await api<{ events?: string[] }>("/v1/webhook-events", { method: "GET", timeoutMs: 8_000 });
     const subscribed =
@@ -430,16 +499,23 @@ export async function ensureCloudWebhook(): Promise<void> {
     const hooks = listed.subscriptions ?? [];
     console.log(`[relay] subscriptions ${hooks.length} want=${want}`);
     const wantHost = new URL(want).host;
-    let mine =
-      hooks.find((w) => w.target_url.replace(/\/$/, "") === want) ??
-      hooks.find((w) => {
+    const mine = hooks.filter((w) => {
+      try {
+        return w.target_url.replace(/\/$/, "") === want || new URL(w.target_url).host === wantHost;
+      } catch {
+        return false;
+      }
+    });
+    // List never returns signing_secret. Recreate so this instance can verify inbound.
+    if (opts?.replace !== false) {
+      for (const w of mine) {
         try {
-          return new URL(w.target_url).host === wantHost;
-        } catch {
-          return false;
+          await api(`/v1/webhook-subscriptions/${w.id}`, { method: "DELETE", timeoutMs: 8_000 });
+          console.log(`[relay] deleted subscription ${w.id}`);
+        } catch (e: any) {
+          console.warn(`[relay] delete ${w.id}: ${e?.message ?? e}`);
         }
-      });
-    if (!mine) {
+      }
       const created = await registerWebhook(want, subscribed);
       rememberSigningSecret(created.signingSecret);
       console.log(
@@ -447,21 +523,12 @@ export async function ensureCloudWebhook(): Promise<void> {
       );
       return;
     }
-    const events = mine.subscribed_events ?? [];
-    const needEvents = subscribed.some((e) => !events.includes(e));
-    const needEnable = mine.is_active === false;
-    const needUrl = mine.target_url.replace(/\/$/, "") !== want;
-    if (needEvents || needEnable || needUrl) {
-      await api(`/v1/webhook-subscriptions/${mine.id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          ...(needUrl ? { target_url: want } : {}),
-          ...(needEnable ? { is_active: true } : {}),
-          ...(needEvents ? { subscribed_events: subscribed } : {}),
-        }),
-        timeoutMs: 8_000,
-      });
-      console.log(`[relay] updated ${mine.id} url=${needUrl} active=${needEnable} events=${needEvents}`);
+    if (!mine[0]) {
+      const created = await registerWebhook(want, subscribed);
+      rememberSigningSecret(created.signingSecret);
+      console.log(
+        `[relay] created subscription ${created.id ?? "?"} for ${want} secret=${created.signingSecret ? "yes" : "no"}`,
+      );
     }
   } catch (e: any) {
     console.warn(`[relay] webhook check: ${e?.message ?? e}`);
