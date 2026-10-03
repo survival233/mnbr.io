@@ -111,7 +111,10 @@ const {
   relayWebhookSecrets,
   verifyRelayWebhookSignature,
 } = await import("./relay-client.mts");
-const { handleInbound, syncTravelerMarketplace, attachWebhookCardToWaitingTravelers } = await import("./traveler-flow.mts");
+const { handleInbound, syncTravelerMarketplace, attachWebhookCardToWaitingTravelers, deliverCalendarOAuthToChat } = await import("./traveler-flow.mts");
+const { completeGoogleOAuth, googleOAuthConfigured, setCalendarStore } = await import("./calendar-connect.mts");
+const { resilientCalendarStore } = await import("./calendar-store.mts");
+setCalendarStore(resilientCalendarStore());
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
 const { agentcardConfigured, mintPlatformToken } = await import("@repo/agentcard");
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
@@ -277,6 +280,7 @@ dispatch = async (req, res) => {
           ? "demo"
           : "off",
       db: process.env.DATABASE_URL ? "configured" : "off",
+      calendar: googleOAuthConfigured() ? "google" : "off",
     });
     return;
   }
@@ -316,6 +320,26 @@ dispatch = async (req, res) => {
       enqueueForIdentity(phone, () => handleInbound({ phone, chatId, text, channel: "linq" }));
     } catch (e: any) {
       console.error(`[traveler-agent] linq handler error: ${e.message}`);
+    }
+    return;
+  }
+
+  if (req.method === "GET" && url.startsWith("/oauth/google/callback")) {
+    const query = new URL(url, "http://localhost").searchParams;
+    const result = await completeGoogleOAuth({
+      code: query.get("code"),
+      state: query.get("state"),
+      error: query.get("error"),
+    });
+    const page = result.ok
+      ? "Calendar connected. You can return to Traveler."
+      : "Calendar connect didn’t finish. Return to Traveler and choose Set up later.";
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><title>Traveler</title><p>${page}</p>`);
+    if (result.ok || result.travelerId) {
+      void deliverCalendarOAuthToChat(result).catch((e: any) => {
+        console.warn(`[traveler-agent] calendar oauth chat: ${e?.message ?? e}`);
+      });
     }
     return;
   }

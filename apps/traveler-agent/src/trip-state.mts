@@ -24,6 +24,11 @@ export type TripState = {
   /** Shop & Deliver opt-in. Undefined until asked. Never inferred. */
   optedIn?: boolean;
   optedInAt?: number;
+  /** Calendar proposal identity. Empty for a typed-in trip. */
+  externalEventId?: string;
+  source?: "manual" | "calendar";
+  timezone?: string;
+  departAt?: string;
   updated_at: number;
 };
 

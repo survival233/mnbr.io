@@ -74,8 +74,9 @@ export async function fetchGoogleCalendarEvents(args: FetchGoogleEventsArgs): Pr
         summary?: string;
         location?: string;
         description?: string;
-        start?: { dateTime?: string; date?: string };
-        end?: { dateTime?: string; date?: string };
+        status?: string;
+        start?: { dateTime?: string; date?: string; timeZone?: string };
+        end?: { dateTime?: string; date?: string; timeZone?: string };
       }>;
     }>(args.accessToken, `/calendars/${encodeURIComponent(calId)}/events?${q}`);
 
@@ -86,11 +87,14 @@ export async function fetchGoogleCalendarEvents(args: FetchGoogleEventsArgs): Pr
         externalEventId: `google:${calId}:${ev.id}`,
         title: ev.summary ?? null,
         location: ev.location ?? null,
-        // Cap description — parsers only need the first lines for route clues
+        // Cap description — parsers only need the first lines for route clues.
+        // Never persist this string; callers keep derived cities and instants.
         description: ev.description ? ev.description.slice(0, 500) : null,
         startsAt,
         endsAt: ev.end?.dateTime ?? ev.end?.date ?? null,
         provider: "google",
+        status: ev.status ?? "confirmed",
+        timeZone: ev.start?.timeZone ?? ev.end?.timeZone ?? null,
       });
     }
   }

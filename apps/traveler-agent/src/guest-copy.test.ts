@@ -6,6 +6,8 @@ import {
   TRAVELER_WALLET_ADD,
   TRAVELER_CARD_ON_FILE,
   asksToBookFlight,
+  calendarConnectLines,
+  guestCopyHasBannedTerm,
 } from "@manebra/dialog";
 
 describe("traveler ask", () => {
@@ -52,5 +54,17 @@ describe("traveler hi + opt-in + wallet", () => {
     expect(asksToBookFlight("book a flight")).toBe(true);
     expect(asksToBookFlight("1")).toBe(true);
     expect(asksToBookFlight("Lagos next week")).toBe(false);
+  });
+});
+
+describe("connect calendar copy", () => {
+  it("offers Connect Calendar and Set up later, without courier language or Gmail", () => {
+    const text = calendarConnectLines().join("\n");
+    expect(text).toContain("Connect Calendar");
+    expect(text).toContain("Set up later");
+    expect(text).toMatch(/isn’t sold/i);
+    expect(text).not.toMatch(/gmail/i);
+    expect(guestCopyHasBannedTerm(text)).toBe(false);
+    expect(TRAVELER_HI).not.toMatch(/calendar/i);
   });
 });

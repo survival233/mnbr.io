@@ -637,17 +637,45 @@ model MarketplaceOffer {
 }
 
 model MarketplaceTrip {
-  id              String   @id @default(uuid()) @db.Uuid
-  travelerId      String   @unique @map("traveler_id") @db.VarChar(128)
-  travelerName    String   @map("traveler_name") @db.VarChar(255)
-  originCity      String   @default("") @map("origin_city") @db.VarChar(100)
-  destinationCity String   @map("destination_city") @db.VarChar(100)
-  departureDate   DateTime @map("departure_date") @db.Date
-  optedIn         Boolean  @default(true) @map("opted_in")
-  status          String   @default("upcoming") @db.VarChar(32)
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+  id              String    @id @default(uuid()) @db.Uuid
+  travelerId      String    @map("traveler_id") @db.VarChar(128)
+  travelerName    String    @map("traveler_name") @db.VarChar(255)
+  originCity      String    @default("") @map("origin_city") @db.VarChar(100)
+  destinationCity String    @map("destination_city") @db.VarChar(100)
+  departureDate   DateTime  @map("departure_date") @db.Date
+  optedIn         Boolean   @default(true) @map("opted_in")
+  status          String    @default("upcoming") @db.VarChar(32)
+  /// manual | calendar. Empty external id is the Phase 0 manual row.
+  source          String    @default("manual") @db.VarChar(32)
+  externalEventId String    @default("") @map("external_event_id") @db.VarChar(255)
+  optedInAt       DateTime? @map("opted_in_at") @db.Timestamptz()
+  departAt        DateTime? @map("depart_at") @db.Timestamptz()
+  arriveAt        DateTime? @map("arrive_at") @db.Timestamptz()
+  timezone        String?   @db.VarChar(64)
+  retentionUntil  DateTime? @map("retention_until") @db.Timestamptz()
+  confidence      Float     @default(1)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
 
+  @@unique([travelerId, externalEventId])
+  @@index([travelerId])
   @@index([optedIn, destinationCity, departureDate])
   @@map("marketplace_trips")
+}
+
+/// Google (or stubbed phone) calendar link for a chat traveler id. Not a second trip store.
+model MarketplaceCalendarLink {
+  travelerId    String    @id @map("traveler_id") @db.VarChar(128)
+  provider      String    @db.VarChar(32)
+  status        String    @db.VarChar(32)
+  scopes        String    @default("https://www.googleapis.com/auth/calendar.readonly") @db.VarChar(255)
+  tokenCipher   String?   @map("token_cipher")
+  refreshCipher String?   @map("refresh_cipher")
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz()
+  connectedAt   DateTime? @map("connected_at") @db.Timestamptz()
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz()
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("marketplace_calendar_links")
 }

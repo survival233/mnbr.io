@@ -29,6 +29,12 @@ function reviveTrip(raw: any): TripState {
   }
   if (raw.arrive_by) trip.arrive_by = String(raw.arrive_by);
   if (raw.note) trip.note = String(raw.note);
+  if (typeof raw.optedIn === "boolean") trip.optedIn = raw.optedIn;
+  if (typeof raw.optedInAt === "number") trip.optedInAt = raw.optedInAt;
+  if (raw.externalEventId) trip.externalEventId = String(raw.externalEventId);
+  if (raw.source === "calendar" || raw.source === "manual") trip.source = raw.source;
+  if (raw.timezone) trip.timezone = String(raw.timezone);
+  if (raw.departAt) trip.departAt = String(raw.departAt);
   trip.updated_at = typeof raw.updated_at === "number" ? raw.updated_at : Date.now();
   return trip;
 }
@@ -78,6 +84,10 @@ function revive(raw: any): Session | null {
     selectedFlight,
     flightBookingRef: raw.flightBookingRef,
     earnOffers: raw.earnOffers,
+    skuGoneAsk: raw.skuGoneAsk,
+    calendarDismissed: Boolean(raw.calendarDismissed),
+    calendarQueue: Array.isArray(raw.calendarQueue) ? raw.calendarQueue.map(String) : [],
+    calendarSynced: Boolean(raw.calendarSynced),
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
   };
   ensureTrip(s);

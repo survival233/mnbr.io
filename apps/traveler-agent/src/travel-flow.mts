@@ -9,6 +9,7 @@ import {
 import { normalizeCity } from "@manebra/calendar";
 import { hubCity, sameMetro } from "@manebra/geo";
 import { upsertLiveTrip, listFundedOffers, getTravelerCard } from "@manebra/db";
+import { fetchGoogleCalendarEvents } from "@manebra/calendar";
 import { agentcardConfigured, createWalletLink } from "@repo/agentcard";
 import type { Session } from "./session.mts";
 import { sessionKey, markSessionDirty, persistSessionsNow } from "./session.mts";
@@ -28,8 +29,27 @@ import {
   TRAVELER_WALLET_ADD,
   TRAVELER_CARD_ON_FILE,
   TRAVELER_FLIGHT_STUB,
+  TRAVELER_HI,
   asksToBookFlight,
   asksForFreshWallet,
+  CALENDAR_CONNECT_HEADLINE,
+  CALENDAR_CONNECT_PRIMARY,
+  CALENDAR_CONNECT_LATER,
+  CALENDAR_PRIVACY,
+  CALENDAR_CONNECTED,
+  CALENDAR_NONE,
+  CALENDAR_OAUTH_FAILED,
+  CALENDAR_GMAIL_STUB,
+  CALENDAR_APPLE_STUB,
+  CALENDAR_UNCONFIGURED,
+  CALENDAR_ALREADY,
+  CALENDAR_DISCONNECTED,
+  calendarTripProposal,
+  wantsCalendarConnect,
+  wantsGmailConnect,
+  wantsPhoneCalendar,
+  dismissesCalendarSetup,
+  choosesWhereHeaded,
   type DialogPendingSlot,
 } from "@manebra/dialog";
 import { acceptEarnOffer, type EarnOffer } from "./traveler-bridge.mts";
@@ -40,7 +60,19 @@ import {
   nextQuestion,
   tripSnapshot,
   mirrorTripToLegacy,
+  extractSlots,
 } from "./trip-state.mts";
+import {
+  accessTokenFor,
+  calendarConnectStart,
+  calendarConnectStatus,
+  calendarDisconnect,
+  chooseCalendarTrip,
+  formatTripWhen,
+  getCalendarStore,
+  proposeConfirmedFlights,
+  type CalendarTripRecord,
+} from "./calendar-connect.mts";
 
 type ReplyFn = (s: Session, text: string, opts?: { thinkMs?: number }) => Promise<void>;
 type SayFn = (s: Session, ...bubbles: string[]) => Promise<void>;
@@ -96,6 +128,14 @@ async function publishLiveTrip(s: Session, optedIn: boolean): Promise<void> {
   const dest = tripCity(trip.destination);
   if (!dest) return;
   try {
+    if (trip.externalEventId && trip.source === "calendar") {
+      await chooseCalendarTrip({
+        travelerId: sessionKey(s.phone),
+        externalEventId: trip.externalEventId,
+        optedIn,
+      });
+      return;
+    }
     await upsertLiveTrip({
       travelerId: sessionKey(s.phone),
       travelerName: `Traveler ${sessionKey(s.phone).slice(-4)}`,
@@ -107,6 +147,186 @@ async function publishLiveTrip(s: Session, optedIn: boolean): Promise<void> {
   } catch (e: any) {
     console.warn(`[traveler-agent] marketplace trip upsert skipped: ${e?.message ?? e}`);
   }
+}
+
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function loadProposal(s: Session, trip: CalendarTripRecord): void {
+  const slot = ensureTrip(s);
+  slot.destination = trip.destinationCity;
+  slot.departure_date = isoDay(trip.departureDate);
+  if (trip.originCity && trip.originCity !== "Unknown") slot.origin = trip.originCity;
+  slot.externalEventId = trip.externalEventId;
+  slot.source = "calendar";
+  slot.timezone = trip.timezone;
+  slot.departAt = trip.departAt.toISOString();
+  slot.optedIn = undefined;
+  if (!slot.confirmed.includes("destination")) slot.confirmed.push("destination");
+  if (!slot.confirmed.includes("departure_date")) slot.confirmed.push("departure_date");
+  mirrorTripToLegacy(s);
+}
+
+async function askProposal(s: Session, trip: CalendarTripRecord, deps: { reply: ReplyFn; say: SayFn }): Promise<void> {
+  loadProposal(s, trip);
+  s.step = "await_shop_opt_in";
+  const when = formatTripWhen(trip.departAt, trip.timezone);
+  parkAsk(s, "shop_opt_in", TRAVELER_OPT_IN_ASK, null, "bool");
+  await deps.say(s, calendarTripProposal(trip.destinationCity, when), TRAVELER_OPT_IN_ASK);
+}
+
+async function speakProposals(
+  s: Session,
+  proposed: CalendarTripRecord[],
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<void> {
+  const open = proposed
+    .filter((t) => t.status === "proposed" && !t.optedIn)
+    .sort((a, b) => a.departAt.getTime() - b.departAt.getTime());
+  if (!open.length) {
+    s.step = "await_travel_intent";
+    s.calendarQueue = [];
+    persistTrip(s);
+    await deps.say(s, CALENDAR_NONE);
+    return;
+  }
+  const [first, ...rest] = open;
+  s.calendarQueue = rest.map((t) => t.externalEventId);
+  if (!first) return;
+  await askProposal(s, first, deps);
+}
+
+async function syncConnectedCalendar(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<void> {
+  const id = sessionKey(s.phone);
+  s.calendarSynced = true;
+  const token = await accessTokenFor(id);
+  if (!token) {
+    s.step = "await_calendar_choice";
+    persistTrip(s);
+    await deps.say(s, CALENDAR_OAUTH_FAILED, CALENDAR_CONNECT_LATER);
+    return;
+  }
+  let events: Awaited<ReturnType<typeof fetchGoogleCalendarEvents>> = [];
+  try {
+    events = await fetchGoogleCalendarEvents({ accessToken: token, calendarIds: "all" });
+  } catch (e: any) {
+    console.warn(`[traveler-agent] calendar sync skipped: ${e?.message ?? e}`);
+  }
+  const proposed = await proposeConfirmedFlights({
+    travelerId: id,
+    travelerName: `Traveler ${id.slice(-4)}`,
+    events,
+  });
+  await speakProposals(s, proposed, deps);
+}
+
+export async function presentCalendarConnect(
+  s: Session,
+  deps: { reply: ReplyFn; say: SayFn },
+  opts?: { provider?: "google" | "apple" },
+): Promise<void> {
+  const id = sessionKey(s.phone);
+  if (opts?.provider === "apple") {
+    s.step = "await_calendar_choice";
+    persistTrip(s);
+    await deps.say(s, CALENDAR_APPLE_STUB, CALENDAR_CONNECT_LATER, CALENDAR_PRIVACY);
+    return;
+  }
+  const status = await calendarConnectStatus(id);
+  if (status.connected) {
+    await deps.say(s, CALENDAR_ALREADY);
+    await syncConnectedCalendar(s, deps);
+    return;
+  }
+  const start = await calendarConnectStart({
+    travelerId: id,
+    chatId: s.chatId,
+    channel: s.channel,
+    provider: "google",
+  });
+  s.step = "await_calendar_choice";
+  persistTrip(s);
+  const bubbles = [CALENDAR_CONNECT_HEADLINE, CALENDAR_CONNECT_PRIMARY];
+  if (start.ok) bubbles.push(start.connectUrl);
+  else bubbles.push(CALENDAR_UNCONFIGURED);
+  bubbles.push(CALENDAR_CONNECT_LATER, CALENDAR_PRIVACY);
+  await deps.say(s, ...bubbles);
+}
+
+export async function maybeHandleCalendar(
+  s: Session,
+  text: string,
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<boolean> {
+  if (/\bdisconnect calendar\b/i.test(text)) {
+    const result = await calendarDisconnect(sessionKey(s.phone));
+    s.calendarSynced = false;
+    persistTrip(s);
+    await deps.say(s, CALENDAR_DISCONNECTED);
+    void result;
+    return true;
+  }
+  if (wantsGmailConnect(text)) {
+    await deps.say(s, CALENDAR_GMAIL_STUB);
+    return true;
+  }
+  if (wantsPhoneCalendar(text) && !/\blink google\b/i.test(text)) {
+    await presentCalendarConnect(s, deps, { provider: "apple" });
+    return true;
+  }
+  if (wantsCalendarConnect(text)) {
+    await presentCalendarConnect(s, deps);
+    return true;
+  }
+  if (s.step === "await_calendar_choice") {
+    if (dismissesCalendarSetup(text) || choosesWhereHeaded(text)) {
+      s.calendarDismissed = true;
+      s.step = "await_travel_intent";
+      persistTrip(s);
+      await deps.say(s, TRAVELER_HI);
+      return true;
+    }
+    if (/^(y|yes|ok|okay|connect)\b/i.test(text.trim())) {
+      await presentCalendarConnect(s, deps);
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function deliverCalendarOAuth(
+  result:
+    | { ok: true; travelerId: string; chatId: string | null; channel: "relay" | "linq"; proposed: CalendarTripRecord[] }
+    | { ok: false; reason: string; travelerId?: string; chatId?: string | null; channel?: "relay" | "linq" },
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<void> {
+  const travelerId = result.travelerId;
+  if (!travelerId) return;
+  const { getOrCreateSession } = await import("./session.mts");
+  const s = getOrCreateSession(travelerId, result.chatId ?? null, {
+    channel: result.channel ?? "relay",
+  });
+  s.calendarSynced = true;
+  if (!result.ok) {
+    s.step = "await_calendar_choice";
+    persistTrip(s);
+    await deps.say(s, CALENDAR_OAUTH_FAILED, CALENDAR_CONNECT_LATER);
+    return;
+  }
+  await deps.say(s, CALENDAR_CONNECTED);
+  await speakProposals(s, result.proposed, deps);
+}
+
+async function needsCalendarOffer(s: Session, text: string): Promise<boolean> {
+  const trip = ensureTrip(s);
+  if (trip.destination || s.calendarDismissed || s.step === "await_calendar_choice") return false;
+  if (asksToBookFlight(text) || choosesWhereHeaded(text)) return false;
+  const extracted = extractSlots(text);
+  if (extracted.destination || extracted.departure_date || extracted.origin) return false;
+  const status = await calendarConnectStatus(sessionKey(s.phone));
+  if (status.connected) return !s.calendarSynced;
+  return true;
 }
 
 async function matchingFundedAsk(s: Session) {
@@ -230,6 +450,15 @@ async function handleCollectAndSearch(
 ): Promise<boolean> {
   const { reply, say } = deps;
   const trip = ensureTrip(s);
+  if (await needsCalendarOffer(s, text)) {
+    const status = await calendarConnectStatus(sessionKey(s.phone));
+    if (status.connected && !s.calendarSynced) {
+      await syncConnectedCalendar(s, deps);
+      return true;
+    }
+    await presentCalendarConnect(s, deps);
+    return true;
+  }
   const before = tripSnapshot(trip);
 
   if (asksToBookFlight(text)) {
@@ -338,6 +567,17 @@ async function handleShopOptIn(
   trip.optedInAt = Date.now();
   persistTrip(s);
   await publishLiveTrip(s, answer);
+  const queue = s.calendarQueue ?? [];
+  if (queue.length) {
+    const nextId = queue.shift();
+    s.calendarQueue = queue;
+    const rows = await getCalendarStore().listTrips(sessionKey(s.phone));
+    const next = rows.find((t) => t.externalEventId === nextId && t.status === "proposed");
+    if (next) {
+      await askProposal(s, next, deps);
+      return true;
+    }
+  }
   if (!answer) {
     await deps.reply(s, TRAVELER_OPTED_OUT);
     if (await sendTravelerWallet(s, deps)) return true;

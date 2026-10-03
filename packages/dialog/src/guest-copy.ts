@@ -244,6 +244,84 @@ export const TRAVELER_WALLET_ADD =
 
 export const TRAVELER_CARD_ON_FILE = "Card’s on file. I’ll use it when you shop.";
 
+/** Phase 1 Connect Calendar. Not shown on the Phase 0 hi menu. */
+export const CALENDAR_CONNECT_HEADLINE =
+  "I can spot confirmed flights on your calendar so I know when you’re traveling.";
+
+export const CALENDAR_CONNECT_PRIMARY = "Connect Calendar";
+
+export const CALENDAR_CONNECT_LATER = "Set up later";
+
+export const CALENDAR_PRIVACY =
+  "Calendar data isn’t sold, used for ads, or used to train general-purpose AI models. How we use your data: we keep the city and time of a confirmed flight, not the raw calendar event.";
+
+export const CALENDAR_CONNECTED = "Calendar’s connected. Checking for confirmed flights.";
+
+export const CALENDAR_NONE =
+  "No confirmed flights on that calendar. Tell me a city and roughly when, and I’ll keep the trip.";
+
+export const CALENDAR_OAUTH_FAILED =
+  "Calendar connect didn’t finish. You can try Connect Calendar again, or Set up later and tell me where you’re headed.";
+
+export const CALENDAR_GMAIL_STUB =
+  "Inbox isn’t part of this step. Connect Calendar reads flights only, or tell me where you’re headed.";
+
+export const CALENDAR_APPLE_STUB =
+  "Phone calendar isn’t available on this host yet. Connect Calendar uses Google, or tell me where you’re headed.";
+
+export const CALENDAR_UNCONFIGURED =
+  "Connect Calendar isn’t set up on this host yet. Set up later still works — tell me a city and roughly when.";
+
+export const CALENDAR_ALREADY =
+  "Calendar’s already connected. I’ll check it again for confirmed flights.";
+
+export const CALENDAR_DISCONNECTED =
+  "Calendar’s disconnected. Trips you already opted into stay on file. New flights won’t sync.";
+
+export function calendarTripProposal(city: string, whenLabel: string): string {
+  return `I see a confirmed flight to ${city} on ${whenLabel}. This trip stays with Manebra even if you disconnect Calendar later.`;
+}
+
+export function calendarConnectLines(): string[] {
+  return [CALENDAR_CONNECT_HEADLINE, CALENDAR_CONNECT_PRIMARY, CALENDAR_CONNECT_LATER, CALENDAR_PRIVACY];
+}
+
+const BANNED_GUEST =
+  /\b(carry|carrier|courier|package|delivery fee|reward|delivery job)\b/i;
+
+export function guestCopyHasBannedTerm(text: string): boolean {
+  return BANNED_GUEST.test(text);
+}
+
+export function wantsCalendarConnect(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/\b(gmail|inbox|e-?mail)\b/i.test(t) && !/\bcalendar\b/i.test(t)) return false;
+  return (
+    /\b(connect|link|sync)\b[\s\S]{0,40}\b(calendar|google calendar)\b/i.test(t) ||
+    /\b(calendar|google calendar)\b[\s\S]{0,40}\b(connect|link|sync)\b/i.test(t) ||
+    /\blink google\b/i.test(t)
+  );
+}
+
+export function wantsGmailConnect(text: string): boolean {
+  return /\b(connect|link|sync)\b[\s\S]{0,40}\b(gmail|inbox)\b/i.test(text) && !/\bcalendar\b/i.test(text);
+}
+
+export function wantsPhoneCalendar(text: string): boolean {
+  return /\b(apple|iphone|phone)\b[\s\S]{0,24}\bcalendar\b/i.test(text) || /\bcalendar\b[\s\S]{0,24}\b(apple|iphone)\b/i.test(text);
+}
+
+export function dismissesCalendarSetup(text: string): boolean {
+  return /\bset up later\b/i.test(text) || /^(later|not now|skip)\b/i.test(text.trim());
+}
+
+export function choosesWhereHeaded(text: string): boolean {
+  const t = text.trim();
+  if (/^(2|two)\b/.test(t)) return true;
+  return /\bwhere (i(?:'|’)m|i am) headed\b/i.test(t);
+}
+
 export function asksToBookFlight(text: string): boolean {
   const t = (text ?? "").trim();
   if (!t) return false;

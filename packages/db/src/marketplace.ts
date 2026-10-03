@@ -56,11 +56,32 @@ export type StoredTrip = {
   departureDate: Date;
   optedIn: boolean;
   status: string;
+  source?: string;
+  externalEventId?: string;
+  optedInAt?: Date | null;
+  departAt?: Date | null;
+  arriveAt?: Date | null;
+  timezone?: string | null;
+  retentionUntil?: Date | null;
+  confidence?: number;
+};
+
+export type StoredCalendarLink = {
+  travelerId: string;
+  provider: string;
+  status: "connected" | "disconnected";
+  scopes: string;
+  tokenCipher: string | null;
+  refreshCipher: string | null;
+  expiresAt: Date | null;
+  connectedAt: Date | null;
+  revokedAt: Date | null;
 };
 
 type FileStore = {
   offers: StoredOffer[];
   trips: StoredTrip[];
+  calendarLinks: StoredCalendarLink[];
 };
 
 let ensured = false;
@@ -90,9 +111,12 @@ function loadFile(): FileStore {
         ? raw.carries.map(carryToOffer)
         : [];
     const trips = Array.isArray(raw.trips) ? raw.trips.map(hydrateTrip) : [];
-    return { offers, trips };
+    const calendarLinks = Array.isArray((raw as { calendarLinks?: StoredCalendarLink[] }).calendarLinks)
+      ? (raw as { calendarLinks: StoredCalendarLink[] }).calendarLinks.map(hydrateLink)
+      : [];
+    return { offers, trips, calendarLinks };
   } catch {
-    return { offers: [], trips: [] };
+    return { offers: [], trips: [], calendarLinks: [] };
   }
 }
 
@@ -105,6 +129,7 @@ function saveFile(store: FileStore): void {
       {
         offers: store.offers,
         trips: store.trips,
+        calendarLinks: store.calendarLinks,
         carries: [],
       },
       null,
@@ -122,7 +147,25 @@ function hydrateOffer(o: StoredOffer): StoredOffer {
 }
 
 function hydrateTrip(t: StoredTrip): StoredTrip {
-  return { ...t, departureDate: new Date(t.departureDate) };
+  return {
+    ...t,
+    departureDate: new Date(t.departureDate),
+    externalEventId: t.externalEventId ?? "",
+    source: t.source ?? (t.externalEventId ? "calendar" : "manual"),
+    optedInAt: t.optedInAt ? new Date(t.optedInAt) : null,
+    departAt: t.departAt ? new Date(t.departAt) : null,
+    arriveAt: t.arriveAt ? new Date(t.arriveAt) : null,
+    retentionUntil: t.retentionUntil ? new Date(t.retentionUntil) : null,
+  };
+}
+
+function hydrateLink(l: StoredCalendarLink): StoredCalendarLink {
+  return {
+    ...l,
+    expiresAt: l.expiresAt ? new Date(l.expiresAt) : null,
+    connectedAt: l.connectedAt ? new Date(l.connectedAt) : null,
+    revokedAt: l.revokedAt ? new Date(l.revokedAt) : null,
+  };
 }
 
 function carryToOffer(c: Record<string, unknown>): StoredOffer {
@@ -562,48 +605,51 @@ export async function upsertLiveTrip(input: {
     optedIn: input.optedIn ?? false,
     status: "upcoming",
   };
+  const manual: StoredTrip = { ...row, source: "manual", externalEventId: "" };
   if (!marketplaceConfigured()) {
     const store = loadFile();
-    const i = store.trips.findIndex((t) => t.travelerId === row.travelerId);
+    const i = store.trips.findIndex(
+      (t) => t.travelerId === manual.travelerId && (t.externalEventId ?? "") === "" && (t.source ?? "manual") !== "calendar",
+    );
     if (i >= 0) {
-      row.id = store.trips[i]!.id;
-      store.trips[i] = row;
-    } else store.trips.push(row);
+      manual.id = store.trips[i]!.id;
+      store.trips[i] = { ...store.trips[i]!, ...manual };
+    } else store.trips.push(manual);
     saveFile(store);
-    return row;
+    return manual;
   }
   await ensurePg();
   const prisma = await getPrisma();
-  const saved = await prisma.marketplaceTrip.upsert({
-    where: { travelerId: row.travelerId },
-    create: {
-      travelerId: row.travelerId,
-      travelerName: row.travelerName,
-      originCity: row.originCity,
-      destinationCity: row.destinationCity,
-      departureDate: row.departureDate,
-      optedIn: row.optedIn,
-      status: "upcoming",
-    },
-    update: {
-      travelerName: row.travelerName,
-      originCity: row.originCity,
-      destinationCity: row.destinationCity,
-      departureDate: row.departureDate,
-      optedIn: row.optedIn,
-      status: "upcoming",
-    },
+  const existing = await prisma.marketplaceTrip.findFirst({
+    where: { travelerId: manual.travelerId, externalEventId: "" },
   });
-  return {
-    id: saved.id,
-    travelerId: saved.travelerId,
-    travelerName: saved.travelerName,
-    originCity: saved.originCity,
-    destinationCity: saved.destinationCity,
-    departureDate: saved.departureDate,
-    optedIn: saved.optedIn,
-    status: saved.status,
-  };
+  const saved = existing
+    ? await prisma.marketplaceTrip.update({
+        where: { id: existing.id },
+        data: {
+          travelerName: manual.travelerName,
+          originCity: manual.originCity,
+          destinationCity: manual.destinationCity,
+          departureDate: manual.departureDate,
+          optedIn: manual.optedIn,
+          status: "upcoming",
+          source: "manual",
+        },
+      })
+    : await prisma.marketplaceTrip.create({
+        data: {
+          travelerId: manual.travelerId,
+          travelerName: manual.travelerName,
+          originCity: manual.originCity,
+          destinationCity: manual.destinationCity,
+          departureDate: manual.departureDate,
+          optedIn: manual.optedIn,
+          status: "upcoming",
+          source: "manual",
+          externalEventId: "",
+        },
+      });
+  return tripFromRow(saved);
 }
 
 export async function listLiveTrips(destinationCity: string): Promise<StoredTrip[]> {
@@ -657,7 +703,28 @@ export async function listUpcomingTrips(): Promise<StoredTrip[]> {
     orderBy: { departureDate: "asc" },
     take: 40,
   });
-  return rows.map((t) => ({
+  return rows.map((t) => tripFromRow(t));
+}
+
+function tripFromRow(t: {
+  id: string;
+  travelerId: string;
+  travelerName: string;
+  originCity: string;
+  destinationCity: string;
+  departureDate: Date;
+  optedIn: boolean;
+  status: string;
+  source?: string;
+  externalEventId?: string;
+  optedInAt?: Date | null;
+  departAt?: Date | null;
+  arriveAt?: Date | null;
+  timezone?: string | null;
+  retentionUntil?: Date | null;
+  confidence?: number;
+}): StoredTrip {
+  return {
     id: t.id,
     travelerId: t.travelerId,
     travelerName: t.travelerName,
@@ -666,9 +733,324 @@ export async function listUpcomingTrips(): Promise<StoredTrip[]> {
     departureDate: t.departureDate,
     optedIn: t.optedIn,
     status: t.status,
-  }));
+    source: t.source ?? "manual",
+    externalEventId: t.externalEventId ?? "",
+    optedInAt: t.optedInAt ?? null,
+    departAt: t.departAt ?? null,
+    arriveAt: t.arriveAt ?? null,
+    timezone: t.timezone ?? null,
+    retentionUntil: t.retentionUntil ?? null,
+    confidence: t.confidence ?? 1,
+  };
+}
+
+export async function listTripsForTraveler(travelerId: string): Promise<StoredTrip[]> {
+  if (!marketplaceConfigured()) {
+    return loadFile().trips.filter((t) => t.travelerId === travelerId);
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const rows = await prisma.marketplaceTrip.findMany({
+    where: { travelerId },
+    orderBy: { departureDate: "asc" },
+  });
+  return rows.map((t) => tripFromRow(t));
+}
+
+/** Idempotent calendar proposal. Does not clear an existing opt-in. */
+export async function upsertCalendarTrip(input: {
+  travelerId: string;
+  travelerName: string;
+  externalEventId: string;
+  originCity: string;
+  destinationCity: string;
+  departureDate: Date;
+  departAt: Date;
+  arriveAt: Date | null;
+  timezone: string;
+  confidence: number;
+  retentionUntil: Date;
+}): Promise<StoredTrip> {
+  if (!input.externalEventId.trim()) throw new Error("calendar trip needs an external event id");
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    const i = store.trips.findIndex(
+      (t) => t.travelerId === input.travelerId && t.externalEventId === input.externalEventId,
+    );
+    const prev = i >= 0 ? store.trips[i]! : null;
+    const row: StoredTrip = {
+      id: prev?.id ?? randomUUID(),
+      travelerId: input.travelerId,
+      travelerName: input.travelerName,
+      originCity: input.originCity,
+      destinationCity: input.destinationCity,
+      departureDate: input.departureDate,
+      departAt: input.departAt,
+      arriveAt: input.arriveAt,
+      timezone: input.timezone,
+      confidence: input.confidence,
+      retentionUntil: input.retentionUntil,
+      source: "calendar",
+      externalEventId: input.externalEventId,
+      optedIn: prev?.optedIn ?? false,
+      optedInAt: prev?.optedInAt ?? null,
+      status: prev?.optedIn ? prev.status : "proposed",
+    };
+    if (i >= 0) store.trips[i] = row;
+    else store.trips.push(row);
+    saveFile(store);
+    return row;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const existing = await prisma.marketplaceTrip.findUnique({
+    where: {
+      travelerId_externalEventId: {
+        travelerId: input.travelerId,
+        externalEventId: input.externalEventId,
+      },
+    },
+  });
+  const saved = existing
+    ? await prisma.marketplaceTrip.update({
+        where: { id: existing.id },
+        data: {
+          originCity: input.originCity,
+          destinationCity: input.destinationCity,
+          departureDate: input.departureDate,
+          departAt: input.departAt,
+          arriveAt: input.arriveAt,
+          timezone: input.timezone,
+          confidence: input.confidence,
+          retentionUntil: existing.optedIn ? existing.retentionUntil : input.retentionUntil,
+          source: "calendar",
+        },
+      })
+    : await prisma.marketplaceTrip.create({
+        data: {
+          travelerId: input.travelerId,
+          travelerName: input.travelerName,
+          originCity: input.originCity,
+          destinationCity: input.destinationCity,
+          departureDate: input.departureDate,
+          departAt: input.departAt,
+          arriveAt: input.arriveAt,
+          timezone: input.timezone,
+          confidence: input.confidence,
+          retentionUntil: input.retentionUntil,
+          source: "calendar",
+          externalEventId: input.externalEventId,
+          optedIn: false,
+          status: "proposed",
+        },
+      });
+  return tripFromRow(saved);
+}
+
+export async function setCalendarTripChoice(input: {
+  travelerId: string;
+  externalEventId: string;
+  optedIn: boolean;
+  optedInAt: Date;
+  retentionUntil: Date;
+}): Promise<StoredTrip | null> {
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    const i = store.trips.findIndex(
+      (t) => t.travelerId === input.travelerId && t.externalEventId === input.externalEventId,
+    );
+    if (i < 0) return null;
+    const prev = store.trips[i]!;
+    store.trips[i] = {
+      ...prev,
+      optedIn: input.optedIn,
+      optedInAt: input.optedInAt,
+      status: input.optedIn ? "upcoming" : "declined",
+      retentionUntil: input.retentionUntil,
+    };
+    saveFile(store);
+    return store.trips[i]!;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const existing = await prisma.marketplaceTrip.findUnique({
+    where: {
+      travelerId_externalEventId: {
+        travelerId: input.travelerId,
+        externalEventId: input.externalEventId,
+      },
+    },
+  });
+  if (!existing) return null;
+  const saved = await prisma.marketplaceTrip.update({
+    where: { id: existing.id },
+    data: {
+      optedIn: input.optedIn,
+      optedInAt: input.optedInAt,
+      status: input.optedIn ? "upcoming" : "declined",
+      retentionUntil: input.retentionUntil,
+    },
+  });
+  return tripFromRow(saved);
+}
+
+export async function getCalendarLink(travelerId: string): Promise<StoredCalendarLink | null> {
+  if (!marketplaceConfigured()) {
+    return loadFile().calendarLinks.find((l) => l.travelerId === travelerId) ?? null;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const row = await prisma.marketplaceCalendarLink.findUnique({ where: { travelerId } });
+  if (!row) return null;
+  return {
+    travelerId: row.travelerId,
+    provider: row.provider,
+    status: row.status === "connected" ? "connected" : "disconnected",
+    scopes: row.scopes,
+    tokenCipher: row.tokenCipher,
+    refreshCipher: row.refreshCipher,
+    expiresAt: row.expiresAt,
+    connectedAt: row.connectedAt,
+    revokedAt: row.revokedAt,
+  };
+}
+
+export async function saveCalendarLink(link: StoredCalendarLink): Promise<void> {
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    const i = store.calendarLinks.findIndex((l) => l.travelerId === link.travelerId);
+    if (i >= 0) store.calendarLinks[i] = link;
+    else store.calendarLinks.push(link);
+    saveFile(store);
+    return;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  await prisma.marketplaceCalendarLink.upsert({
+    where: { travelerId: link.travelerId },
+    create: { ...link },
+    update: {
+      provider: link.provider,
+      status: link.status,
+      scopes: link.scopes,
+      tokenCipher: link.tokenCipher,
+      refreshCipher: link.refreshCipher,
+      expiresAt: link.expiresAt,
+      connectedAt: link.connectedAt,
+      revokedAt: link.revokedAt,
+    },
+  });
+}
+
+/** Disconnect: drop proposed and declined calendar trips; keep opted-in upcoming rows. */
+export async function disconnectCalendarSource(travelerId: string): Promise<{ kept: number; removed: number }> {
+  const drop = (t: StoredTrip) =>
+    t.travelerId === travelerId &&
+    t.source === "calendar" &&
+    !(t.optedIn && t.status === "upcoming");
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    const before = store.trips.length;
+    const kept = store.trips.filter((t) => t.travelerId === travelerId && t.source === "calendar" && t.optedIn && t.status === "upcoming").length;
+    store.trips = store.trips.filter((t) => !drop(t));
+    const link = store.calendarLinks.find((l) => l.travelerId === travelerId);
+    if (link) {
+      link.status = "disconnected";
+      link.tokenCipher = null;
+      link.refreshCipher = null;
+      link.revokedAt = new Date();
+    }
+    saveFile(store);
+    return { kept, removed: before - store.trips.length };
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const kept = await prisma.marketplaceTrip.count({
+    where: { travelerId, source: "calendar", optedIn: true, status: "upcoming" },
+  });
+  const removed = await prisma.marketplaceTrip.deleteMany({
+    where: {
+      travelerId,
+      source: "calendar",
+      NOT: { optedIn: true, status: "upcoming" },
+    },
+  });
+  await prisma.marketplaceCalendarLink.updateMany({
+    where: { travelerId },
+    data: { status: "disconnected", tokenCipher: null, refreshCipher: null, revokedAt: new Date() },
+  });
+  return { kept, removed: removed.count };
+}
+
+/**
+ * Erasure deletes derived calendar trips and the link.
+ * An active claim (accepted or funded) keeps opted-in trip rows for the snapshot.
+ */
+export async function eraseCalendarSource(
+  travelerId: string,
+  opts: { activeClaim?: boolean } = {},
+): Promise<{ deletedTrips: number; keptForClaim: number }> {
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    let keptForClaim = 0;
+    const before = store.trips.length;
+    store.trips = store.trips.filter((t) => {
+      if (t.travelerId !== travelerId || t.source !== "calendar") return true;
+      if (opts.activeClaim && t.optedIn && t.status === "upcoming") {
+        keptForClaim += 1;
+        return true;
+      }
+      return false;
+    });
+    store.calendarLinks = store.calendarLinks.filter((l) => l.travelerId !== travelerId);
+    saveFile(store);
+    return { deletedTrips: before - store.trips.length, keptForClaim };
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  let keptForClaim = 0;
+  if (opts.activeClaim) {
+    keptForClaim = await prisma.marketplaceTrip.count({
+      where: { travelerId, source: "calendar", optedIn: true, status: "upcoming" },
+    });
+  }
+  const removed = await prisma.marketplaceTrip.deleteMany({
+    where: opts.activeClaim
+      ? { travelerId, source: "calendar", NOT: { optedIn: true, status: "upcoming" } }
+      : { travelerId, source: "calendar" },
+  });
+  await prisma.marketplaceCalendarLink.deleteMany({ where: { travelerId } });
+  return { deletedTrips: removed.count, keptForClaim };
+}
+
+export async function deleteCalendarLink(travelerId: string): Promise<void> {
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    store.calendarLinks = store.calendarLinks.filter((l) => l.travelerId !== travelerId);
+    saveFile(store);
+    return;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  await prisma.marketplaceCalendarLink.deleteMany({ where: { travelerId } });
+}
+
+export async function deleteCalendarTrips(travelerId: string, ids: string[]): Promise<number> {
+  if (!ids.length) return 0;
+  if (!marketplaceConfigured()) {
+    const store = loadFile();
+    const before = store.trips.length;
+    const drop = new Set(ids);
+    store.trips = store.trips.filter((t) => !(t.travelerId === travelerId && drop.has(t.id)));
+    saveFile(store);
+    return before - store.trips.length;
+  }
+  await ensurePg();
+  const prisma = await getPrisma();
+  const res = await prisma.marketplaceTrip.deleteMany({ where: { travelerId, id: { in: ids } } });
+  return res.count;
 }
 
 export function initMarketplaceFile(): void {
-  saveFile({ offers: [], trips: [] });
+  saveFile({ offers: [], trips: [], calendarLinks: [] });
 }

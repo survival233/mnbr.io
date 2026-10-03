@@ -15,10 +15,19 @@ export {
   upsertLiveTrip,
   listLiveTrips,
   listUpcomingTrips,
+  listTripsForTraveler,
+  upsertCalendarTrip,
+  setCalendarTripChoice,
+  getCalendarLink,
+  saveCalendarLink,
+  disconnectCalendarSource,
+  eraseCalendarSource,
+  deleteCalendarLink,
+  deleteCalendarTrips,
   marketplaceConfigured,
   initMarketplaceFile,
 } from "./marketplace";
-export type { StoredOffer, StoredTrip, OfferStatus } from "./marketplace";
+export type { StoredOffer, StoredTrip, StoredCalendarLink, OfferStatus } from "./marketplace";
 export {
   getConnectedCard,
   setConnectedCard,

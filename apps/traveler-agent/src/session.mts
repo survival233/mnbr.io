@@ -14,6 +14,7 @@ export type Step =
   | "trip_confirmed"
   | "await_earn_opt_in"
   | "await_job_pick"
+  | "await_calendar_choice"
   | "done";
 
 export type Channel = "linq" | "relay";
@@ -46,6 +47,12 @@ export type Session = {
   travelerBuyStarted?: boolean;
   /** Last store buy failed because the SKU was gone. */
   skuGoneAsk?: boolean;
+  /** Traveler chose Set up later — Phase 0 intake continues without calendar. */
+  calendarDismissed?: boolean;
+  /** Confirmed-flight external ids still waiting for an explicit opt-in. */
+  calendarQueue?: string[];
+  /** A sync already ran this session. */
+  calendarSynced?: boolean;
   updatedAt: number;
 };
 
@@ -137,6 +144,9 @@ export function resetSession(s: Session) {
   s.stay = { openedAt: Date.now() };
   s.travelerBuyStarted = undefined;
   s.skuGoneAsk = undefined;
+  s.calendarDismissed = false;
+  s.calendarQueue = [];
+  s.calendarSynced = false;
   s.updatedAt = Date.now();
   touchPersist();
 }

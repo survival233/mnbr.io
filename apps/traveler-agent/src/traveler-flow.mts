@@ -10,7 +10,7 @@ import {
   sessionKey,
   type Session,
 } from "./session.mts";
-import { handleTravelInbound, sendTravelerWallet, resumeAfterTravelerCard } from "./travel-flow.mts";
+import { handleTravelInbound, sendTravelerWallet, resumeAfterTravelerCard, maybeHandleCalendar, deliverCalendarOAuth } from "./travel-flow.mts";
 import { blankTrip } from "./trip-state.mts";
 import {
   getOpenOfferForTraveler,
@@ -442,6 +442,8 @@ export async function handleInbound(args: {
     return;
   }
 
+  if (await maybeHandleCalendar(s, text, { reply, say })) return;
+
   if (!isTravelIntent(text)) {
     if (await tryHandleMarketplaceOffer(s, text, { reply, say })) return;
   }
@@ -483,4 +485,10 @@ export async function handleInbound(args: {
   }
 
   await handleTravelInbound(s, text, { reply, say });
+}
+
+export async function deliverCalendarOAuthToChat(
+  result: Parameters<typeof deliverCalendarOAuth>[0],
+): Promise<void> {
+  await deliverCalendarOAuth(result, { reply, say });
 }

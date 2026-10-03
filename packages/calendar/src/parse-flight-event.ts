@@ -23,6 +23,10 @@ export interface CalendarEventInput {
   /** Event end (arrival or return). Optional. */
   endsAt?: Date | string | null;
   provider?: CalendarProviderName;
+  /** Google: confirmed | tentative | cancelled. Omitted means confirmed. */
+  status?: string | null;
+  /** IANA zone from the provider, when the event has one. */
+  timeZone?: string | null;
 }
 
 export interface ParsedFlightTrip {

@@ -96,6 +96,14 @@ services:
         sync: false
       - key: FLIGHTS_ALLOW_DEMO
         value: "1"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        value: "https://manebra-traveler-agent.onrender.com/oauth/google/callback"
+      - key: PUBLIC_BASE_URL
+        value: "https://manebra-traveler-agent.onrender.com"
       # Optional later — Relay chat pipe
       - key: RELAY_AGENT_TOKEN
         sync: false
