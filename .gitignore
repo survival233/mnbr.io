@@ -37,3 +37,11 @@ apps/agent-cli/.demo-marketplace.json
 apps/*/.agentcard-store.json
 apps/*/.agentcard-cards.json
 apps/*/.agentcard-oauth-store.json
+
+# Relay group conversation routing
+apps/*/.relay-routing.json
+apps/*/.relay-routing.json.tmp
+
+# Traveler session durability
+.traveler-sessions.json
+.traveler-sessions.json.tmp

@@ -20,6 +20,7 @@ export type Step =
 export type Channel = "linq" | "relay";
 
 export type Session = {
+  datePickerMonth?: string;
   phone: string;
   chatId: string | null;
   channel: Channel;
@@ -57,7 +58,7 @@ export type Session = {
 };
 
 const byPhone = new Map<string, Session>();
-/** Secondary index: Relay conversation / Linq chat id → same session. */
+/** Secondary index: conversation and participant → session. */
 const byChat = new Map<string, Session>();
 let loaded = false;
 
@@ -65,9 +66,15 @@ export function initSessionStore(): void {
   if (loaded) return;
   loaded = true;
   loadSessionsInto(byPhone);
-  for (const s of byPhone.values()) {
+  const restored = [...byPhone.values()];
+  byPhone.clear();
+  for (const s of restored) {
     ensureTrip(s);
-    if (s.chatId) byChat.set(s.chatId, s);
+    const key = JSON.stringify([s.chatId, sessionKey(s.phone)]);
+    const existing = byPhone.get(key);
+    if (existing && existing.updatedAt > s.updatedAt) continue;
+    byPhone.set(key, s);
+    if (s.chatId) byChat.set(key, s);
   }
 }
 
@@ -88,10 +95,11 @@ export function getOrCreateSession(
   opts?: { channel?: Channel; relayEventId?: string; relayMessageId?: string },
 ): Session {
   if (!loaded) initSessionStore();
-  const key = sessionKey(phone);
+  const identity = sessionKey(phone);
+  const key = JSON.stringify([chatId, identity]);
 
-  // Prefer conversation continuity: same Relay chat keeps the same trip state.
-  let s = (chatId ? byChat.get(chatId) : undefined) ?? byPhone.get(key);
+  // Keep trip continuity for this participant within this conversation.
+  let s = (chatId ? byChat.get(key) : undefined) ?? byPhone.get(key);
 
   if (!s) {
     s = {
@@ -113,7 +121,7 @@ export function getOrCreateSession(
 
   if (chatId) {
     s.chatId = chatId;
-    byChat.set(chatId, s);
+    byChat.set(key, s);
   }
   if (opts?.channel) s.channel = opts.channel;
   if (opts?.relayEventId) {
@@ -129,6 +137,7 @@ export function getOrCreateSession(
 }
 
 export function resetSession(s: Session) {
+  s.datePickerMonth = undefined;
   s.step = "idle";
   s.trip = blankTrip();
   s.travelOrigin = undefined;

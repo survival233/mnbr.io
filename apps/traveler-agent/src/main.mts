@@ -1,5 +1,7 @@
+import { fileURLToPath } from "node:url";
+import { RelayRoutingState } from "@manebra/shared";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 
 /** Own .env first; sibling envs for shared secrets (not shopper PORT/Relay). */
 const SHARED_FROM_SIBLINGS = new Set([
@@ -172,6 +174,24 @@ function rememberEvent(eventId: string | undefined): boolean {
   return true;
 }
 
+const routingPath = process.env.TRAVELER_RELAY_ROUTING_PATH ?? fileURLToPath(new URL("../.relay-routing.json", import.meta.url));
+const relayRoutes = new RelayRoutingState({
+  load() {
+    try { return JSON.parse(readFileSync(routingPath, "utf8")); }
+    catch (e: any) {
+      if (e?.code !== "ENOENT") console.warn("[traveler-agent] routing state unreadable:", e.message);
+      return {};
+    }
+  },
+  save(roles) {
+    try {
+      const temporary = routingPath + ".tmp";
+      writeFileSync(temporary, JSON.stringify(roles), { mode: 0o600 });
+      renameSync(temporary, routingPath);
+    } catch (e: any) { console.warn("[traveler-agent] routing state could not be saved:", e.message); }
+  },
+});
+
 function ingestRelayEvent(event: any): void {
   if ((event.event_type ?? event.type) !== "message.received") return;
   if (!rememberEvent(event.event_id ?? event.id)) return;
@@ -181,6 +201,11 @@ function ingestRelayEvent(event: any): void {
     console.warn("[traveler-agent] relay event dropped: missing inbound fields");
     return;
   }
+
+  const route = relayRoutes.route(event, inbound.text, inbound.conversationId, inbound.userId, "traveler", (process.env.RELAY_SHARED_CHAT_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean));
+  if (!route) return;
+  if (route.role !== "traveler") return;
+  inbound.text = route.text;
 
   lastInboundAt = Date.now();
   inboundCount += 1;

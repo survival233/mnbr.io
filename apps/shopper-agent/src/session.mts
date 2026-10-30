@@ -45,6 +45,7 @@ export type PendingSlot = {
 };
 
 export type Session = {
+  datePickerMonth?: string;
   phone: string;
   chatId: string | null;
   channel: Channel;
@@ -106,7 +107,7 @@ export type Session = {
 };
 
 const byPhone = new Map<string, Session>();
-/** Same Relay conversation keeps the same form + pending. */
+/** Index by conversation and participant so group members never share a form. */
 const byChat = new Map<string, Session>();
 let loaded = false;
 
@@ -115,8 +116,14 @@ export function initSessionStore(): void {
   if (loaded) return;
   loaded = true;
   loadSessionsInto(byPhone);
-  for (const s of byPhone.values()) {
-    if (s.chatId) byChat.set(s.chatId, s);
+  const restored = [...byPhone.values()];
+  byPhone.clear();
+  for (const s of restored) {
+    const key = JSON.stringify([s.chatId, sessionKey(s.phone)]);
+    const existing = byPhone.get(key);
+    if (existing && existing.updatedAt > s.updatedAt) continue;
+    byPhone.set(key, s);
+    if (s.chatId) byChat.set(key, s);
   }
 }
 
@@ -142,8 +149,9 @@ export function getOrCreateSession(
   opts?: { channel?: Channel; relayEventId?: string; relayMessageId?: string },
 ): Session {
   if (!loaded) initSessionStore();
-  const key = sessionKey(phone);
-  let s = (chatId ? byChat.get(chatId) : undefined) ?? byPhone.get(key);
+  const identity = sessionKey(phone);
+  const key = JSON.stringify([chatId, identity]);
+  let s = (chatId ? byChat.get(key) : undefined) ?? byPhone.get(key);
   if (!s) {
     s = {
       phone,
@@ -162,7 +170,7 @@ export function getOrCreateSession(
   }
   if (chatId) {
     s.chatId = chatId;
-    byChat.set(chatId, s);
+    byChat.set(key, s);
   }
   if (opts?.channel) s.channel = opts.channel;
   if (opts?.relayEventId) {
@@ -178,6 +186,7 @@ export function getOrCreateSession(
 }
 
 export function resetSession(s: Session) {
+  s.datePickerMonth = undefined;
   const lastHandoverCity = s.deliveryCity;
   s.step = "idle";
   s.searchQuery = undefined;

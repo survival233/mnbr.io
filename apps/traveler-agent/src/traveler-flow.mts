@@ -1,3 +1,4 @@
+import { calendarText, calendarInput } from "@manebra/shared";
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import {
@@ -20,7 +21,7 @@ import {
   getTravelerCard,
   setConnectedCard,
 } from "@manebra/db";
-import { agentcardConfigured, buyWithUserCard } from "@repo/agentcard";
+import { agentcardConfigured, buyWithUserCard, getConnection } from "@repo/agentcard";
 import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
 import { isTravelIntent } from "@manebra/flights";
 import { hubCity, sameMetro } from "@manebra/geo";
@@ -81,6 +82,10 @@ async function sayHost(s: Session, act: Parameters<typeof composeHostReply>[0]["
 }
 
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
+  if (s.pending?.kind === "date" && text.includes(s.pending.prompt)) {
+    text += "\n\n" + calendarText(s);
+    markSessionDirty();
+  }
   if (text?.trim()) appendDialogTurn(s, "assistant", text);
   if (s.channel === "relay") {
     if (s.chatId) {
@@ -315,9 +320,12 @@ export async function syncTravelerMarketplace(): Promise<void> {
 
 /** Card webhook may only carry AgentCard user_id. Stamp waiting Relay sessions so the traveler's own card is on file. */
 export async function attachWebhookCardToWaitingTravelers(webhookIdentity?: string): Promise<void> {
+  if (!webhookIdentity) return;
+  const key = sessionKey(webhookIdentity);
   for (const s of allSessions()) {
     if (s.step !== "await_traveler_card") continue;
     const id = sessionKey(s.phone);
+    if (id !== key && getConnection(id)?.userId !== webhookIdentity) continue;
     if (!(await getTravelerCard(id))) {
       await setConnectedCard({
         identity: id,
@@ -450,12 +458,24 @@ export async function handleInbound(args: {
   relayEventId?: string;
   relayMessageId?: string;
 }): Promise<void> {
-  const text = (args.text ?? "").trim();
+  let text = (args.text ?? "").trim();
   const s = getOrCreateSession(args.phone, args.chatId, {
     channel: args.channel ?? "linq",
     relayEventId: args.relayEventId,
     relayMessageId: args.relayMessageId,
   });
+  if (s.pending?.kind === "date") {
+    const selection = calendarInput(s, text);
+    if (selection.handled) {
+      markSessionDirty();
+      await reply(s, (selection.error ? selection.error + "\n" : "") + s.pending.prompt);
+      return;
+    }
+    text = selection.text;
+  } else {
+    s.datePickerMonth = undefined;
+  }
+
   if (text) appendDialogTurn(s, "user", text);
 
   const greetingOnly = /^(hi|hello|hey|start|menu)\b[,!.\s]*$/i.test(text);

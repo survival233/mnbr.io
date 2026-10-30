@@ -71,6 +71,11 @@ function revive(raw: any): Session | null {
     relayReplySeq: typeof raw.relayReplySeq === "number" ? raw.relayReplySeq : 0,
     relayMessageId: raw.relayMessageId,
     step: raw.step ?? "idle",
+    pending: raw.pending ?? null,
+    offer: raw.offer,
+    stay: raw.stay,
+    turns: Array.isArray(raw.turns) ? raw.turns : undefined,
+    datePickerMonth: typeof raw.datePickerMonth === "string" ? raw.datePickerMonth : undefined,
     trip: reviveTrip(raw.trip ?? {
       origin: raw.travelOrigin,
       destination: raw.travelDestination,
@@ -105,13 +110,8 @@ export function loadSessionsInto(map: Map<string, Session>): void {
     for (const raw of entries) {
       const s = revive(raw);
       if (!s) continue;
-      const key =
-        s.phone.startsWith("usr_") ||
-        s.phone.startsWith("relay:") ||
-        s.phone.startsWith("cnv_") ||
-        s.phone.startsWith("chat_")
-          ? s.phone
-          : s.phone.replace(/\D/g, "") || s.phone;
+      const identity = /^(usr_|relay:|cnv_|chat_)/.test(s.phone) ? s.phone : s.phone.replace(/\D/g, "") || s.phone;
+      const key = JSON.stringify([s.chatId, identity]);
       map.set(key, s);
       n++;
     }
@@ -132,6 +132,7 @@ export function schedulePersist(map: Map<string, Session>): void {
 }
 
 export function persistNow(map: Map<string, Session>): void {
+  if (timer) { clearTimeout(timer); timer = null; }
   const p = path();
   try {
     mkdirSync(dirname(p), { recursive: true });

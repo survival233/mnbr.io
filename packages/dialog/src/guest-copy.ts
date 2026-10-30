@@ -152,9 +152,9 @@ export function recapBody(args: {
 export const RECAP_PAY_ASK = "That’s the total. Say yes and I’ll send the pay sheet.";
 
 export const PAYMENT_UNCONFIGURED = "Payment isn’t configured on this host yet.";
-/** Login failed after recap yes. Host retries wallet_links; do not ask them to say yes again. */
+/** Preserve the accepted recap during a temporary payment failure. */
 export const PAYMENT_WAIT =
-  "Payment login failed. I’ll send a fresh wallet link when it’s back.";
+  "Payment is temporarily unavailable. Your order is saved — try again in a minute.";
 /** @deprecated Use PAYMENT_WAIT — recap yes must not loop mint. */
 export const PAYMENT_RETRY = PAYMENT_WAIT;
 

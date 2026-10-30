@@ -5,3 +5,5 @@ export * from "./trust.js";
 export * from "./handover.js";
 export * from "./requestStatus.js";
 export * from "./dates.js";
+export * from "./relay-routing.js";
+export * from "./chat-calendar.js";

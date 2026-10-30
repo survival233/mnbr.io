@@ -1,3 +1,4 @@
+import { calendarText, calendarInput } from "@manebra/shared";
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
@@ -186,6 +187,10 @@ function relayIdempotencyKey(s: Session, text: string, attempt = 0): string {
 
 /** Typing bubble + paced send so it feels like a person, not a USSD menu. */
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
+  if (s.pending?.kind === "date" && text.includes(s.pending.prompt)) {
+    text += "\n\n" + calendarText(s);
+    markSessionDirty();
+  }
   if (!text?.trim()) {
     console.warn("[shopper-agent] skip empty reply (Relay rejects blank text)");
     return;
@@ -1480,7 +1485,11 @@ async function applyDialogAffirm(s: Session, text: string, intent: { kind: strin
     }
   }
   if (s.step === "await_pay_confirm" && (acceptsOffer(text, intent) || asksForFreshWallet(text))) {
-    await continuePayHandoff(s, text);
+    if (!s.walletLinkSent && !s.paySheetSent && !s.walletHandoffFailed && !asksForFreshWallet(text)) {
+      await confirmRecapPay(s);
+    } else {
+      await continuePayHandoff(s, text);
+    }
     return true;
   }
   if (!acceptsOffer(text, intent) || !s.offer) return false;
@@ -1724,11 +1733,19 @@ async function sendFreshWalletLink(
 }
 
 async function continuePayHandoff(s: Session, text: string): Promise<void> {
+  if (!agentcardConfigured() && !demoLocalChain()) {
+    await reply(s, PAYMENT_UNCONFIGURED);
+    return;
+  }
+  if (s.walletRetryAt && Date.now() < s.walletRetryAt && !asksForFreshWallet(text)) {
+    await reply(s, PAYMENT_WAIT);
+    return;
+  }
   const total = s.paySheetAmountCents ?? (s.selected ? persistRecapTotal(s).totalCents : 0);
   const fresh =
     asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
   const card = await shopperCard(s);
-  const reset = asksForFreshWallet(text) || Boolean(s.walletHandoffFailed);
+  const reset = asksForFreshWallet(text);
   console.log(
     `[shopper-agent] pay handoff total=${total} card=${Boolean(card)} fresh=${fresh} paySheetSent=${Boolean(s.paySheetSent)} walletLinkSent=${Boolean(s.walletLinkSent)}`,
   );
@@ -1742,7 +1759,8 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
   }
   if (card && !s.paySheetSent) {
     const opened = await openPaySheetAfterAccept(s, total);
-    if (opened) return;
+    if (!opened) await reply(s, PAYMENT_WAIT);
+    return;
   }
   if (fresh) {
     try {
@@ -1765,6 +1783,10 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
 
 /** Wallet first if no card; pay-sheet once a card is on file. Recap confirm, not after accept. */
 async function startFundingAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
+  if (demoLocalChain()) {
+    await fundAfterAccept(s);
+    return true;
+  }
   if (!agentcardConfigured()) {
     s.step = "await_pay_confirm";
     s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_UNCONFIGURED };
@@ -1793,13 +1815,7 @@ async function startFundingAfterAccept(s: Session, recapTotalCents: number): Pro
   }
   if (step === "paysheet") {
     const opened = await openPaySheetAfterAccept(s, recapTotalCents);
-    if (opened) return true;
-    try {
-      return await sendFreshWalletLink(s, recapTotalCents);
-    } catch (e: any) {
-      console.warn(`[shopper-agent] wallet link after pay-sheet: ${e?.message ?? e}`);
-      return false;
-    }
+    return opened;
   }
   return step === "wait_payment";
 }
@@ -1828,7 +1844,16 @@ async function confirmRecapPay(s: Session): Promise<void> {
 }
 
 /** Hosted pay-sheet after recap confirm. Amount is the recap total — do not recompute. Platform token mints the link. */
-async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
+const openingPaySheets = new WeakMap<Session, Promise<boolean>>();
+function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
+  const opening = openingPaySheets.get(s);
+  if (opening) return opening;
+  const pending = createPaySheetAfterAccept(s, recapTotalCents).finally(() => openingPaySheets.delete(s));
+  openingPaySheets.set(s, pending);
+  return pending;
+}
+
+async function createPaySheetAfterAccept(s: Session, recapTotalCents: number): Promise<boolean> {
   try {
     const sheet = await PaySheet({
       identity: sessionKey(s.phone),
@@ -1856,6 +1881,9 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
     return true;
   } catch (e: any) {
     console.warn(`[shopper-agent] pay-sheet: ${e?.message ?? e}`);
+    s.walletHandoffFailed = true;
+    s.walletRetryAt = Date.now() + 60_000;
+    markSessionDirty();
     if (isAgentCardLoginError(e)) {
       dropConnection(sessionKey(s.phone));
     }
@@ -1865,7 +1893,10 @@ async function openPaySheetAfterAccept(s: Session, recapTotalCents: number): Pro
 
 async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
   if (s.step !== "await_pay_confirm" || s.handoverCode || s.escrowId) return false;
-  if (!agentcardConfigured()) return false;
+  if (!agentcardConfigured() || !s.selected) return false;
+  // Background sync cannot start payment before the recap was accepted.
+  if (!s.walletLinkSent && !s.walletHandoffFailed && !s.paySheetSent) return false;
+  if (s.walletRetryAt && Date.now() < s.walletRetryAt) return false;
   const card = await shopperCard(s);
   const step = nextShopperFundingStep({
     configured: true,
@@ -1876,24 +1907,19 @@ async function maybeCompleteAgentCardFund(s: Session): Promise<boolean> {
   if (step === "paysheet") {
     const total = s.paySheetAmountCents ?? persistRecapTotal(s).totalCents;
     const opened = await openPaySheetAfterAccept(s, total);
-    if (opened) return true;
-    try {
-      return await sendFreshWalletLink(s, total);
-    } catch (e: any) {
-      console.warn(`[shopper-agent] wallet after pay-sheet login fail: ${e?.message ?? e}`);
-      s.walletHandoffFailed = true;
-      s.walletRetryAt = Date.now() + 60_000;
-      return false;
-    }
+    return opened;
   }
   return false;
 }
 
 /** Card webhook may only carry AgentCard user_id. Stamp waiting Relay sessions so pay-sheet can open. */
 export async function attachWebhookCardToWaitingShoppers(webhookIdentity?: string): Promise<void> {
+  if (!webhookIdentity) return;
+  const key = sessionKey(webhookIdentity);
   for (const s of allSessions()) {
     if (s.step !== "await_pay_confirm" || s.paySheetSent) continue;
     const id = sessionKey(s.phone);
+    if (id !== key && getConnection(id)?.userId !== webhookIdentity) continue;
     if (await getConnectedCard(id)) continue;
     await setConnectedCard({
       identity: id,
@@ -1905,10 +1931,11 @@ export async function attachWebhookCardToWaitingShoppers(webhookIdentity?: strin
 
 /** Trust transaction.* webhooks after the pay-sheet — not the shopper saying done. */
 export async function completeAgentCardPayment(identity?: string): Promise<void> {
-  const key = identity ? sessionKey(identity) : null;
+  if (!identity) return;
+  const key = sessionKey(identity);
   for (const s of allSessions()) {
     if (s.step !== "await_pay_confirm" || !s.paySheetSent || s.handoverCode) continue;
-    if (key && sessionKey(s.phone) !== key) continue;
+    if (sessionKey(s.phone) !== key && getConnection(sessionKey(s.phone))?.userId !== identity) continue;
     await fundAfterAccept(s);
   }
 }
@@ -2068,7 +2095,7 @@ export async function handleInbound(args: {
   relayEventId?: string;
   relayMessageId?: string;
 }): Promise<void> {
-  const text = args.text.trim();
+  let text = args.text.trim();
   const imageUrls = (args.imageUrls ?? []).filter(Boolean);
   if (!text && imageUrls.length === 0 && !args.mediaFailed) return;
 
@@ -2077,6 +2104,18 @@ export async function handleInbound(args: {
     relayEventId: args.relayEventId,
     relayMessageId: args.relayMessageId,
   });
+  if (s.pending?.kind === "date") {
+    const selection = calendarInput(s, text);
+    if (selection.handled) {
+      markSessionDirty();
+      await reply(s, (selection.error ? selection.error + "\n" : "") + s.pending.prompt);
+      return;
+    }
+    text = selection.text;
+  } else {
+    s.datePickerMonth = undefined;
+  }
+
 
   if (s.chatId) {
     presenceRead(s);
@@ -2218,7 +2257,8 @@ async function handleInboundInner(
   if (turn.act === "REASK") {
     if (s.step === "await_pay_confirm") {
       if (await maybeCompleteAgentCardFund(s)) return;
-      await continuePayHandoff(s, text);
+      if (s.walletLinkSent || s.paySheetSent || s.walletHandoffFailed) await continuePayHandoff(s, text);
+      else await reply(s, RECAP_PAY_ASK);
       return;
     }
     if (

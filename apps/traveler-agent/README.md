@@ -32,3 +32,14 @@ Register both redirect URIs on the Google client. After consent, Traveler reads 
 How calendar data is kept: [docs/how-we-use-calendar-data.md](docs/how-we-use-calendar-data.md).
 
 Apply the marketplace migration before production sync: `npm run migrate:deploy --workspace @manebra/db`.
+
+## Shared Relay groups and flight date selection
+
+Use `@traveler …` to select Traveler in a shared group; short replies then stay
+with Traveler until you switch with `@shopper …`. Sessions are isolated by both
+participant and chat. See [shared group configuration](../../apps/shopper-agent/README.md#shared-relay-groups),
+including `RELAY_SHARED_CHAT_IDS` when Relay omits group metadata.
+
+Flight date questions show a month grid. Reply with a day number, `next month`,
+`previous month`, or a full date. The chosen day belongs to the displayed month.
+This date picker is separate from connecting Google Calendar.
