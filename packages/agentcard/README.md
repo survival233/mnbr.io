@@ -62,3 +62,40 @@ only); anything that must be printed goes through `redactCardContent`.
   refresh proof, org-door cardholder + card independently verified via fresh
   `list_cards`, and the per-user `/connect` 302 + forged-state rejection
   against the running agent (start it with `npm run shopper-agent`).
+
+## Commerce SDK surface (Vector C) — `@repo/agentcard/commerce`
+
+A **third, independent** surface (off by default) on the same org account. It
+wraps `@agent-cards/commerce-sdk` so a **traveler** can place the shopper's
+order at the source-country store on the **traveler's own card** *after* escrow
+has HELD the shopper's funds, and the confirmed order total reconciles against
+the held amount. Manebra never issues or funds the card: escrow is the shopper's
+reimbursement budget, released (subtotal + commission) on handover. The same
+traveler tool also books the traveler's own flights; native flight search/book
+and Google-Calendar trip reading already live in `apps/traveler-agent` +
+`@manebra/flights`.
+
+- `commerceClient()` — one shared `AgentcardClient` from `AGENTCARD_CLIENT_ID`/
+  `_SECRET` (null when unconfigured). Sandbox vs live is chosen by which
+  credentials you load, never by code.
+- `buyFor(actorId)` / `buyInChat(actorId, chatId)` — one buy tool per actor
+  (+ Relay thread). `bridgeBuyTurn(turn)` adapts a turn into the structural
+  shape `@manebra/llm`'s `chatToolLoop` takes (no cross-package import).
+- `findMerchant(client, domain)` — `GET /buy/merchants` support check (Rail-A
+  gate); `isPayable()` folds in `held_back`.
+- `startCommerceListener(client, { onMessage, onOrderEvent })` — one
+  long-running listener per agent; order events feed reconciliation.
+- `reconcileOrderTotal(heldCents, totalCents, toleranceBps)` /
+  `handleConfirmedOrder(...)` — the escrow reconcile core. Over-tolerance
+  orders are flagged, never released.
+
+Flags: `COMMERCE_SDK_ENABLED` (on/off), `COMMERCE_SDK_MODE=live` (extra opt-in
+before a real order). The escrow-funding / scoped-card seams are injectable
+`VectorCPorts` — this surface never mutates settlement on its own.
+
+Product compliance (can this item be carried on this corridor?) lives in
+`@manebra/compliance` and gates both the shopper flow and the pre-purchase step.
+
+### Smoke
+- `npm run smoke:commerce` — sandbox, no orders: client build, a live
+  `buy/merchants` read, and the pure reconcile + compliance gates.
