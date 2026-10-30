@@ -94,6 +94,16 @@ services:
         sync: false
       - key: AGENTCARD_WEBHOOK_SECRET
         sync: false
+      # Commerce SDK (Vector C) — dashboard-managed. Leave ENABLED unset to keep
+      # the surface off (legacy buy path). Turn it on ONLY with Commerce SDK
+      # SANDBOX credentials in AGENTCARD_CLIENT_ID/SECRET (npx agent-cards
+      # credentials --mode sandbox); live credentials place real orders.
+      - key: COMMERCE_SDK_ENABLED
+        sync: false
+      - key: COMMERCE_SDK_MODE
+        sync: false
+      - key: AGENTCARD_COMMERCE_BASE_URL
+        sync: false
       - key: FLIGHTS_ALLOW_DEMO
         value: "1"
       - key: GOOGLE_CLIENT_ID
