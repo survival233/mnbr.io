@@ -117,6 +117,14 @@ const { resilientCalendarStore } = await import("./calendar-store.mts");
 setCalendarStore(resilientCalendarStore());
 const { handleAgentCardWebhook, isAgentCardRequest } = await import("@manebra/webhooks/agentcard");
 const { agentcardConfigured, mintPlatformToken } = await import("@repo/agentcard");
+const { commerceEnabled, commerceConfigured, commerceClient, startCommerceListener } = await import(
+  "@repo/agentcard/commerce"
+);
+/** off | enabled_no_creds | active — what the funded-buy step will actually do. */
+function commerceHealth(): string {
+  if (!commerceEnabled()) return "off";
+  return commerceConfigured() ? "active" : "enabled_no_creds";
+}
 const { initSessionStore, sessionKey, sessionStats, persistSessionsNow } = await import(
   "./session.mts"
 );
@@ -274,6 +282,7 @@ dispatch = async (req, res) => {
       linq: process.env.LINQ_API_KEY || process.env.LINQ_API_V3_API_KEY ? "configured" : "off",
       relay: relayConfigured() ? "configured" : "off",
       agentcard: agentcardConfigured() ? "configured" : "off",
+      commerce: commerceHealth(),
       flights: process.env.SERPAPI_API_KEY
         ? "serpapi"
         : process.env.FLIGHTS_ALLOW_DEMO !== "0"
@@ -410,9 +419,6 @@ if (agentcardConfigured()) {
 // messages (card saved, order placed, on its way) and order events reach us even
 // when the traveler isn't chatting. Inert unless COMMERCE_SDK_ENABLED + creds.
 {
-  const { commerceEnabled, commerceConfigured, commerceClient, startCommerceListener } = await import(
-    "@repo/agentcard/commerce"
-  );
   const { postCommerceMessageToTraveler } = await import("./traveler-flow.mts");
   if (commerceEnabled() && commerceConfigured()) {
     startCommerceListener(commerceClient(), {

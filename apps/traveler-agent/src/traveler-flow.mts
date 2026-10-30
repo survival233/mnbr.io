@@ -226,8 +226,13 @@ async function startTravelerBuy(
         ? await commerceBuyReply({ identity: sessionKey(s.phone), chatId: s.chatId, ask, say: (t) => say(s, t) })
         : null;
     if (viaCommerce != null) {
+      console.log(`[traveler-agent] buy route=commerce ${s.phone}`);
       replyText = viaCommerce.trim();
     } else {
+      console.log(
+        `[traveler-agent] buy route=legacy ${s.phone}` +
+          (commerceBuyActive() ? " (commerce active but no chatId)" : ""),
+      );
       const turn = await buyWithUserCard(sessionKey(s.phone), ask);
       replyText = turn.reply?.trim() ?? "";
     }
