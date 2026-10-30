@@ -43,6 +43,7 @@ import {
   type DialogSession,
 } from "@manebra/dialog";
 import { offerBelongsToTraveler } from "./offer-fit.mts";
+import { commerceBuyActive, commerceBuyReply } from "./commerce-buy.mts";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -216,8 +217,20 @@ async function startTravelerBuy(
     : `Buy ${carry.item} at ${merchant}`;
   const cap = fundedItemAndTaxCap(carry);
   try {
-    const turn = await buyWithUserCard(sessionKey(s.phone), ask);
-    const replyText = turn.reply?.trim() ?? "";
+    let replyText: string;
+    // Commerce SDK buy (Vector C): traveler buys on their own card, cards +
+    // approval link reach the chat via sendLink. Falls back to the legacy
+    // pay-sheet buy when the surface is off or can't run this chat.
+    const viaCommerce =
+      commerceBuyActive() && s.chatId
+        ? await commerceBuyReply({ identity: sessionKey(s.phone), chatId: s.chatId, ask, say: (t) => say(s, t) })
+        : null;
+    if (viaCommerce != null) {
+      replyText = viaCommerce.trim();
+    } else {
+      const turn = await buyWithUserCard(sessionKey(s.phone), ask);
+      replyText = turn.reply?.trim() ?? "";
+    }
     if (/out of stock|unavailable|sold out|no longer available|couldn'?t find|not found/i.test(replyText)) {
       s.travelerBuyStarted = false;
       s.skuGoneAsk = true;
@@ -239,6 +252,22 @@ async function startTravelerBuy(
     markSessionDirty();
     console.warn(`[traveler-agent] AgentCard buy: ${e?.message ?? e}`);
     await say(s, TRAVELER_SKU_GONE);
+  }
+}
+
+/**
+ * Post a Commerce SDK inter-turn message ("card saved", "order placed", "on its
+ * way") into the chat of the traveler whose identity Agentcard names. Best
+ * effort: drops the message when no live session matches (it still reaches the
+ * traveler's next buy turn via the SDK's own history).
+ */
+export async function postCommerceMessageToTraveler(identity: string, text: string): Promise<void> {
+  if (!text?.trim()) return;
+  for (const s of allSessions()) {
+    if (s.chatId && sessionKey(s.phone) === identity) {
+      await say(s, text);
+      return;
+    }
   }
 }
 

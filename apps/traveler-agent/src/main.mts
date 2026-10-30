@@ -406,6 +406,27 @@ if (agentcardConfigured()) {
       console.warn(`[traveler-agent] AgentCard token mint failed: ${e?.message ?? e}`);
     });
 }
+// Commerce SDK listener (Vector C): one long-running connection so inter-turn
+// messages (card saved, order placed, on its way) and order events reach us even
+// when the traveler isn't chatting. Inert unless COMMERCE_SDK_ENABLED + creds.
+{
+  const { commerceEnabled, commerceConfigured, commerceClient, startCommerceListener } = await import(
+    "@repo/agentcard/commerce"
+  );
+  const { postCommerceMessageToTraveler } = await import("./traveler-flow.mts");
+  if (commerceEnabled() && commerceConfigured()) {
+    startCommerceListener(commerceClient(), {
+      onMessage: (actorId, text) => enqueueForIdentity(actorId, () => postCommerceMessageToTraveler(actorId, text)),
+      onOrderEvent: (type, data) => {
+        // TODO(settlement): reconcile order.confirmed total vs held escrow via
+        // @repo/agentcard/commerce handleConfirmedOrder + VectorCPorts, then
+        // advance the handover/release milestone. Logged only for now.
+        console.log(`[traveler-agent] commerce ${type} order=${String((data as any)?.order?.order_id ?? (data as any)?.order_id ?? "?")}`);
+      },
+    });
+    console.log("[traveler-agent] Commerce SDK listener started");
+  }
+}
 void startRelayLongPoll();
 const pollMarketplace =
   Boolean(process.env.DATABASE_URL?.trim()) ||
