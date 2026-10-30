@@ -1729,6 +1729,9 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
     asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
   const card = await shopperCard(s);
   const reset = asksForFreshWallet(text) || Boolean(s.walletHandoffFailed);
+  console.log(
+    `[shopper-agent] pay handoff total=${total} card=${Boolean(card)} fresh=${fresh} paySheetSent=${Boolean(s.paySheetSent)} walletLinkSent=${Boolean(s.walletLinkSent)}`,
+  );
   if (s.paySheetSent && !asksForFreshWallet(text)) {
     await reply(s, `Open the pay link I sent — I’ll lock it once the charge lands.`);
     return;

@@ -263,8 +263,12 @@ export async function connectIdentity(identity: string): Promise<AgentCardConnec
 export type WalletLink = { id: string; url: string; user_id: string };
 
 async function postWalletLinks(body: Record<string, string>): Promise<WalletLink> {
+  // Bounded: a hung wallet_links call must surface as an error the pay handoff
+  // can turn into PAYMENT_WAIT, never leave the shopper silently stuck after the
+  // total. 25s is well above a healthy round-trip and below any chat timeout.
   const link = await api<WalletLink & { attach_url?: string }>("/api/v2/wallet_links", {
     method: "POST",
+    timeoutMs: 25_000,
     body: JSON.stringify(body),
   });
   const url = link.url || link.attach_url;
