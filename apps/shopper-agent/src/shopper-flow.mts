@@ -1,4 +1,3 @@
-import { calendarText, calendarInput } from "@manebra/shared";
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
@@ -187,10 +186,6 @@ function relayIdempotencyKey(s: Session, text: string, attempt = 0): string {
 
 /** Typing bubble + paced send so it feels like a person, not a USSD menu. */
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
-  if (s.pending?.kind === "date" && text.includes(s.pending.prompt)) {
-    text += "\n\n" + calendarText(s);
-    markSessionDirty();
-  }
   if (!text?.trim()) {
     console.warn("[shopper-agent] skip empty reply (Relay rejects blank text)");
     return;
@@ -748,9 +743,9 @@ async function commitStretch(s: Session): Promise<boolean> {
 
 function dateAskPrompt(dest: string, proposed: string | null): string {
   if (proposed) {
-    return `When do you need it by at most? There’s a trip to ${dest} on ${proposed} — say yes, or send another date.`;
+    return `When do you want it delivered by? There’s a trip to ${dest} on ${proposed} — say yes, or send another date.`;
   }
-  return "When do you need it by at most? Send a date.";
+  return "When do you want it delivered by? Send a date, like “Dec 5” or 2026-12-05.";
 }
 
 async function askNeedBy(s: Session, act?: ClassifiedTurn["act"]): Promise<void> {
@@ -1745,7 +1740,9 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
   const fresh =
     asksForFreshWallet(text) || s.walletHandoffFailed || !s.walletLinkSent || walletLinkStale(s);
   const card = await shopperCard(s);
-  const reset = asksForFreshWallet(text);
+  // A prior failed card connect leaves a broken connection; a retry must drop it
+  // and mint a clean link, not reuse it — otherwise "yes" loops on PAYMENT_WAIT.
+  const reset = asksForFreshWallet(text) || Boolean(s.walletHandoffFailed);
   console.log(
     `[shopper-agent] pay handoff total=${total} card=${Boolean(card)} fresh=${fresh} paySheetSent=${Boolean(s.paySheetSent)} walletLinkSent=${Boolean(s.walletLinkSent)}`,
   );
@@ -1757,7 +1754,7 @@ async function continuePayHandoff(s: Session, text: string): Promise<void> {
     await reply(s, RECAP_PAY_ASK);
     return;
   }
-  if (card && !s.paySheetSent) {
+  if (card && !s.paySheetSent && !s.walletHandoffFailed) {
     const opened = await openPaySheetAfterAccept(s, total);
     if (!opened) await reply(s, PAYMENT_WAIT);
     return;
@@ -2104,17 +2101,6 @@ export async function handleInbound(args: {
     relayEventId: args.relayEventId,
     relayMessageId: args.relayMessageId,
   });
-  if (s.pending?.kind === "date") {
-    const selection = calendarInput(s, text);
-    if (selection.handled) {
-      markSessionDirty();
-      await reply(s, (selection.error ? selection.error + "\n" : "") + s.pending.prompt);
-      return;
-    }
-    text = selection.text;
-  } else {
-    s.datePickerMonth = undefined;
-  }
 
 
   if (s.chatId) {

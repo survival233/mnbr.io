@@ -59,6 +59,15 @@ describe("shopper payment replies", () => {
     expect(createWalletLink).not.toHaveBeenCalled();
     expect(resetPaymentIdentity).not.toHaveBeenCalled();
   });
+
+  it("resets the broken connection and mints a fresh link on retry after the cooldown", async () => {
+    const s = recap("usr_payment_recover");
+    s.walletHandoffFailed = true;
+    s.walletRetryAt = Date.now() - 1; // cooldown already elapsed
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "yes", channel: "relay" });
+    expect(resetPaymentIdentity).toHaveBeenCalled();
+    expect(createWalletLink).toHaveBeenCalled();
+  });
 });
 
 describe("shopper group sessions and dates", () => {
@@ -73,14 +82,11 @@ describe("shopper group sessions and dates", () => {
     expect(getOrCreateSession("usr_alice", "cnv_group")).toBe(a);
     expect(a.phone).toBe("usr_alice");
   });
-  it("shows a navigable delivery month and commits its selected day", async () => {
+  it("commits a delivery date the shopper types", async () => {
     const s = recap("usr_dates");
     s.step = "await_deadline";
-    s.pending = { slot: "need_by", kind: "date", proposed: null, prompt: "When do you need it by?" };
-    s.datePickerMonth = "2030-12";
-    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "next month", channel: "relay" });
-    expect(relay.sendText).toHaveBeenLastCalledWith(expect.objectContaining({ text: expect.stringContaining("January 2031") }));
-    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "15", channel: "relay" });
+    s.pending = { slot: "need_by", kind: "date", proposed: null, prompt: "When do you want it delivered by?" };
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "2031-01-15", channel: "relay" });
     expect(s.deadline?.getFullYear()).toBe(2031);
     expect(s.deadline?.getMonth()).toBe(0);
     expect(s.deadline?.getDate()).toBe(15);
