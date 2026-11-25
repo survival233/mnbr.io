@@ -926,17 +926,22 @@ function parkRecapWait(s: Session): void {
   markSessionDirty();
 }
 
-/** After the quote: wait for recapHash confirm. Matching starts only after funded. */
+/**
+ * After the quote: show it, then go find a traveler. The shopper is NOT asked
+ * to pay here. Payment is requested only once a traveler agrees to carry it
+ * (the marketplace offer goes offered -> accepted) — see onTravelerAgreed.
+ */
 async function presentQuoteAndWait(s: Session): Promise<void> {
-  parkRecapWait(s);
+  persistRecapTotal(s);
   const quote = quoteLines(s);
   rememberItem(stayOf(s), s.selected?.productTitle ?? s.searchQuery ?? "");
   if (s.totalCents) rememberQuote(stayOf(s), s.totalCents);
-  await say(s, quote, RECAP_PAY_ASK);
+  await say(s, quote);
+  await beginMatching(s);
 }
 
-/** Matching only after the shopper is funded. */
-async function beginMatchingAfterFund(s: Session): Promise<void> {
+/** Find and offer the order to a traveler (unfunded). Payment follows acceptance. */
+async function beginMatching(s: Session): Promise<void> {
   const matchText = await runMatching(s);
   if (s.step === "await_extend" && matchText.trim()) {
     const altDay = parseDepartLabel(s.extendCandidate?.departs);
@@ -1676,9 +1681,31 @@ async function tryRematchWaiting(s: Session): Promise<void> {
   await lockTraveler(s, idx, { quoteAlreadyShown: true, silent: true });
 }
 
-async function notifyShopperAccepted(s: Session, travelerName: string, totalCents: number): Promise<void> {
-  const city = handoverCity(s);
+/**
+ * A traveler agreed to carry the order (offer -> accepted). Tell the shopper and
+ * send the pay link NOW — this is the only point payment is requested. On
+ * payment the escrow funds and finalizeFundedWithTraveler issues the handover.
+ */
+async function onTravelerAgreed(s: Session, travelerName: string): Promise<void> {
   rememberCounterparty(stayOf(s), travelerName, s.chosenTravelerId);
+  const total = persistRecapTotal(s).totalCents;
+  s.recapHash = shownRecapHash(s);
+  await say(s, `${travelerName} agreed to bring it. Fund ${formatUsd(total)} to lock it in.`);
+  const started = await startFundingAfterAccept(s, total);
+  if (!started && agentcardConfigured()) {
+    s.walletHandoffFailed = true;
+    s.walletRetryAt = Date.now() + 60_000;
+    s.step = "await_pay_confirm";
+    s.offer = undefined;
+    s.pending = { slot: "pay", proposed: s.recapHash ?? null, kind: "bool", prompt: PAYMENT_WAIT };
+    markSessionDirty();
+    await say(s, PAYMENT_WAIT);
+  }
+}
+
+/** Shopper has funded and a traveler is already locked in — issue the handover. */
+async function finalizeFundedWithTraveler(s: Session): Promise<void> {
+  const city = handoverCity(s);
   await say(s, shopperAccepted(city));
   if (s.handoverCode) {
     await say(
@@ -1689,7 +1716,6 @@ async function notifyShopperAccepted(s: Session, travelerName: string, totalCent
   s.step = "await_handover_done";
   clearPending(s);
   markSessionDirty();
-  void totalCents;
 }
 
 const WALLET_LINK_STALE_MS = 10 * 60_000;
@@ -1993,7 +2019,7 @@ export async function syncWaitingShoppers(): Promise<void> {
       }
       if (carry.notifiedShopper) continue;
       await updateOffer(carry.id, { notifiedShopper: true });
-      await notifyShopperAccepted(s, carry.travelerName, carry.totalCents);
+      await onTravelerAgreed(s, carry.travelerName);
       continue;
     }
 
@@ -2037,7 +2063,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
       });
     }
     await say(s, `Funded — ${formatUsd(recapTotal)}.`);
-    await beginMatchingAfterFund(s);
+    await finalizeFundedWithTraveler(s);
     return;
   }
   if (!demoLocalChain()) {
@@ -2082,7 +2108,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
       });
     }
     await say(s, `Funded — ${formatUsd(a.totalCents)} in escrow.`);
-    await beginMatchingAfterFund(s);
+    await finalizeFundedWithTraveler(s);
   } catch (e: any) {
     console.error(`[shopper-agent] settlement error: ${e.message}`);
     await reply(s, escrowErrorForUser(e));

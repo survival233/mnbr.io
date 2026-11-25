@@ -79,6 +79,25 @@ describe("shopper payment replies", () => {
   });
 });
 
+describe("match before pay", () => {
+  it("does not mint a pay link when the quote is shown — only after a traveler is found", async () => {
+    const s = getOrCreateSession("usr_match_first", "chat_match_first", { channel: "relay" });
+    Object.assign(s, {
+      step: "await_max_fee",
+      deliveryCity: "Accra",
+      deadline: new Date("2031-01-15T00:00:00Z"),
+      selected: { listingId: "test:1", productTitle: "Book", storeName: "Test", priceCents: 1000, taxCents: 0, includesTax: true },
+      cart: { listingId: "test:1", qty: 1 },
+      pending: { slot: "delivery_fee", kind: "money", proposed: null, prompt: "How much for the traveler?" },
+    });
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "$5", channel: "relay" });
+    // The quote step now starts matching, never the pay handoff.
+    expect(createWalletLink).not.toHaveBeenCalled();
+    expect(PaySheet).not.toHaveBeenCalled();
+    expect(s.step).not.toBe("await_pay_confirm");
+  });
+});
+
 describe("shopper group sessions and dates", () => {
   it("keeps different people and different conversations isolated", () => {
     const a = getOrCreateSession("usr_alice", "cnv_group", { channel: "relay" });
