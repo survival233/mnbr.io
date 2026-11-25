@@ -1690,6 +1690,7 @@ async function onTravelerAgreed(s: Session, travelerName: string): Promise<void>
   rememberCounterparty(stayOf(s), travelerName, s.chosenTravelerId);
   const total = persistRecapTotal(s).totalCents;
   s.recapHash = shownRecapHash(s);
+  s.payAskedAt = Date.now();
   await say(s, `${travelerName} agreed to bring it. Fund ${formatUsd(total)} to lock it in.`);
   const started = await startFundingAfterAccept(s, total);
   if (!started && agentcardConfigured()) {
@@ -1719,6 +1720,38 @@ async function finalizeFundedWithTraveler(s: Session): Promise<void> {
 }
 
 const WALLET_LINK_STALE_MS = 10 * 60_000;
+
+/** How long a traveler who agreed is held waiting for the shopper to fund. */
+const PAY_WINDOW_MS = 15 * 60_000;
+
+/** Clear the pay handoff so the next traveler's acceptance re-sends a fresh link. */
+function resetPayHandoffState(s: Session): void {
+  s.walletLinkSent = undefined;
+  s.walletLinkSentAt = undefined;
+  s.paySheetSent = undefined;
+  s.paySheetAmountCents = undefined;
+  s.walletHandoffFailed = undefined;
+  s.walletRetryAt = undefined;
+  s.payAskedAt = undefined;
+  markSessionDirty();
+}
+
+/**
+ * A traveler agreed but the shopper didn't fund within PAY_WINDOW_MS. Free the
+ * traveler (expire the offer), reset the pay handoff, and offer the next-ranked
+ * traveler — nobody is held indefinitely. Returns true if it released.
+ */
+async function releaseIfPayTimedOut(s: Session): Promise<boolean> {
+  if (s.step !== "await_pay_confirm") return false;
+  if (s.funded || s.handoverCode || s.escrowId) return false; // already paid / funding
+  if (!s.bidId || !s.chosenTravelerId) return false; // no locked traveler to release
+  const asked = s.payAskedAt ?? 0;
+  if (!asked || Date.now() - asked < PAY_WINDOW_MS) return false;
+  resetPayHandoffState(s);
+  await say(s, `That traveler couldn’t hold it any longer — looking for another to ${handoverCity(s)}.`);
+  await advanceAfterTravelerMiss(s, "expired");
+  return true;
+}
 
 async function shopperCard(s: Session) {
   const id = sessionKey(s.phone);
@@ -1977,6 +2010,7 @@ export async function syncWaitingShoppers(): Promise<void> {
   for (const s of allSessions()) {
     if (s.step === "await_pay_confirm") {
       if (await maybeCompleteAgentCardFund(s)) continue;
+      if (await releaseIfPayTimedOut(s)) continue;
     }
     if (s.step !== "await_traveler_decision") continue;
 

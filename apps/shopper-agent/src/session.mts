@@ -101,6 +101,8 @@ export type Session = {
   /** Recap yes already tried wallet_links; host retries without asking yes again. */
   walletHandoffFailed?: boolean;
   walletRetryAt?: number;
+  /** When the pay link was sent after a traveler agreed — for the pay-timeout release. */
+  payAskedAt?: number;
   /** Multimodal cognition: persona, episodic memory, pending product confirm. */
   cognition?: CognitionState;
   updatedAt: number;
@@ -219,6 +221,7 @@ export function resetSession(s: Session) {
   s.paySheetAmountCents = undefined;
   s.walletHandoffFailed = undefined;
   s.walletRetryAt = undefined;
+  s.payAskedAt = undefined;
   s.stay = { openedAt: Date.now() };
   // Keep long-horizon persona/memory; clear only in-flight confirm.
   if (s.cognition) {

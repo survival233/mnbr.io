@@ -98,6 +98,36 @@ describe("match before pay", () => {
   });
 });
 
+describe("pay-timeout release", () => {
+  it("frees the traveler and re-opens matching when the shopper doesn't fund in the window", async () => {
+    const s = recap("usr_pay_timeout");
+    Object.assign(s, {
+      step: "await_pay_confirm",
+      bidId: "req-timeout",
+      chosenTravelerId: "trav-1",
+      walletLinkSent: true,
+      payAskedAt: Date.now() - 16 * 60_000, // past the 15-min window
+    });
+    await syncWaitingShoppers();
+    expect(s.step).not.toBe("await_pay_confirm");
+    expect(s.walletLinkSent).toBeUndefined();
+    expect(s.payAskedAt).toBeUndefined();
+  });
+  it("holds the traveler while the shopper is still inside the pay window", async () => {
+    const s = recap("usr_pay_waiting");
+    Object.assign(s, {
+      step: "await_pay_confirm",
+      bidId: "req-waiting",
+      chosenTravelerId: "trav-2",
+      walletLinkSent: true,
+      payAskedAt: Date.now(),
+    });
+    await syncWaitingShoppers();
+    expect(s.step).toBe("await_pay_confirm");
+    expect(s.walletLinkSent).toBe(true);
+  });
+});
+
 describe("shopper group sessions and dates", () => {
   it("keeps different people and different conversations isolated", () => {
     const a = getOrCreateSession("usr_alice", "cnv_group", { channel: "relay" });
