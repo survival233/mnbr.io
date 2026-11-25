@@ -1,7 +1,7 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
-import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, resolveListingPick, type ProductListing } from "@manebra/catalog";
+import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, resolveListingPick, resolveDirectStoreUrl, directStoreUrlsEnabled, type ProductListing } from "@manebra/catalog";
 
 import { makeLlm, extractOrder } from "@manebra/llm";
 import { rankTripsForItem, scoreMatch } from "@manebra/agents/matching/score";
@@ -1222,7 +1222,16 @@ async function selectListing(s: Session, idx: number, text = ""): Promise<void> 
   const parent = list[idx]!;
   const picked = resolveListingPick(parent, text);
   s.selected = { ...picked };
-  s.cart = { listingId: picked.listingId, qty: s.cart?.qty ?? 1 };
+  // Resolve the exact approved-store product URL now: this selected link is what
+  // the traveler agent receives and buys from at consensus, so it must be the
+  // real store page, not a Google redirect. Fallback-safe + flag-guarded.
+  if (directStoreUrlsEnabled()) {
+    s.selected = await resolveDirectStoreUrl(s.selected);
+    if (s.selected.urlVerified === false) {
+      console.warn(`[shopper-agent] no verified store URL for ${s.selected.storeSlug} listing ${s.selected.listingId}`);
+    }
+  }
+  s.cart = { listingId: s.selected.listingId, qty: s.cart?.qty ?? 1 };
   s.category ??= categoryOf(s.selected.productTitle) ?? undefined;
   s.recapHash = undefined;
   clearPending(s);

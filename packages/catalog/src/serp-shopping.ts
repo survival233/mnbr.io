@@ -63,6 +63,7 @@ interface SerpShoppingItem {
   extracted_price?: number;
   link?: string;
   product_link?: string;
+  product_id?: string;
   thumbnail?: string;
   extensions?: string[];
   delivery?: string;
@@ -131,6 +132,7 @@ export async function searchGoogleShoppingLive(args: {
       availability: avail.availability,
       availabilityLabel: avail.availabilityLabel,
       productUrl: url,
+      productId: item.product_id,
       imageUrl: item.thumbnail || "",
       shoppingCity: city,
       category: inferCategory(args.query, item.title),

@@ -13,7 +13,12 @@ export interface ProductListing {
   currency: string;
   availability: "in_stock" | "pickup_today" | "limited" | "out_of_stock" | "unknown";
   availabilityLabel: string;
+  /** The store product page. After selection this is the exact approved-store URL handed to the traveler. */
   productUrl: string;
+  /** SerpAPI product id, used to resolve the direct store URL + image at selection. */
+  productId?: string;
+  /** True once productUrl is confirmed to be a direct approved-store link (not a Google redirect). */
+  urlVerified?: boolean;
   imageUrl: string;
   shoppingCity: string;
   category: "electronics" | "clothing_shoes" | "cosmetics_sealed" | "books_media" | "food_sealed_nonperishable";
