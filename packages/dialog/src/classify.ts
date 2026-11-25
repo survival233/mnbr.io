@@ -194,6 +194,46 @@ function isMetaText(text: string): ClassifiedTurn["meta"] | null {
   return null;
 }
 
+/**
+ * Phases where the shopper has already committed to an order and is waiting on a
+ * traveler / handover. Here there is no form to fill, so the sane intents are:
+ * check status, cancel, or EXPLICITLY start a new order. See newOrStatus.
+ */
+const COMMITTED_STEPS = new Set([
+  "await_traveler_decision",
+  "await_handover_done",
+  "await_pay_confirm",
+]);
+
+function isCommittedPhase(s: DialogSession): boolean {
+  return COMMITTED_STEPS.has(s.step) || Boolean(s.chosenTravelerId) || Boolean(s.stay?.lastOfferId);
+}
+
+/** A clear signal the shopper wants a brand-new order (not an ambiguous phrase). */
+function explicitNewOrder(text: string, hasPhoto: boolean): boolean {
+  return hasPhoto || replacementItem(text) || Boolean(extractProductUrl(text));
+}
+
+/**
+ * The root-cause guard. The classifier's rules would otherwise fall through to a
+ * NEW product search for any text they don't recognize — which, once an order is
+ * committed, silently abandons it (e.g. "found anybody yet?" -> a fresh search ->
+ * "I couldn't find enough listings"). So in a committed phase we only honor NEW
+ * when the intent is explicit; anything ambiguous becomes a status check instead
+ * of destroying the in-flight order. No per-phrase patterns to maintain.
+ */
+function newOrStatus(
+  s: DialogSession,
+  text: string,
+  hasPhoto: boolean,
+  query: string,
+): ClassifiedTurn {
+  if (isCommittedPhase(s) && !explicitNewOrder(text, hasPhoto)) {
+    return { act: "META", meta: "status" };
+  }
+  return { act: "NEW", query };
+}
+
 function isRecapLeftover(s: DialogSession, text: string): boolean {
   const t = text.trim().toLowerCase();
   if (t.length < 4) return false;
@@ -486,11 +526,11 @@ export function classifyTurn(
     if (isDependent(text) && /^(y|yes|ok|okay|sure|yeah|yep|yup|fine|that one)\b/i.test(text)) {
       return { act: "CONTINUE", slot: pending.slot, query: String(pending.proposed ?? "") };
     }
-    if (newItem && replaced) return { act: "NEW", query: replaced };
+    if (newItem && replaced) return newOrStatus(s, text, hasPhoto, replaced);
     return { act: "REASK" };
   }
 
-  if (newItem && replaced) return { act: "NEW", query: replaced };
+  if (newItem && replaced) return newOrStatus(s, text, hasPhoto, replaced);
 
   if (open) {
     if (isDependent(text)) return { act: "CONTINUE" };
@@ -501,7 +541,7 @@ export function classifyTurn(
   if (isDependent(text) || /^(hi|hello|hey|start|menu)\b/i.test(text)) {
     return { act: "REASK", slot: "product" };
   }
-  if (replaced) return { act: "NEW", query: replaced };
+  if (replaced) return newOrStatus(s, text, hasPhoto, replaced);
   if (productUrl) return { act: "NEW", query: productUrl };
   return { act: "REASK", slot: "product" };
 }

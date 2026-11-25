@@ -1385,6 +1385,17 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
     await sayHost(s, "META", shopperIntakeLine(s), "cancel");
     return;
   }
+  // A status check while waiting on a traveler gets a real answer, not "Matching."
+  if ((turn.meta === "status" || turn.meta === "wait") && s.step === "await_traveler_decision") {
+    void syncWaitingShoppers();
+    rememberWait(stayOf(s));
+    const line =
+      s.chosenTravelerId && stayOf(s).lastTravelerName
+        ? shopperAccepted(handoverCity(s))
+        : shopperNobody(handoverCity(s));
+    await sayHost(s, "META", line, turn.meta);
+    return;
+  }
   const phase =
     s.step === "await_handover_done"
       ? "shopping"

@@ -14,6 +14,42 @@ function act(s: DialogSession, text: string, hasPhoto = false): ClassifiedTurn {
   return classifyTurn(s, { text, hasPhoto });
 }
 
+describe("classifyTurn — a committed order is never silently restarted as a search", () => {
+  const committed = (over: Partial<DialogSession> = {}) =>
+    sess({
+      step: "await_traveler_decision",
+      searchQuery: "AirPods",
+      selected: { productTitle: "AirPods Pro" },
+      stay: { lastItem: "AirPods Pro", lastOfferId: "offer-1" },
+      ...over,
+    });
+
+  for (const q of ["found anybody yet?", "any luck?", "did you find a traveler?", "you there?"]) {
+    it(`ambiguous "${q}" does not become a new search`, () => {
+      expect(act(committed(), q).act, q).not.toBe("NEW");
+    });
+  }
+
+  it("a stray product-ish phrase does not abandon the in-flight order", () => {
+    // Before: parseItem pulled a product token out and fell through to NEW -> SKU_TOO_FEW.
+    const t = act(committed(), "any news on my airpods?");
+    expect(t.act).not.toBe("NEW");
+  });
+
+  it("the committed guard follows the order via stay memory even if the step drifts", () => {
+    const t = act(committed({ step: "idle" }), "found anyone?");
+    expect(t.act).not.toBe("NEW");
+  });
+
+  it("an explicit replacement still starts a new search", () => {
+    expect(act(committed(), "actually search for a PS5 instead").act).toBe("NEW");
+  });
+
+  it("does not change intake: a bare product while idle is still a search", () => {
+    expect(act(sess({ step: "idle" }), "airpods pro").act).toBe("NEW");
+  });
+});
+
 describe("classifyTurn — open question after a gap is never a search", () => {
   it("fuzzy date typo fills need_by (tomorow)", () => {
     const s = sess({
