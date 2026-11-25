@@ -32,37 +32,54 @@ afterEach(() => {
 });
 
 describe("resolveDirectStoreUrl", () => {
-  it("upgrades to the direct approved-store URL and the store's own image", async () => {
+  it("upgrades to the price-closest direct URL from the listing's own approved store", async () => {
     mockFetch({
-      product_results: { media: [{ type: "image", link: "https://store.apple.com/real.jpg" }] },
-      sellers_results: {
-        online_sellers: [
-          { name: "Walmart", direct_link: "https://www.walmart.com/ip/9" },
-          { name: "Apple", direct_link: "https://www.apple.com/shop/buy-iphone/iphone-15-pro" },
+      product_results: {
+        thumbnails: ["https://serpapi.example/product-thumb.jpg"],
+        stores: [
+          { name: "Walmart", link: "https://www.walmart.com/ip/9", extracted_price: 1099 },
+          { name: "Apple", link: "https://www.apple.com/shop/product/refurb", extracted_price: 899 },
+          { name: "Apple", link: "https://www.apple.com/shop/buy-iphone/iphone-15-pro", extracted_price: 1199 },
         ],
       },
     });
     const out = await resolveDirectStoreUrl(listing());
     expect(out.urlVerified).toBe(true);
+    // Apple entry priced closest to the $1199 listing, not the $899 refurb or Walmart.
     expect(out.productUrl).toBe("https://www.apple.com/shop/buy-iphone/iphone-15-pro");
-    expect(out.imageUrl).toBe("https://store.apple.com/real.jpg");
+    // Existing listing image is kept (no store-hosted image exists to upgrade to).
+    expect(out.imageUrl).toBe("https://serpapi.example/thumb.jpg");
   });
 
-  it("flags urlVerified false when no seller from the listing's store has a direct link", async () => {
-    mockFetch({ sellers_results: { online_sellers: [{ name: "Walmart", direct_link: "https://www.walmart.com/ip/9" }] } });
+  it("falls back to a product thumbnail only when the listing has no image", async () => {
+    mockFetch({
+      product_results: {
+        thumbnails: ["https://serpapi.example/product-thumb.jpg"],
+        stores: [{ name: "Apple", link: "https://www.apple.com/shop/buy-iphone/iphone-15-pro", extracted_price: 1199 }],
+      },
+    });
+    const out = await resolveDirectStoreUrl(listing({ imageUrl: "" }));
+    expect(out.urlVerified).toBe(true);
+    expect(out.imageUrl).toBe("https://serpapi.example/product-thumb.jpg");
+  });
+
+  it("flags urlVerified false when no store from the listing's own store has a direct link", async () => {
+    mockFetch({
+      product_results: { stores: [{ name: "Walmart", link: "https://www.walmart.com/ip/9", extracted_price: 1099 }] },
+    });
     const out = await resolveDirectStoreUrl(listing());
     expect(out.urlVerified).toBe(false);
     expect(out.productUrl).toBe("https://www.google.com/shopping/product/1"); // unchanged
   });
 
-  it("rejects an unapproved seller domain even if it matches the name", async () => {
-    mockFetch({ sellers_results: { online_sellers: [{ name: "Apple", direct_link: "https://notapple.example/x" }] } });
+  it("rejects an unapproved store domain even if the name matches", async () => {
+    mockFetch({ product_results: { stores: [{ name: "Apple", link: "https://notapple.example/x" }] } });
     const out = await resolveDirectStoreUrl(listing());
     expect(out.urlVerified).toBe(false);
   });
 
   it("returns the listing unchanged when it has no product id", async () => {
-    mockFetch({ sellers_results: { online_sellers: [] } });
+    mockFetch({ product_results: { stores: [] } });
     const out = await resolveDirectStoreUrl(listing({ productId: undefined }));
     expect(out).toEqual(listing({ productId: undefined }));
   });
