@@ -452,7 +452,7 @@ function isAffirmationOrCloser(text: string): boolean {
 /** Affirm / defer-to-agent — apply the last offer, do not parse this utterance as a slot. */
 function acceptsOffer(text: string, intent: { kind: string }): boolean {
   if (intent.kind === "yes") return true;
-  return /^(y|yes|ok|okay|sure|yeah|yep|yup|affirmative|idk|idc|whatever|you pick|up to you|sounds good|that works|that'?s fine|that'?s ok(?:ay)?|that one|the first|first one|fine)\b/i.test(
+  return /^(y|yes|ok|okay|sure|yeah|yep|yup|affirmative|confirm(?:ed|s)?|proceed|go\s*ahead|send\s*it|do\s*it|yes\s*please|idk|idc|whatever|you pick|up to you|sounds good|that works|that'?s fine|that'?s ok(?:ay)?|that one|the first|first one|fine)\b/i.test(
     text.trim(),
   );
 }
@@ -2243,8 +2243,17 @@ async function handleInboundInner(
   if (turn.act === "REASK") {
     if (s.step === "await_pay_confirm") {
       if (await maybeCompleteAgentCardFund(s)) return;
-      if (s.walletLinkSent || s.paySheetSent || s.walletHandoffFailed) await continuePayHandoff(s, text);
-      else await reply(s, RECAP_PAY_ASK);
+      if (s.walletLinkSent || s.paySheetSent || s.walletHandoffFailed) {
+        await continuePayHandoff(s, text);
+      } else if (acceptsOffer(text, intent)) {
+        // A "yes"/"okay"/"confirm" at the recap is consent to pay: advance the
+        // workflow (send the pay sheet) instead of re-asking the same prompt.
+        // classifyTurn can label a bare affirmation as REASK, which otherwise
+        // drops it here and loops on RECAP_PAY_ASK.
+        await confirmRecapPay(s);
+      } else {
+        await reply(s, RECAP_PAY_ASK);
+      }
       return;
     }
     if (

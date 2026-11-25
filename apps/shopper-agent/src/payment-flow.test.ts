@@ -44,6 +44,15 @@ describe("shopper payment replies", () => {
     expect(createWalletLink).toHaveBeenCalledTimes(1);
     expect(resetPaymentIdentity).not.toHaveBeenCalled();
   });
+  it("advances the pay workflow on confirm/okay, not just yes (no re-ask loop)", async () => {
+    for (const word of ["confirm", "okay", "go ahead"]) {
+      vi.clearAllMocks();
+      const s = recap(`usr_confirm_${word.replace(/\s+/g, "_")}`);
+      await handleInbound({ phone: s.phone, chatId: s.chatId, text: word, channel: "relay" });
+      expect(createWalletLink, `"${word}" should start the pay handoff`).toHaveBeenCalledTimes(1);
+      expect(s.walletLinkSent).toBe(true);
+    }
+  });
   it("does not open a wallet on an unconfirmed recap or an ordinary re-ask", async () => {
     const s = recap("usr_payment_changed");
     s.recapHash = "outdated";
