@@ -7,6 +7,7 @@ import {
   normalizeListing,
   registrableDomain,
   resolveListingPick,
+  titleMatchesQuery,
 } from "./quality.js";
 
 function listing(
@@ -225,3 +226,42 @@ describe("normalizeListing", () => {
     expect(n.currency).toBe("USD");
   });
 });
+
+describe("relevance — exact listing, not the nearest match", () => {
+  it("requires every distinctive query token in the title", () => {
+    // The reported bug: a different generation must not match.
+    expect(titleMatchesQuery("iphone 18 pro max", "Apple iPhone 15 Pro Max 256GB")).toBe(false);
+    expect(titleMatchesQuery("iphone 18 pro max", "Apple iPhone 18 Pro Max 256GB")).toBe(true);
+    // Modifiers matter: Pro is not Max.
+    expect(titleMatchesQuery("airpods pro", "Apple AirPods Max")).toBe(false);
+    expect(titleMatchesQuery("airpods pro", "Apple AirPods Pro (2nd generation)")).toBe(true);
+    // Whole-token match: 15 never matches 150.
+    expect(titleMatchesQuery("iphone 15", "Apple iPhone 150")).toBe(false);
+  });
+
+  it("treats color and storage as variant choices, not match requirements", () => {
+    expect(titleMatchesQuery("iphone 15 blue 256gb", "Apple iPhone 15 Black 128GB")).toBe(true);
+  });
+
+  it("stays lenient: a family query matches its variants, a vague query matches anything", () => {
+    expect(titleMatchesQuery("iphone 15", "Apple iPhone 15 Pro Max Pink 256GB")).toBe(true);
+    expect(titleMatchesQuery("iphone", "Apple iPhone 15 128GB")).toBe(true);
+    expect(titleMatchesQuery("buy me the latest iphone please", "Apple iPhone 15 128GB")).toBe(true);
+  });
+
+  it("drops a near-match listing as 'relevance' and returns nothing exact", () => {
+    const rows = [
+      listing({
+        listingId: "walmart:near",
+        storeSlug: "walmart",
+        storeName: "Walmart",
+        productTitle: "Apple iPhone 15 Pro Max 256GB",
+        priceCents: 119_900,
+        productUrl: "https://www.google.com/shopping/product/1",
+      }),
+    ];
+    const { listings, drops } = filterCatalogListings(rows, "iphone 18 pro max");
+    expect(listings).toHaveLength(0);
+    expect(drops.some((d) => d.reason === "relevance")).toBe(true);
+  });
+})

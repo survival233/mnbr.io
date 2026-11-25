@@ -17,6 +17,8 @@ export {
   flattenCatalogListings,
   normalizeListing,
   resolveListingPick,
+  titleMatchesQuery,
+  significantQueryTokens,
 } from "./quality.js";
 export type { SearchQueryKind, FilterDropReason, FilterDrop } from "./quality.js";
 

@@ -7,7 +7,7 @@ import { VERIFIED_STORES } from "./verified-stores.js";
 
 export type SearchQueryKind = "device" | "accessory" | "unknown";
 export type PriceCategory = "phones" | "laptops" | "tablets" | "audio" | "other";
-export type FilterDropReason = "condition" | "accessory" | "price" | "merchant" | "cap";
+export type FilterDropReason = "condition" | "accessory" | "price" | "merchant" | "relevance" | "cap";
 
 export type FilterDrop = { listing: ProductListing; reason: FilterDropReason };
 
@@ -144,6 +144,58 @@ export function extractListingVariants(title: string): {
   return { color, storage, size };
 }
 
+/**
+ * Relevance gate — the listing's title must contain every distinctive thing the
+ * shopper asked for, so a query never surfaces a different product (e.g.
+ * "iphone 18 pro max" must not return an iPhone 15). This is the trust guard:
+ * exact listing, not the aggregator's nearest match.
+ *
+ * Filler words are dropped, and COLOR and STORAGE tokens are excluded from the
+ * requirement because those are variant choices the shopper picks downstream
+ * (nestVariants groups them); the model identity — brand, line, generation and
+ * modifiers like "pro"/"max" — must all be present.
+ */
+const QUERY_FILLER = new Set([
+  "a", "an", "the", "new", "brand", "latest", "please", "pls", "plz", "me", "my", "mine",
+  "find", "get", "buy", "order", "purchase", "want", "need", "looking", "show", "show me",
+  "for", "from", "in", "at", "on", "some", "any", "one", "to", "with", "and", "or", "of",
+  "is", "it", "that", "this",
+]);
+
+function tokenSet(text: string): Set<string> {
+  return new Set(
+    (text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(Boolean),
+  );
+}
+
+/** The query tokens a title must contain: distinctive, minus filler/color/storage. */
+export function significantQueryTokens(query: string): string[] {
+  const colors = new Set<string>(COLORS as readonly string[]);
+  const out: string[] = [];
+  for (const t of (query ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/)) {
+    if (!t) continue;
+    if (t.length < 2 && !/\d/.test(t)) continue; // drop lone letters (keep lone digits)
+    if (QUERY_FILLER.has(t)) continue;
+    if (colors.has(t)) continue; // color is a variant choice
+    if (/^\d+(gb|tb)$/.test(t)) continue; // storage is a variant choice
+    out.push(t);
+  }
+  return out;
+}
+
+/**
+ * True when `title` contains every significant token in `query`. Subset match on
+ * whole tokens (so "15" never matches "150" and "18" never matches "15"); extra
+ * tokens in the title are fine, so family variants still qualify. An empty query
+ * (nothing distinctive) matches everything, to stay lenient on vague searches.
+ */
+export function titleMatchesQuery(query: string, title: string): boolean {
+  const wanted = significantQueryTokens(query);
+  if (!wanted.length) return true;
+  const have = tokenSet(title);
+  return wanted.every((t) => have.has(t));
+}
+
 export function normalizedProductName(title: string): string {
   let s = (title ?? "").toLowerCase();
   s = s.replace(/\b(\d+\s*(?:gb|tb))\b/gi, " ");
@@ -247,6 +299,10 @@ export function filterCatalogListings(
     }
     if (!listingMerchantAllowed(listing)) {
       drops.push({ listing, reason: "merchant" });
+      continue;
+    }
+    if (!titleMatchesQuery(query, listing.productTitle)) {
+      drops.push({ listing, reason: "relevance" });
       continue;
     }
     kept.push(listing);
