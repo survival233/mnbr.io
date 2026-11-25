@@ -38,6 +38,11 @@ services:
         sync: false
       - key: SERPAPI_API_KEY
         sync: false
+      # Resolve the exact approved-store product URL for a selected listing via
+      # the Google Product API (one extra SerpAPI call per selection). On = the
+      # traveler gets the real store link at consensus, not a google.com redirect.
+      - key: CATALOG_RESOLVE_DIRECT_URL
+        value: "1"
       - key: HF_TOKEN
         sync: false
       - key: OPENAI_API_KEY
