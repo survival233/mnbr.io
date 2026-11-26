@@ -54,6 +54,8 @@ export type Session = {
   calendarQueue?: string[];
   /** A sync already ran this session. */
   calendarSynced?: boolean;
+  /** Failed handover-code attempts per offer id — for brute-force lockout. */
+  handoverAttempts?: Record<string, number>;
   updatedAt: number;
 };
 

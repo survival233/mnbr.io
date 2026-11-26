@@ -32,4 +32,17 @@ describe("verifyAgentCardSignature", () => {
   it("is false for a missing signature header", () => {
     expect(verifyAgentCardSignature("s", "{}", undefined)).toBe(false);
   });
+
+  it("accepts a fresh signed-timestamp request but rejects a stale one (replay)", () => {
+    const raw = "{}";
+    const secret = "s3cr3t";
+    const sigFor = (tSec: number) => {
+      const v1 = createHmac("sha256", secret).update(`${tSec}.${raw}`).digest("hex");
+      return `t=${tSec},v1=${v1}`;
+    };
+    const now = Math.floor(Date.now() / 1000);
+    expect(verifyAgentCardSignature(secret, raw, sigFor(now))).toBe(true);
+    // 10 minutes old — beyond the 5-minute tolerance.
+    expect(verifyAgentCardSignature(secret, raw, sigFor(now - 600))).toBe(false);
+  });
 });

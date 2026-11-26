@@ -1,5 +1,14 @@
-import { calendarText, calendarInput } from "@manebra/shared";
+import { timingSafeEqual } from "node:crypto";
+import { calendarText, calendarInput, HANDOVER_MAX_ATTEMPTS } from "@manebra/shared";
 import * as linq from "./linq-client.mts";
+
+/** Constant-time compare of two handover codes (avoids a timing side-channel). */
+function codesMatch(entered: string, stored: string): boolean {
+  if (!stored) return false;
+  const a = Buffer.from(entered);
+  const b = Buffer.from(stored);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 import * as relay from "./relay-client.mts";
 import {
   getOrCreateSession,
@@ -431,19 +440,49 @@ async function tryHandleMarketplaceOffer(
   }
 
   if (carry.status === "funded") {
-    const entered = code ?? (confirm ? carry.handoverCode : null);
-    if (entered && entered === carry.handoverCode) {
-      try {
-        await settleLocalEscrow({ escrowId: carry.escrowId as `0x${string}`, action: "release" });
-        await updateOffer(carry.id, { status: "released" });
-        await io.reply(s, `Handover confirmed — escrow released. You’re paid (test USDC).`);
-      } catch (e: any) {
-        console.error(`[traveler-agent] local release: ${e?.message ?? e}`);
-        await io.reply(s, `Couldn’t release escrow — ${e?.message ?? e}`);
-      }
+    const attempts = s.handoverAttempts?.[carry.id] ?? 0;
+    if (attempts >= HANDOVER_MAX_ATTEMPTS) {
+      await io.reply(
+        s,
+        `Too many incorrect codes. Ask the shopper to re-share the handover code, then try again.`,
+      );
       return true;
     }
-    await io.reply(s, `Enter the 6-digit handover code from the shopper (or say confirm).`);
+    // A bare "confirm/done" must NOT release escrow — the traveler has to enter
+    // the actual 6-digit code the shopper gives them at pickup. Otherwise a
+    // traveler could release funds without the shopper's hand-off.
+    if (!code) {
+      await io.reply(
+        s,
+        confirm
+          ? `Almost — enter the 6-digit code the shopper gives you at pickup, not just "done".`
+          : `Enter the 6-digit handover code the shopper gives you at pickup.`,
+      );
+      return true;
+    }
+    if (!codesMatch(code, carry.handoverCode)) {
+      const used = attempts + 1;
+      s.handoverAttempts = { ...(s.handoverAttempts ?? {}), [carry.id]: used };
+      markSessionDirty();
+      const left = HANDOVER_MAX_ATTEMPTS - used;
+      await io.reply(
+        s,
+        left > 0
+          ? `That code didn’t match. ${left} ${left === 1 ? "try" : "tries"} left.`
+          : `Too many incorrect codes. Ask the shopper to re-share the handover code.`,
+      );
+      return true;
+    }
+    try {
+      await settleLocalEscrow({ escrowId: carry.escrowId as `0x${string}`, action: "release" });
+      await updateOffer(carry.id, { status: "released" });
+      if (s.handoverAttempts) delete s.handoverAttempts[carry.id];
+      markSessionDirty();
+      await io.reply(s, `Handover confirmed — escrow released. You’re paid (test USDC).`);
+    } catch (e: any) {
+      console.error(`[traveler-agent] local release: ${e?.message ?? e}`);
+      await io.reply(s, `Couldn’t release escrow — ${e?.message ?? e}`);
+    }
     return true;
   }
 

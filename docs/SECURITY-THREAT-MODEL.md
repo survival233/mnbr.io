@@ -69,14 +69,20 @@ Preserve that as you add browser/tool use:
 - Keep the **buy cap hard-enforced in the tool bridge**, not the prompt.
 - Reference: OWASP LLM Top-10 (LLM01 Prompt Injection, LLM06 Excessive Agency).
 
-### P1 — Handover code brute-force (if submittable online)
+### P1 — Handover code brute-force / self-release — ✅ FIXED
+_The traveler release path now requires the actual 6-digit code (a bare "done"/"confirm" no longer auto-releases using the stored code), compares it constant-time, and locks out after `HANDOVER_MAX_ATTEMPTS` (5) wrong tries per offer. Covered by `apps/traveler-agent/src/handover.test.ts`. Residual/follow-up: the code is still stored plaintext in `marketplace_offers.handover_code` (VarChar(32)); hashing it needs a schema migration (the deploy does not auto-run migrations), tracked separately._
+
+### P1 (original) — Handover code brute-force (if submittable online)
 6-digit code = 1,000,000 space. It's CSPRNG-generated, hashed, and constant-time compared
 (good), and a code shown at a physical meeting is low-risk. But if a code can be **submitted
 over chat/API to release escrow**, 1M is brute-forceable without a lockout.
 - **Fix:** strict rate-limit + lockout on handover-code attempts per offer (e.g. 5 tries,
   then expire/re-issue); bind attempts to the specific offer and the authenticated party.
 
-### P1 — Webhook replay protection is per-process and un-timed
+### P1 — Webhook replay protection — ✅ PARTIALLY FIXED
+_`verifyAgentCardSignature` now rejects a signed request whose timestamp is older than 5 minutes, which bounds the replay window even if the in-memory idempotency set is lost. Covered by `packages/webhooks/agentcard.test.ts`. Residual/follow-up: cross-restart / cross-instance dedupe still needs a persistent (DB) idempotency store; deferred because the deploy does not auto-run migrations (Render runs a single instance, so the practical gap is only across restarts)._
+
+### P1 (original) — Webhook replay protection is per-process and un-timed
 Idempotency uses an in-memory `seen` set bounded at 4000 ([`agentcard.ts:53`](packages/webhooks/agentcard.ts:53)),
 lost on restart and not shared across instances; the signed-timestamp variant parses `t`
 but **never checks freshness**. A captured valid request could be replayed after a restart

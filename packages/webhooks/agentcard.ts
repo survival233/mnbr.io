@@ -8,6 +8,9 @@ import { identityForAgentCardUser, rememberAgentCardUser } from "@repo/agentcard
 
 const seen = new Set<string>();
 
+/** How old a signed webhook timestamp may be before it is rejected as a replay. */
+const WEBHOOK_TIMESTAMP_TOLERANCE_MS = 5 * 60_000;
+
 function header(
   headers: Record<string, string | string[] | undefined>,
   name: string,
@@ -43,11 +46,20 @@ export function verifyAgentCardSignature(secret: string, raw: string, sigHeader:
   const v1 = parts.v1;
   if (!t || !v1) return false;
   const expected = createHmac("sha256", secret).update(`${t}.${raw}`).digest("hex");
+  let sigOk = false;
   try {
-    return timingSafeEqual(Buffer.from(expected), Buffer.from(v1));
+    sigOk = timingSafeEqual(Buffer.from(expected), Buffer.from(v1));
   } catch {
     return false;
   }
+  if (!sigOk) return false;
+  // Freshness: reject a stale signed timestamp to bound the replay window, even
+  // if the in-memory idempotency set has been lost (restart / other instance).
+  const tsNum = Number(t);
+  if (!Number.isFinite(tsNum)) return false;
+  const tsMs = tsNum > 1e12 ? tsNum : tsNum * 1000; // tolerate seconds or ms
+  if (Math.abs(Date.now() - tsMs) > WEBHOOK_TIMESTAMP_TOLERANCE_MS) return false;
+  return true;
 }
 
 function remember(id: string | undefined): boolean {
