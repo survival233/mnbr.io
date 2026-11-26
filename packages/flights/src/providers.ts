@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { BookFlightInput, FlightBooking, FlightOption, FlightProvider, FlightSearchQuery } from "./types.js";
-import { isoDate } from "./parse.js";
+import { isoDate, googleFlightsDeepLink } from "./parse.js";
 
 /** Deterministic corridor options when no live flight API is configured. */
 export class DemoFlightProvider implements FlightProvider {
@@ -35,6 +35,7 @@ export class DemoFlightProvider implements FlightProvider {
         priceCents: t.price * 100,
         currency: "USD",
         cabin: q.cabin ?? "economy",
+        bookingUrl: googleFlightsDeepLink(origin, destination, dateStr),
       };
     });
   }
@@ -120,6 +121,7 @@ export class SerpFlightProvider implements FlightProvider {
         priceCents: price,
         currency: "USD",
         cabin: q.cabin ?? "economy",
+        bookingUrl: googleFlightsDeepLink(q.origin, q.destination, dateStr),
         raw: row,
       });
     }
@@ -140,7 +142,26 @@ export class SerpFlightProvider implements FlightProvider {
   }
 }
 
+/**
+ * Placeholder for REAL in-app booking/ticketing (future). Wire this up — e.g.
+ * Duffel — to make `book()` issue an actual ticket instead of the deeplink
+ * handoff. Intentionally not implemented and NOT selected by makeFlightProvider
+ * yet; it exists so the booking seam is explicit. Flip it on behind
+ * DUFFEL_ACCESS_TOKEN once implemented.
+ */
+export class DuffelFlightProvider implements FlightProvider {
+  readonly name = "duffel";
+  async search(_q: FlightSearchQuery): Promise<FlightOption[]> {
+    throw new Error("Duffel flight search not implemented yet (future real-booking provider).");
+  }
+  async book(_input: BookFlightInput, _offer: FlightOption): Promise<FlightBooking> {
+    throw new Error("Duffel booking/ticketing not implemented yet (future real-booking provider).");
+  }
+}
+
 export function makeFlightProvider(): FlightProvider {
+  // Future: when a real booking provider (Duffel) is implemented, select it here
+  // behind DUFFEL_ACCESS_TOKEN. Today both paths are search + deeplink handoff.
   if (process.env.SERPAPI_API_KEY?.trim()) return new SerpFlightProvider();
   return new DemoFlightProvider();
 }

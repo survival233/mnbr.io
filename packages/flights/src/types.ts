@@ -14,6 +14,8 @@ export type FlightOption = {
   priceCents: number;
   currency: string;
   cabin: CabinClass;
+  /** Deep link where the traveler completes the booking themselves (handoff). */
+  bookingUrl?: string;
   raw?: unknown;
 };
 

@@ -1,5 +1,5 @@
 import type { FlightBooking, FlightOption, FlightSearchQuery, BookFlightInput } from "./types.js";
-import { makeFlightProvider, hasLiveFlightSearch } from "./providers.js";
+import { makeFlightProvider, hasLiveFlightSearch, DuffelFlightProvider } from "./providers.js";
 import {
   formatFlightOption,
   isTravelIntent,
@@ -9,6 +9,7 @@ import {
   resolvePlace,
   cityFromAirport,
   isoDate,
+  googleFlightsDeepLink,
 } from "./parse.js";
 
 export type {
@@ -29,8 +30,10 @@ export {
   resolvePlace,
   cityFromAirport,
   isoDate,
+  googleFlightsDeepLink,
   makeFlightProvider,
   hasLiveFlightSearch,
+  DuffelFlightProvider,
 };
 
 export async function searchFlights(q: FlightSearchQuery): Promise<FlightOption[]> {

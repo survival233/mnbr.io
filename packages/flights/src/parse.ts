@@ -200,6 +200,16 @@ export function isoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * A Google Flights deep link for a route + date — where the traveler completes
+ * the booking themselves. Route-level (not per-fare); a real booking provider
+ * would set a per-offer bookingUrl or ticket in-app instead.
+ */
+export function googleFlightsDeepLink(origin: string, destination: string, date: string): string {
+  const q = `Flights from ${origin} to ${destination} on ${date}`;
+  return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
+}
+
 export function isTravelIntent(text: string): boolean {
   const t = text.trim();
   if (!t) return false;

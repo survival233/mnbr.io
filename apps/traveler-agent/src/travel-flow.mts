@@ -5,6 +5,11 @@
 import {
   parseDepartDate,
   cityFromAirport,
+  searchFlights,
+  formatFlightOption,
+  googleFlightsDeepLink,
+  isoDate,
+  type FlightOption,
 } from "@manebra/flights";
 import { normalizeCity } from "@manebra/calendar";
 import { hubCity, sameMetro } from "@manebra/geo";
@@ -28,7 +33,6 @@ import {
   TRAVELER_OPTED_OUT,
   TRAVELER_WALLET_ADD,
   TRAVELER_CARD_ON_FILE,
-  TRAVELER_FLIGHT_STUB,
   TRAVELER_HI,
   asksToBookFlight,
   asksForFreshWallet,
@@ -462,7 +466,6 @@ async function handleCollectAndSearch(
   const before = tripSnapshot(trip);
 
   if (asksToBookFlight(text)) {
-    await reply(s, TRAVELER_FLIGHT_STUB);
     const missingFlight = missingFields(trip);
     if (missingFlight.length) {
       const ask = nextQuestion(trip);
@@ -478,11 +481,7 @@ async function handleCollectAndSearch(
       }
       return true;
     }
-    if (trip.optedIn === undefined) {
-      return askShopOptIn(s, deps);
-    }
-    await afterTripCommitted(s, deps);
-    return true;
+    return proceedAfterTrip(s, deps);
   }
 
   if (acceptsOffer(text) && s.offer && s.offer.field !== "flight") {
@@ -529,12 +528,7 @@ async function handleCollectAndSearch(
     return true;
   }
 
-  if (trip.optedIn === undefined) {
-    return askShopOptIn(s, deps);
-  }
-
-  await afterTripCommitted(s, deps);
-  return true;
+  return proceedAfterTrip(s, deps);
 }
 
 async function askShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
@@ -542,6 +536,52 @@ async function askShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayFn }): P
   parkAsk(s, "shop_opt_in", TRAVELER_OPT_IN_ASK, null, "bool");
   await deps.reply(s, TRAVELER_OPT_IN_ASK);
   return true;
+}
+
+/**
+ * Show live flight options for the trip's route + date and wait for a pick.
+ * Search-only: the traveler books on the airline/OTA via a deep link (no in-app
+ * ticketing yet — that's the DuffelFlightProvider seam). Returns true if shown;
+ * false (missing origin or no results) so the caller moves on to the opt-in.
+ */
+async function presentFlights(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
+  const trip = ensureTrip(s);
+  if (!trip.origin || !trip.destination || !trip.departure_date) return false;
+  let options: FlightOption[] = [];
+  try {
+    options = await searchFlights({
+      origin: trip.origin,
+      destination: trip.destination,
+      departDate: trip.departure_date,
+      limit: 3,
+    });
+  } catch (e: any) {
+    console.warn(`[traveler-agent] flight search failed: ${e?.message ?? e}`);
+  }
+  if (!options.length) return false;
+  s.flightOptions = options;
+  s.selectedFlight = undefined;
+  s.step = "await_flight_pick";
+  persistTrip(s);
+  const list = options.map((o, i) => formatFlightOption(o, i)).join("\n");
+  await deps.say(
+    s,
+    `Flights ${trip.origin}→${trip.destination} on ${trip.departure_date}:\n${list}\n\nReply with a number for a booking link, or “skip”.`,
+  );
+  return true;
+}
+
+async function continueToShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
+  const trip = ensureTrip(s);
+  if (trip.optedIn === undefined) return askShopOptIn(s, deps);
+  await afterTripCommitted(s, deps);
+  return true;
+}
+
+/** Trip is complete: offer flights first (when the full route is known), then opt-in. */
+async function proceedAfterTrip(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
+  if (await presentFlights(s, deps)) return true;
+  return continueToShopOptIn(s, deps);
 }
 
 function yesNo(text: string): boolean | null {
@@ -619,25 +659,38 @@ async function handlePickOrBook(
   text: string,
   deps: { reply: ReplyFn; say: SayFn },
 ): Promise<boolean> {
-  void text;
-  await deps.reply(s, TRAVELER_FLIGHT_STUB);
-  const trip = ensureTrip(s);
-  const ask = nextQuestion(trip);
-  if (ask) {
-    s.step = "await_travel_intent";
-    parkAsk(
-      s,
-      ask.field,
-      ask.text,
-      null,
-      ask.field === "departure_date" ? "date" : "text",
-    );
-    await deps.reply(s, ask.text);
-    return true;
+  const options = s.flightOptions ?? [];
+  if (!options.length) {
+    s.flightOptions = undefined;
+    return continueToShopOptIn(s, deps);
   }
-  if (trip.optedIn === undefined) return askShopOptIn(s, deps);
-  await afterTripCommitted(s, deps);
-  return true;
+  if (/^(n|no|nope|nah|skip|not now|none)\b/i.test(text.trim())) {
+    s.flightOptions = undefined;
+    persistTrip(s);
+    await deps.reply(s, `No problem — I won’t pull a booking link.`);
+    return continueToShopOptIn(s, deps);
+  }
+  const n = parseInt(text.trim(), 10);
+  let idx = Number.isInteger(n) ? n - 1 : -1;
+  if (!(idx >= 0 && idx < options.length)) {
+    if (acceptsOffer(text)) idx = 0;
+    else {
+      await deps.reply(s, `Reply with a number 1–${options.length}, or “skip”.`);
+      return true;
+    }
+  }
+  const chosen = options[idx]!;
+  s.selectedFlight = chosen;
+  s.flightOptions = undefined;
+  persistTrip(s);
+  const url =
+    chosen.bookingUrl ?? googleFlightsDeepLink(chosen.origin, chosen.destination, isoDate(chosen.departAt));
+  await deps.say(
+    s,
+    `${chosen.airline}${chosen.flightNumber ? " " + chosen.flightNumber : ""} · ${chosen.origin}→${chosen.destination} · $${(chosen.priceCents / 100).toFixed(0)} — book it here:`,
+    url,
+  );
+  return continueToShopOptIn(s, deps);
 }
 
 async function handleEarn(
