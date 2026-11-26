@@ -38,6 +38,10 @@ services:
         sync: false
       - key: SERPAPI_API_KEY
         sync: false
+      # Opt-in: let the model interpret off-pattern replies when the rule parser
+      # can't. Unset = rules only (current behavior). Set to 1 to enable.
+      - key: LLM_UNDERSTANDING
+        sync: false
       # Resolve the exact approved-store product URL for a selected listing via
       # the Google Product API (one extra SerpAPI call per selection). On = the
       # traveler gets the real store link at consensus, not a google.com redirect.
@@ -89,6 +93,9 @@ services:
       - key: LINQ_WEBHOOK_SECRET
         sync: false
       - key: SERPAPI_API_KEY
+        sync: false
+      # Opt-in: let the model interpret off-pattern replies (see shopper service).
+      - key: LLM_UNDERSTANDING
         sync: false
       - key: DATABASE_URL
         fromDatabase:

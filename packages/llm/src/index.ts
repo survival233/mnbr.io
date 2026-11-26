@@ -61,7 +61,7 @@ export function makeLlm(): LlmConfig | null {
       provider,
       baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
       apiKey: openaiKey,
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
       keyEnv: "OPENAI_API_KEY",
     };
   }
@@ -85,7 +85,7 @@ export function makeOpenAiLlm(model?: string): LlmConfig | null {
     provider: "openai",
     baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
     apiKey,
-    model: model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    model: model ?? process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
     keyEnv: "OPENAI_API_KEY",
   };
 }
@@ -97,6 +97,77 @@ export function makeCognitiveLlm(): LlmConfig | null {
   return cognitiveClient;
 }
 
+/** Opt-in: use the model to interpret off-pattern replies (LLM_UNDERSTANDING=1). */
+export function llmUnderstandingEnabled(): boolean {
+  const v = process.env.LLM_UNDERSTANDING?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "on";
+}
+
+export interface InterpretContext {
+  /** The raw user message. */
+  message: string;
+  /** The question the assistant just asked. */
+  asked: string;
+  /** The pending field the asked question is trying to fill. */
+  slot: string;
+  kind: "date" | "money" | "text" | "bool" | "choice";
+  /** Allowed options for a choice slot. */
+  options?: string[];
+  /** Short summary of the order/trip so far (optional context). */
+  state?: string;
+}
+export interface InterpretResult {
+  action: "answer" | "status" | "cancel" | "new_request" | "unclear";
+  /** Normalized value for the slot when action === "answer". */
+  value?: string;
+}
+
+const INTERPRET_SYSTEM = `You interpret a user's chat reply inside a shopping / travel assistant.
+The assistant just asked ONE question to fill ONE field. Decide what the user's message means and return STRICT JSON only:
+{"action":"answer|status|cancel|new_request|unclear","value":"..."}
+- "answer": the message provides the asked field. Put the normalized value in "value":
+  - date  -> ISO "YYYY-MM-DD"
+  - money -> dollar amount as a number string, e.g. "25"
+  - bool  -> "yes" or "no"
+  - choice-> exactly one of the provided options
+  - text  -> the concise answer (e.g. a city or item name)
+- "status": the user is asking for progress/an update ("any update?", "found anyone yet?").
+- "cancel": the user wants to stop, restart, or never mind.
+- "new_request": the user clearly wants something different/new (a different item or trip).
+- "unclear": you genuinely cannot tell.
+Use "answer" ONLY when the message really gives the asked value. Be strict; prefer "unclear" over guessing.`;
+
+/**
+ * Interpret an off-pattern reply with the model when the rule-based classifier
+ * can't. Returns null when disabled, unconfigured, or on error so the caller
+ * falls back to its deterministic handling — never throws into the flow.
+ */
+export async function interpretReply(ctx: InterpretContext): Promise<InterpretResult | null> {
+  if (!llmUnderstandingEnabled()) return null;
+  const cfg = makeCognitiveLlm();
+  if (!cfg) return null;
+  const user = JSON.stringify({
+    asked: ctx.asked,
+    field: ctx.slot,
+    field_kind: ctx.kind,
+    options: ctx.options ?? null,
+    context: ctx.state ?? null,
+    today: new Date().toISOString().slice(0, 10),
+    user_message: ctx.message,
+  });
+  try {
+    const out = await chatJson(cfg, INTERPRET_SYSTEM, user);
+    const action = out?.action;
+    if (!["answer", "status", "cancel", "new_request", "unclear"].includes(action)) {
+      return { action: "unclear" };
+    }
+    return { action, value: out?.value != null ? String(out.value) : undefined };
+  } catch (e: any) {
+    console.warn(`[llm] interpretReply failed: ${e?.message ?? e}`);
+    return null;
+  }
+}
+
 /** Same apiKey object as cognition; only the model may differ (OPENAI_VISION_MODEL). */
 export function makeVisionLlm(): LlmConfig | null {
   const cog = makeCognitiveLlm();
@@ -104,7 +175,7 @@ export function makeVisionLlm(): LlmConfig | null {
     const visionModel = process.env.OPENAI_VISION_MODEL?.trim() || cog.model;
     return { ...cog, apiKey: cog.apiKey, model: visionModel };
   }
-  return makeOpenAiLlm(process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini");
+  return makeOpenAiLlm(process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4.1-mini");
 }
 
 async function chatCompletions(cfg: LlmConfig, body: Record<string, unknown>): Promise<any> {

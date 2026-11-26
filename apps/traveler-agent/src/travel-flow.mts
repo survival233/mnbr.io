@@ -14,6 +14,7 @@ import {
 import { normalizeCity } from "@manebra/calendar";
 import { hubCity, sameMetro } from "@manebra/geo";
 import { upsertLiveTrip, listFundedOffers, getTravelerCard } from "@manebra/db";
+import { interpretReply, llmUnderstandingEnabled } from "@manebra/llm";
 import { fetchGoogleCalendarEvents } from "@manebra/calendar";
 import { agentcardConfigured, createWalletLink } from "@repo/agentcard";
 import type { Session } from "./session.mts";
@@ -502,7 +503,12 @@ async function handleCollectAndSearch(
   s.step = "await_travel_intent";
   persistTrip(s);
 
-  const after = tripSnapshot(trip);
+  let after = tripSnapshot(trip);
+  // Understanding fallback: the rules didn't advance the trip on this reply, so
+  // if a field is still open, let the model interpret an off-pattern answer.
+  if (llmUnderstandingEnabled() && JSON.stringify(before) === JSON.stringify(after)) {
+    if (await llmFillTripField(s, trip, text)) after = tripSnapshot(trip);
+  }
   const missing = missingFields(trip);
   console.log(
     `[traveler-agent] trip ${JSON.stringify(before)} + ${JSON.stringify(text.slice(0, 80))} → ${JSON.stringify(after)} missing=${JSON.stringify(missing)}`,
@@ -590,6 +596,39 @@ async function continueToShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayF
   const trip = ensureTrip(s);
   if (trip.optedIn === undefined) return askShopOptIn(s, deps);
   await afterTripCommitted(s, deps);
+  return true;
+}
+
+/**
+ * LLM understanding fallback: when the rule-based merge couldn't fill the open
+ * trip field from an off-pattern reply, ask the model to interpret it. Returns
+ * true if it set a field (caller re-evaluates). Flag-guarded; safe no-op when
+ * disabled/unconfigured.
+ */
+async function llmFillTripField(s: Session, trip: ReturnType<typeof ensureTrip>, text: string): Promise<boolean> {
+  const q = nextQuestion(trip);
+  if (!q) return false;
+  const res = await interpretReply({
+    message: text,
+    asked: q.text,
+    slot: q.field,
+    kind: q.field === "departure_date" ? "date" : "text",
+    state: JSON.stringify(tripSnapshot(trip)),
+  });
+  if (!res || res.action !== "answer" || !res.value) return false;
+  if (q.field === "departure_date") {
+    const iso = /^\d{4}-\d{2}-\d{2}$/.test(res.value) ? res.value : parseDepartDate(res.value);
+    if (!iso) return false;
+    trip.departure_date = iso;
+  } else if (q.field === "destination") {
+    trip.destination = res.value;
+  } else if (q.field === "origin") {
+    trip.origin = res.value;
+  } else {
+    return false;
+  }
+  if (!trip.confirmed.includes(q.field)) trip.confirmed.push(q.field);
+  persistTrip(s);
   return true;
 }
 

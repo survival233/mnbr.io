@@ -1,4 +1,5 @@
 import { formatUsd, endOfLocalDay, generateHandoverCode, storedHandoverCode } from "@manebra/shared";
+import { interpretReply, llmUnderstandingEnabled } from "@manebra/llm";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
 import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, resolveListingPick, resolveDirectStoreUrl, directStoreUrlsEnabled, type ProductListing } from "@manebra/catalog";
@@ -1433,6 +1434,27 @@ async function handleMetaTurn(s: Session, turn: ClassifiedTurn): Promise<void> {
   await sayHost(s, "META", s.pending?.prompt || reaskPrompt(s), turn.meta);
 }
 
+/**
+ * LLM understanding fallback: when a rule parser couldn't read the pending slot
+ * from an off-pattern reply, ask the model to interpret it and return the
+ * normalized value (or null). Flag-guarded; safe no-op when disabled.
+ */
+async function llmSlotValue(
+  s: Session,
+  text: string,
+  slot: string,
+  kind: "date" | "money" | "text" | "bool",
+): Promise<string | null> {
+  if (!llmUnderstandingEnabled()) return null;
+  const res = await interpretReply({
+    message: text,
+    asked: s.pending?.prompt ?? `Provide the ${slot}.`,
+    slot,
+    kind,
+  });
+  return res && res.action === "answer" && res.value ? res.value : null;
+}
+
 /** Resolve the open question before search/matching. Returns true if this turn is done. */
 async function resolveOpenQuestion(s: Session, text: string, intent: { kind: string }): Promise<boolean> {
   if (!FORM_HOLD.has(s.step) && !s.pending && !s.offer) return false;
@@ -1450,8 +1472,12 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
   if (await applyDialogAffirm(s, text, intent)) return true;
 
   if (s.step === "await_deadline") {
-    const d = parseDate(text);
-    if (d) {
+    let d = parseDate(text);
+    if (!d) {
+      const v = await llmSlotValue(s, text, "deadline", "date");
+      if (v) d = parseDate(v) ?? (/^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T12:00:00`) : null);
+    }
+    if (d && !Number.isNaN(d.getTime())) {
       s.deadline = d;
       clearPending(s);
       await continueAfterListing(s);
@@ -1463,7 +1489,11 @@ async function resolveOpenQuestion(s: Session, text: string, intent: { kind: str
 
   if (s.step === "await_max_fee") {
     if (/\b(cheap|cheaper|less|lower|reduce|too much)\b/i.test(text)) return false;
-    const cents = parseUsdCents(text);
+    let cents = parseUsdCents(text);
+    if (cents == null) {
+      const v = await llmSlotValue(s, text, "delivery fee", "money");
+      if (v) cents = parseUsdCents(v);
+    }
     if (cents != null) {
       s.maxFeeCents = cents;
       s.earningsReasked = undefined;
