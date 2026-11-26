@@ -1,4 +1,4 @@
-import { formatUsd, endOfLocalDay, generateHandoverCode } from "@manebra/shared";
+import { formatUsd, endOfLocalDay, generateHandoverCode, storedHandoverCode } from "@manebra/shared";
 import { normalizeCity } from "@manebra/calendar";
 import { resolveMetro, sameMetro, hubCity } from "@manebra/geo";
 import { searchProducts, hasSerpApiKey, NoShopMarketError, shopMarketForCity, productNameFromUrl, listingsForPicker, resolveListingPick, resolveDirectStoreUrl, directStoreUrlsEnabled, type ProductListing } from "@manebra/catalog";
@@ -2100,7 +2100,9 @@ async function fundAfterAccept(s: Session): Promise<void> {
     markSessionDirty();
     if (s.bidId) {
       await updateOffer(s.bidId, {
-        handoverCode: code,
+        // Store a keyed hash, not the plaintext code (shopper keeps the plaintext
+        // in-session to show the user); the traveler verifies against this hash.
+        handoverCode: storedHandoverCode(code, s.bidId),
         totalCents: recapTotal,
         status: "funded",
         notifiedShopper: true,
@@ -2145,7 +2147,7 @@ async function fundAfterAccept(s: Session): Promise<void> {
     if (requestId) {
       await updateOffer(requestId, {
         escrowId: out.escrowId,
-        handoverCode: out.handoverCode,
+        handoverCode: storedHandoverCode(out.handoverCode, requestId),
         totalCents: a.totalCents,
         status: "funded",
         notifiedShopper: true,

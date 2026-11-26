@@ -679,3 +679,16 @@ model MarketplaceCalendarLink {
 
   @@map("marketplace_calendar_links")
 }
+
+/// Lightweight processed-webhook dedupe — persistent idempotency across
+/// restarts/instances (separate from the richer WebhookEvent store above).
+model ProcessedWebhook {
+  id         String   @id
+  provider   String   @db.VarChar(32)
+  eventId    String   @map("event_id") @db.VarChar(255)
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz()
+
+  @@unique([provider, eventId], map: "processed_webhooks_provider_event")
+  @@index([receivedAt])
+  @@map("processed_webhooks")
+}

@@ -70,7 +70,7 @@ Preserve that as you add browser/tool use:
 - Reference: OWASP LLM Top-10 (LLM01 Prompt Injection, LLM06 Excessive Agency).
 
 ### P1 — Handover code brute-force / self-release — ✅ FIXED
-_The traveler release path now requires the actual 6-digit code (a bare "done"/"confirm" no longer auto-releases using the stored code), compares it constant-time, and locks out after `HANDOVER_MAX_ATTEMPTS` (5) wrong tries per offer. Covered by `apps/traveler-agent/src/handover.test.ts`. Residual/follow-up: the code is still stored plaintext in `marketplace_offers.handover_code` (VarChar(32)); hashing it needs a schema migration (the deploy does not auto-run migrations), tracked separately._
+_The traveler release path now requires the actual 6-digit code (a bare "done"/"confirm" no longer auto-releases using the stored code), compares it constant-time, and locks out after `HANDOVER_MAX_ATTEMPTS` (5) wrong tries per offer. The stored code is now a **keyed, truncated hash** (`HANDOVER_SECRET`, fits the existing column — no migration), so the plaintext is never persisted; legacy plaintext offers still verify during the transition. Set `HANDOVER_SECRET` to the same value on both services to activate. Covered by `apps/traveler-agent/src/handover.test.ts` and `packages/shared/src/core.test.ts`._
 
 ### P1 (original) — Handover code brute-force (if submittable online)
 6-digit code = 1,000,000 space. It's CSPRNG-generated, hashed, and constant-time compared
@@ -80,7 +80,7 @@ over chat/API to release escrow**, 1M is brute-forceable without a lockout.
   then expire/re-issue); bind attempts to the specific offer and the authenticated party.
 
 ### P1 — Webhook replay protection — ✅ PARTIALLY FIXED
-_`verifyAgentCardSignature` now rejects a signed request whose timestamp is older than 5 minutes, which bounds the replay window even if the in-memory idempotency set is lost. Covered by `packages/webhooks/agentcard.test.ts`. Residual/follow-up: cross-restart / cross-instance dedupe still needs a persistent (DB) idempotency store; deferred because the deploy does not auto-run migrations (Render runs a single instance, so the practical gap is only across restarts)._
+_`verifyAgentCardSignature` rejects a signed request whose timestamp is older than 5 minutes (bounds the replay window). Idempotency is now **persisted** in a `processed_webhooks` table ([`webhook-events.ts`](packages/db/src/webhook-events.ts)) so it survives restarts/instances, with graceful fallback to the in-memory set when the table is absent — the handler is deploy-safe before the migration runs. **Action required:** apply the `20261126030000_processed_webhooks` migration (`npm run migrate:deploy`) for persistence to take effect. Covered by `packages/webhooks/agentcard.test.ts`._
 
 ### P1 (original) — Webhook replay protection is per-process and un-timed
 Idempotency uses an in-memory `seen` set bounded at 4000 ([`agentcard.ts:53`](packages/webhooks/agentcard.ts:53)),

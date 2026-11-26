@@ -1,9 +1,47 @@
 /** Business-logic suite — fee math (PRD §2.2) + state machine (PRD §10.1). */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { computeFees, formatUsd } from "./money.js";
 import { assertTransition, canTransition, isTerminal, isFundsHeld, mayExpire, IllegalTransitionError } from "./bidStateMachine.js";
-import { generateHandoverCode, hashHandoverCode, verifyHandoverCode } from "./handover.js";
+import { generateHandoverCode, hashHandoverCode, verifyHandoverCode, storedHandoverCode, verifyStoredHandoverCode, isHashedHandover } from "./handover.js";
 import { isCategoryAllowed } from "./categories.js";
+
+describe("storedHandoverCode / verifyStoredHandoverCode", () => {
+  const OLD = process.env.HANDOVER_SECRET;
+  afterEach(() => {
+    if (OLD == null) delete process.env.HANDOVER_SECRET;
+    else process.env.HANDOVER_SECRET = OLD;
+  });
+
+  it("stores a hashed, 32-char value (never the plaintext) when the secret is set", () => {
+    process.env.HANDOVER_SECRET = "secret-key";
+    const stored = storedHandoverCode("123456", "bid-1");
+    expect(stored).not.toBe("123456");
+    expect(stored).not.toContain("123456"); // plaintext must never appear
+  });
+
+  it("round-trips the correct code and rejects a wrong one (hashed, bid-bound)", () => {
+    process.env.HANDOVER_SECRET = "secret-key";
+    const stored = storedHandoverCode("123456", "bid-1");
+    expect(isHashedHandover(stored)).toBe(true);
+    expect(stored.length).toBeLessThanOrEqual(32);
+    expect(verifyStoredHandoverCode("123456", "bid-1", stored)).toBe(true);
+    expect(verifyStoredHandoverCode("000000", "bid-1", stored)).toBe(false);
+    expect(verifyStoredHandoverCode("123456", "bid-2", stored)).toBe(false); // bound to the bid
+  });
+
+  it("falls back to plaintext storage/verification when no secret is set", () => {
+    delete process.env.HANDOVER_SECRET;
+    const stored = storedHandoverCode("123456", "bid-1");
+    expect(stored).toBe("123456");
+    expect(verifyStoredHandoverCode("123456", "bid-1", stored)).toBe(true);
+    expect(verifyStoredHandoverCode("999999", "bid-1", stored)).toBe(false);
+  });
+
+  it("still verifies legacy plaintext even once a secret is set (in-flight offers)", () => {
+    process.env.HANDOVER_SECRET = "secret-key";
+    expect(verifyStoredHandoverCode("123456", "bid-1", "123456")).toBe(true);
+  });
+});
 
 describe("computeFees", () => {
   it("PRD worked example: $100 + $20 → $138 total", () => {

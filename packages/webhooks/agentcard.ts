@@ -3,7 +3,7 @@
  * Mounted on the existing shopper/traveler HTTP servers — no new endpoint.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { setConnectedCard } from "@manebra/db";
+import { setConnectedCard, rememberWebhookEvent } from "@manebra/db";
 import { identityForAgentCardUser, rememberAgentCardUser } from "@repo/agentcard";
 
 const seen = new Set<string>();
@@ -71,6 +71,21 @@ function remember(id: string | undefined): boolean {
     if (first) seen.delete(first);
   }
   return true;
+}
+
+/**
+ * Idempotency: persistent (DB) when available, else the in-memory set. Returns
+ * true if the event is new (process it). On any DB error — no DATABASE_URL, or
+ * the webhook_events table not yet migrated — it falls back to in-memory so the
+ * handler keeps working before the migration runs.
+ */
+async function rememberEvent(id: string | undefined): Promise<boolean> {
+  if (!id) return true;
+  try {
+    return await rememberWebhookEvent("agentcard", id);
+  } catch {
+    return remember(id);
+  }
 }
 
 type Envelope = {
@@ -164,7 +179,7 @@ export async function handleAgentCardWebhook(
     return { ok: false, status: 400 };
   }
 
-  if (!remember(event.id)) return { ok: true, status: 200, type: event.type };
+  if (!(await rememberEvent(event.id))) return { ok: true, status: 200, type: event.type };
 
   if (event.type === "connected_card.updated") {
     await applyConnectedCardUpdated(event.data);

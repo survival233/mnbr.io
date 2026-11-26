@@ -1,14 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
-import { calendarText, calendarInput, HANDOVER_MAX_ATTEMPTS } from "@manebra/shared";
+import { calendarText, calendarInput, HANDOVER_MAX_ATTEMPTS, verifyStoredHandoverCode } from "@manebra/shared";
 import * as linq from "./linq-client.mts";
-
-/** Constant-time compare of two handover codes (avoids a timing side-channel). */
-function codesMatch(entered: string, stored: string): boolean {
-  if (!stored) return false;
-  const a = Buffer.from(entered);
-  const b = Buffer.from(stored);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 import * as relay from "./relay-client.mts";
 import {
   getOrCreateSession,
@@ -460,7 +451,7 @@ async function tryHandleMarketplaceOffer(
       );
       return true;
     }
-    if (!codesMatch(code, carry.handoverCode)) {
+    if (!verifyStoredHandoverCode(code, carry.id, carry.handoverCode)) {
       const used = attempts + 1;
       s.handoverAttempts = { ...(s.handoverAttempts ?? {}), [carry.id]: used };
       markSessionDirty();

@@ -65,6 +65,11 @@ services:
         sync: false
       - key: AGENTCARD_WEBHOOK_SECRET
         sync: false
+      # Keys the handover-code hash stored in the offer row. MUST be the SAME
+      # value on the shopper and traveler services, or handover codes won't
+      # verify. Leave unset to keep legacy plaintext storage.
+      - key: HANDOVER_SECRET
+        sync: false
 
   - type: web
     name: manebra-traveler-agent
@@ -98,6 +103,10 @@ services:
       - key: AGENTCARD_CLIENT_SECRET
         sync: false
       - key: AGENTCARD_WEBHOOK_SECRET
+        sync: false
+      # Must MATCH the shopper service's HANDOVER_SECRET (verifies the handover
+      # code the shopper's agent hashed). Leave unset to keep legacy plaintext.
+      - key: HANDOVER_SECRET
         sync: false
       # Commerce SDK (Vector C) — dashboard-managed. Leave ENABLED unset to keep
       # the surface off (legacy buy path). Turn it on ONLY with Commerce SDK
