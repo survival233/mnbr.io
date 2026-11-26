@@ -45,3 +45,4 @@ apps/*/.relay-routing.json.tmp
 # Traveler session durability
 .traveler-sessions.json
 .traveler-sessions.json.tmp
+*.tsbuildinfo
