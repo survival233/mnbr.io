@@ -83,7 +83,15 @@ export class SerpFlightProvider implements FlightProvider {
       hl: "en",
       api_key: apiKey,
     });
-    const res = await fetch(`https://serpapi.com/search.json?${params}`);
+    // Bound the request so a slow Google Flights response can't hang the reply.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 9_000);
+    let res: Response;
+    try {
+      res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) throw new Error(`SerpAPI flights ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const data = (await res.json()) as {
       error?: string;

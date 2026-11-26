@@ -562,7 +562,12 @@ async function presentFlights(s: Session, deps: { reply: ReplyFn; say: SayFn }):
   } catch (e: any) {
     console.warn(`[traveler-agent] flight search failed: ${e?.message ?? e}`);
   }
-  if (!options.length) return false;
+  if (!options.length) {
+    // Attempted (we had the full route) but got nothing / timed out: tell the
+    // traveler and let the caller move on to the opt-in rather than stalling.
+    await deps.reply(s, `Couldn’t pull live flights for ${trip.origin}→${trip.destination} right now — I’ve saved your trip.`);
+    return false;
+  }
   s.flightOptions = options;
   s.selectedFlight = undefined;
   s.step = "await_flight_pick";
@@ -621,7 +626,6 @@ async function handleFlightOrigin(
   s.step = "await_travel_intent";
   persistTrip(s);
   if (await presentFlights(s, deps)) return true;
-  await deps.reply(s, `Couldn’t pull live flights for that route right now.`);
   return continueToShopOptIn(s, deps);
 }
 
