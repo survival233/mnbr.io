@@ -9,6 +9,7 @@ export type Step =
   | "await_travel_intent"
   | "await_shop_opt_in"
   | "await_traveler_card"
+  | "await_flight_origin"
   | "await_flight_pick"
   | "await_book_confirm"
   | "trip_confirmed"

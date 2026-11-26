@@ -29,11 +29,11 @@ describe("traveler ask", () => {
 });
 
 describe("traveler hi + opt-in + wallet", () => {
-  it("offers a flight stub or a destination trip, without calendar or speculative Shop & Deliver", () => {
-    expect(TRAVELER_HI).toMatch(/book a flight/i);
+  it("offers flight pricing + earning or a destination trip, without calendar", () => {
+    expect(TRAVELER_HI).toMatch(/flight/i);
+    expect(TRAVELER_HI).toMatch(/earn/i);
     expect(TRAVELER_HI).toMatch(/city/i);
     expect(TRAVELER_HI).not.toMatch(/calendar/i);
-    expect(TRAVELER_HI).not.toMatch(/earn/i);
     expect(TRAVELER_HI).not.toMatch(/Where are you (headed|travelling|traveling)/i);
   });
 

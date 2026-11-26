@@ -55,6 +55,27 @@ describe("traveler flight search + deeplink booking", () => {
     expect(s.selectedFlight).toBeTruthy();
   }, 25_000);
 
+  it("asks for the origin city when the trip has no origin, then shows flights", async () => {
+    const s = getOrCreateSession("+flt_origin", "chat_flt_origin", { channel: "relay" });
+    s.trip = {
+      destination: "Accra",
+      departure_date: "2031-01-15",
+      confirmed: ["destination", "departure_date"],
+      updated_at: 1,
+    };
+    s.step = "await_travel_intent";
+
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "book a flight", channel: "relay" });
+    expect(sentText()).toMatch(/flying out from/i);
+    expect(s.step).toBe("await_flight_origin");
+
+    vi.mocked(relay.sendText).mockClear();
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "New York", channel: "relay" });
+    expect(s.trip?.origin).toBeTruthy();
+    expect(sentText()).toMatch(/→/);
+    expect(s.step).toBe("await_flight_pick");
+  }, 25_000);
+
   it("skips to the opt-in without a link when the traveler says skip", async () => {
     const s = getOrCreateSession("+flt_skip", "chat_flt_skip", { channel: "relay" });
     s.trip = {

@@ -222,7 +222,7 @@ export const TRAVELER_OVER_CAP =
 
 /** Phase 0 hi — no calendar, no speculative Shop & Deliver. */
 export const TRAVELER_HI =
-  "Two things I can do: (1) book a flight — that’s coming — or (2) save where you’re headed. Name a city and roughly when.";
+  "Two things I can do: (1) find flight prices and help you earn as you travel — get paid to bring items people back home need — or (2) just save where you’re headed. Tell me a city and roughly when.";
 
 export const TRAVELER_FLIGHT_STUB =
   "Flight booking’s coming. Tell me a city and roughly when and I’ll keep the trip.";

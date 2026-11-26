@@ -433,6 +433,10 @@ export async function handleTravelInbound(
     return handleEarn(s, t, deps);
   }
 
+  if (s.step === "await_flight_origin") {
+    return handleFlightOrigin(s, t, deps);
+  }
+
   if (s.step === "await_flight_pick" || s.step === "await_book_confirm") {
     return handlePickOrBook(s, t, deps);
   }
@@ -578,9 +582,46 @@ async function continueToShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayF
   return true;
 }
 
-/** Trip is complete: offer flights first (when the full route is known), then opt-in. */
+const FLIGHT_ORIGIN_ASK = "Which city are you flying out from? (or say “skip”)";
+
+/** Trip is complete: get origin if needed, offer flights, then the opt-in. */
 async function proceedAfterTrip(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
+  const trip = ensureTrip(s);
+  if (trip.destination && trip.departure_date && !trip.origin) {
+    s.step = "await_flight_origin";
+    parkAsk(s, "origin", FLIGHT_ORIGIN_ASK, null, "text");
+    await deps.reply(s, FLIGHT_ORIGIN_ASK);
+    return true;
+  }
   if (await presentFlights(s, deps)) return true;
+  return continueToShopOptIn(s, deps);
+}
+
+/** Capture the departure city, then show flights (or move on if skipped/empty). */
+async function handleFlightOrigin(
+  s: Session,
+  text: string,
+  deps: { reply: ReplyFn; say: SayFn },
+): Promise<boolean> {
+  const trip = ensureTrip(s);
+  if (/^(n|no|nope|nah|skip|not now|don'?t)\b/i.test(text.trim())) {
+    s.step = "await_travel_intent";
+    persistTrip(s);
+    return continueToShopOptIn(s, deps);
+  }
+  const city =
+    extractSlots(text).origin ??
+    text.replace(/^\s*(from|i'?m in|departing|flying (out )?(of|from))\s+/i, "").trim();
+  if (!city) {
+    await deps.reply(s, FLIGHT_ORIGIN_ASK);
+    return true;
+  }
+  trip.origin = city;
+  if (!trip.confirmed.includes("origin")) trip.confirmed.push("origin");
+  s.step = "await_travel_intent";
+  persistTrip(s);
+  if (await presentFlights(s, deps)) return true;
+  await deps.reply(s, `Couldn’t pull live flights for that route right now.`);
   return continueToShopOptIn(s, deps);
 }
 
