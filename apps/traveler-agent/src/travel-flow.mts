@@ -551,6 +551,9 @@ async function askShopOptIn(s: Session, deps: { reply: ReplyFn; say: SayFn }): P
 async function presentFlights(s: Session, deps: { reply: ReplyFn; say: SayFn }): Promise<boolean> {
   const trip = ensureTrip(s);
   if (!trip.origin || !trip.destination || !trip.departure_date) return false;
+  // The live search can take a few seconds — ack first so the date step never
+  // looks dead while we wait.
+  await deps.reply(s, `Checking flights ${trip.origin}→${trip.destination}…`);
   let options: FlightOption[] = [];
   try {
     options = await searchFlights({
@@ -563,9 +566,12 @@ async function presentFlights(s: Session, deps: { reply: ReplyFn; say: SayFn }):
     console.warn(`[traveler-agent] flight search failed: ${e?.message ?? e}`);
   }
   if (!options.length) {
-    // Attempted (we had the full route) but got nothing / timed out: tell the
-    // traveler and let the caller move on to the opt-in rather than stalling.
-    await deps.reply(s, `Couldn’t pull live flights for ${trip.origin}→${trip.destination} right now — I’ve saved your trip.`);
+    // No schedules (e.g. a date too far out) or a timeout: say so and let the
+    // caller move on to the opt-in rather than stalling.
+    await deps.reply(
+      s,
+      `I couldn’t find flights for ${trip.origin}→${trip.destination} on ${trip.departure_date} — that date may be too far out. I’ve saved your trip; try a date within ~11 months for live prices.`,
+    );
     return false;
   }
   s.flightOptions = options;
