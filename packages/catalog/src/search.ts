@@ -1,5 +1,6 @@
 import type { ProductListing, ProductSearchResult } from "./types.js";
-import { searchGoogleShoppingLive, hasSerpApiKey } from "./serp-shopping.js";
+import { hasSerpApiKey } from "./serp-shopping.js";
+import { searchAllSources } from "./sources.js";
 import { cacheListings, getCachedListing } from "./cache.js";
 import { supportedShoppingCities, matchVerifiedStore } from "./verified-stores.js";
 import { shopMarketForCity, nationalShopMarket, NoShopMarketError } from "./markets.js";
@@ -46,7 +47,7 @@ export async function searchProducts(args: {
   const queryKind = classifySearchQuery(query);
 
   const listings = listingsForMerchant(
-    await searchGoogleShoppingLive({
+    await searchAllSources({
       query,
       shoppingCity: shoppingCity || undefined,
     }),

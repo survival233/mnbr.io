@@ -47,6 +47,10 @@ services:
       # traveler gets the real store link at consensus, not a google.com redirect.
       - key: CATALOG_RESOLVE_DIRECT_URL
         value: "1"
+      # Opt-in Shopify Catalog / One MCP discovery source (placeholder until the
+      # shop.dev integration is wired). Unset = SerpAPI only.
+      - key: CATALOG_SHOPIFY_MCP
+        sync: false
       - key: HF_TOKEN
         sync: false
       - key: OPENAI_API_KEY
