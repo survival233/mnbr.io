@@ -4,6 +4,8 @@ export type { SearchQueryKind, FilterDropReason, FilterDrop } from "./search.js"
 export { VERIFIED_STORES, matchVerifiedStore } from "./verified-stores.js";
 export { listingIdFor } from "./cache.js";
 export { resolveDirectStoreUrl, directStoreUrlsEnabled } from "./serp-product.js";
+export { assertPublicUrl, safeFetchText } from "./net-guard.js";
+export type { SafeFetchResult } from "./net-guard.js";
 export { formatSkuCardList, formatShopPickList, listingsForPicker, listingsWithPhotos } from "./sku-cards.js";
 export {
   listingFromProductUrl,

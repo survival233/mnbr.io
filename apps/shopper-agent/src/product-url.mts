@@ -1,5 +1,5 @@
 import type { ProductListing } from "@manebra/catalog";
-import { matchVerifiedStore, listingIdFor } from "@manebra/catalog";
+import { matchVerifiedStore, listingIdFor, safeFetchText } from "@manebra/catalog";
 import { taxCentsFor } from "@manebra/dialog";
 
 export function extractHttpUrl(text: string): string | null {
@@ -80,16 +80,17 @@ function fromJsonLd(html: string): { title?: string; image?: string; priceCents?
  * Fetch og:image / JSON-LD for a pasted store URL. Does not place an order.
  */
 export async function listingFromProductUrl(url: string): Promise<ProductListing | null> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8_000);
+  // Only verified-store URLs can ever yield a listing (see the store check
+  // below), so refuse to even fetch anything else. This doubles as the primary
+  // SSRF defense: an internal/metadata URL is not a verified store, so we never
+  // make the request.
+  if (!matchVerifiedStore("", url)) return null;
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
+    const res = await safeFetchText(url, {
       headers: { accept: "text/html,application/xhtml+xml", "user-agent": "Mozilla/5.0 MANEBRA" },
-      redirect: "follow",
     });
-    if (!res.ok) return null;
-    const html = await res.text();
+    if (!res || !res.ok) return null;
+    const html = res.text;
     const ld = fromJsonLd(html);
     const image = attr(html, "og:image") ?? attr(html, "og:image:url") ?? ld.image ?? "";
     const title =
@@ -119,7 +120,5 @@ export async function listingFromProductUrl(url: string): Promise<ProductListing
   } catch (e: any) {
     console.warn(`[shopper-agent] product URL fetch failed: ${e?.message ?? e}`);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }

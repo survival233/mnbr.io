@@ -355,7 +355,13 @@ dispatch = async (req, res) => {
   if (!linqOff && req.method === "POST" && url.startsWith("/webhooks/linq")) {
     const raw = await readBody(req);
     const secret = process.env.LINQ_WEBHOOK_SECRET;
-    if (secret) {
+    // Fail closed: an unsigned Linq webhook could inject chat events. Require the
+    // secret rather than silently accepting when it is unset.
+    if (!secret) {
+      fail(res, 503, "webhook secret not configured");
+      return;
+    }
+    {
       const headers: Record<string, string | string[] | undefined> = {};
       for (const [k, v] of Object.entries(req.headers)) headers[k] = v;
       if (!verifyWebhookSignature(secret, raw, headers)) {

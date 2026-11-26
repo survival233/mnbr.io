@@ -5,6 +5,7 @@
 import type { ProductListing } from "./types.js";
 import { matchVerifiedStore } from "./verified-stores.js";
 import { listingIdFor } from "./cache.js";
+import { safeFetchText } from "./net-guard.js";
 
 export type ProductUrlMeta = {
   title: string | null;
@@ -132,21 +133,20 @@ export function parseProductHtml(html: string, productUrl: string): ProductUrlMe
 }
 
 export async function fetchProductUrlMeta(url: string): Promise<ProductUrlMeta> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8_000);
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      redirect: "follow",
+    // SSRF-guarded fetch: blocks private/loopback/metadata hosts and validates
+    // every redirect hop. On a blocked host it throws; we return empty meta so
+    // the caller yields no listing rather than making the internal request.
+    const res = await safeFetchText(url, {
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; Manebra/1.0; +https://mnbr.io)",
         accept: "text/html,application/xhtml+xml",
       },
     });
-    const html = await res.text();
-    return parseProductHtml(html.slice(0, 400_000), res.url || url);
-  } finally {
-    clearTimeout(timer);
+    if (!res) return parseProductHtml("", url);
+    return parseProductHtml(res.text, res.url || url);
+  } catch {
+    return parseProductHtml("", url);
   }
 }
 

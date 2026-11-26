@@ -135,12 +135,14 @@ export async function handleAgentCardWebhook(
 ): Promise<AgentCardWebhookResult> {
   const secret = process.env.AGENTCARD_WEBHOOK_SECRET?.trim();
   const sig = header(headers, "agentcard-signature") ?? header(headers, "x-agentcard-signature");
-  if (secret) {
-    if (!verifyAgentCardSignature(secret, raw, sig)) {
-      return { ok: false, status: 401 };
-    }
-  } else if (process.env.NODE_ENV === "production") {
+  // Fail CLOSED unconditionally: this webhook can trigger escrow funding, so a
+  // missing secret must never mean "accept unsigned". (Previously this only
+  // rejected when NODE_ENV === "production", which is not set on the services.)
+  if (!secret) {
     return { ok: false, status: 500 };
+  }
+  if (!verifyAgentCardSignature(secret, raw, sig)) {
+    return { ok: false, status: 401 };
   }
 
   let event: Envelope;
