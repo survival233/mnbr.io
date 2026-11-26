@@ -76,25 +76,23 @@ describe("traveler flight search + deeplink booking", () => {
     expect(s.step).toBe("await_flight_pick");
   }, 25_000);
 
-  it("moves past after the date is picked via the calendar (origin known)", async () => {
+  it("moves past after a typed date (origin known)", async () => {
     const s = getOrCreateSession("+flt_date", "chat_flt_date", { channel: "relay" });
     s.step = "await_travel_intent";
     s.trip = { origin: "New York", destination: "Accra", confirmed: ["origin", "destination"], updated_at: 1 };
     s.pending = { slot: "departure_date", kind: "date", proposed: null, prompt: "When are you flying?" };
-    s.datePickerMonth = "2031-01";
-    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "15", channel: "relay" });
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "2031-01-15", channel: "relay" });
     expect(s.trip?.departure_date).toBe("2031-01-15");
     expect(s.step).toBe("await_flight_pick");
     expect(sentText()).toMatch(/→/);
   }, 25_000);
 
-  it("moves past after the date is picked via the calendar (asks origin)", async () => {
+  it("moves past after a typed date (asks origin)", async () => {
     const s = getOrCreateSession("+flt_date2", "chat_flt_date2", { channel: "relay" });
     s.step = "await_travel_intent";
     s.trip = { destination: "Accra", confirmed: ["destination"], updated_at: 1 };
     s.pending = { slot: "departure_date", kind: "date", proposed: null, prompt: "When are you flying?" };
-    s.datePickerMonth = "2031-01";
-    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "15", channel: "relay" });
+    await handleInbound({ phone: s.phone, chatId: s.chatId, text: "Jan 15 2031", channel: "relay" });
     expect(s.trip?.departure_date).toBe("2031-01-15");
     expect(s.step).toBe("await_flight_origin");
     expect(sentText()).toMatch(/flying out from/i);

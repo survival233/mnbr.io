@@ -1,4 +1,4 @@
-import { calendarText, calendarInput, HANDOVER_MAX_ATTEMPTS, verifyStoredHandoverCode } from "@manebra/shared";
+import { HANDOVER_MAX_ATTEMPTS, verifyStoredHandoverCode } from "@manebra/shared";
 import * as linq from "./linq-client.mts";
 import * as relay from "./relay-client.mts";
 import {
@@ -23,7 +23,7 @@ import {
 } from "@manebra/db";
 import { agentcardConfigured, buyWithUserCard, getConnection } from "@repo/agentcard";
 import { settleLocalEscrow } from "@manebra/settlement/server/local-escrow";
-import { isTravelIntent } from "@manebra/flights";
+import { isTravelIntent, parseDepartDate } from "@manebra/flights";
 import { hubCity, sameMetro } from "@manebra/geo";
 import {
   classifyTurn,
@@ -82,10 +82,6 @@ async function sayHost(s: Session, act: Parameters<typeof composeHostReply>[0]["
 }
 
 async function reply(s: Session, text: string, opts?: { thinkMs?: number }) {
-  if (s.pending?.kind === "date" && text.includes(s.pending.prompt)) {
-    text += "\n\n" + calendarText(s);
-    markSessionDirty();
-  }
   if (text?.trim()) appendDialogTurn(s, "assistant", text);
   if (s.channel === "relay") {
     if (s.chatId) {
@@ -495,15 +491,11 @@ export async function handleInbound(args: {
     relayMessageId: args.relayMessageId,
   });
   if (s.pending?.kind === "date") {
-    const selection = calendarInput(s, text);
-    if (selection.handled) {
-      markSessionDirty();
-      await reply(s, (selection.error ? selection.error + "\n" : "") + s.pending.prompt);
-      return;
-    }
-    text = selection.text;
-  } else {
-    s.datePickerMonth = undefined;
+    // Typed-date entry (same style as the shopper) — no calendar picker. Parse a
+    // date like "Dec 25" / "2026-12-25"; normalize to ISO so the trip-state merge
+    // commits it. If it doesn't parse, fall through and the step re-asks.
+    const iso = parseDepartDate(text);
+    if (iso) text = iso;
   }
 
   if (text) appendDialogTurn(s, "user", text);

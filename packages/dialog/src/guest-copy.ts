@@ -229,7 +229,7 @@ export const TRAVELER_FLIGHT_STUB =
 
 export const TRAVELER_DEST_ASK = "Where are you headed?";
 
-export const TRAVELER_WHEN_ASK = "Roughly when do you arrive?";
+export const TRAVELER_WHEN_ASK = "Roughly when do you arrive? Reply with a date — e.g. Dec 25 or 2026-12-25.";
 
 export const TRAVELER_OPT_IN_ASK =
   "Want Shop & Deliver on this trip? I’ll only ping you when a shopper already funded a matching request. Yes or no.";

@@ -200,7 +200,9 @@ export function nextQuestion(trip: TripState): { field: TripField; text: string 
     case "departure_date":
       return {
         field,
-        text: dest ? `Roughly when do you arrive in ${dest}?` : TRAVELER_WHEN_ASK,
+        text: dest
+          ? `Roughly when do you arrive in ${dest}? Reply with a date — e.g. Dec 25 or 2026-12-25.`
+          : TRAVELER_WHEN_ASK,
       };
   }
 }

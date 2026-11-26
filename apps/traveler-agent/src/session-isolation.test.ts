@@ -27,14 +27,11 @@ it("isolates participants and conversations without losing continuation", () => 
   expect(a.phone).toBe("usr_alice");
 });
 
-it("navigates a flight month and commits its selected departure date", async () => {
+it("commits a typed departure date and asks the next field", async () => {
   const s = getOrCreateSession("usr_flight_dates", "cnv_flight", { channel: "relay" });
   s.step = "await_travel_intent";
   s.pending = { slot: "departure_date", kind: "date", proposed: null, prompt: "When are you flying?" };
-  s.datePickerMonth = "2030-12";
-  await handleInbound({ phone: s.phone, chatId: s.chatId, text: "next month", channel: "relay" });
-  expect(relay.sendText).toHaveBeenLastCalledWith(expect.objectContaining({ text: expect.stringContaining("January 2031") }));
-  await handleInbound({ phone: s.phone, chatId: s.chatId, text: "15", channel: "relay" });
+  await handleInbound({ phone: s.phone, chatId: s.chatId, text: "2031-01-15", channel: "relay" });
   expect(s.trip?.departure_date).toBe("2031-01-15");
   expect(s.pending?.slot).toBe("destination");
 });
